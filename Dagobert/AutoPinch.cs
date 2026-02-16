@@ -23,14 +23,22 @@ using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
 
 namespace Dagobert
 {
+  /// <summary>
+  /// Core automation engine. Extends Window to overlay an "Auto Pinch" button
+  /// on the retainer list and sell list UIs. Uses ECommons TaskManager to queue
+  /// sequential actions (open menu → click adjust → compare prices → set price).
+  ///
+  /// Flow: PinchAllRetainers/PinchAllRetainerItems → enqueue tasks per item →
+  /// each item goes through: OpenContextMenu → AdjustPrice → ComparePrice → SetNewPrice
+  /// </summary>
   internal sealed class AutoPinch : Window, IDisposable
   {
     private readonly MarketBoardHandler _mbHandler;
-    private int? _oldPrice;
-    private int? _newPrice;
-    private bool _skipCurrentItem = false;
+    private int? _oldPrice;                              // current listing price (read from addon)
+    private int? _newPrice;                              // target price (from MB handler or cache)
+    private bool _skipCurrentItem = false;               // skip mannequin items
     private readonly TaskManager _taskManager;
-    private Dictionary<string, int?> _cachedPrices = [];
+    private Dictionary<string, int?> _cachedPrices = []; // avoids re-querying MB for duplicate items
 
     public AutoPinch()
       : base("Dagobert", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
@@ -51,10 +59,10 @@ namespace Dagobert
 
       _taskManager = new TaskManager
       {
-        TimeLimitMS = 10000,
+        TimeLimitMS = 10000,   // per-task timeout (individual steps, not the whole run)
         AbortOnTimeout = true
       };
-      // Fails on non-windows
+      // TTS is Windows-only; detect at startup and disable gracefully on other platforms
       try
       {
         var tts = new SpeechSynthesizer();
@@ -96,16 +104,18 @@ namespace Dagobert
       }
     }
 
+    /// <summary>Draws the Auto Pinch button on the retainer list (all retainers view).</summary>
     private void DrawForRetainerList()
     {
       unsafe
       {
         if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
         {
+          // Hotkey support: start pinching if the configured key is held
           if (Plugin.Configuration.EnablePinchKey && Plugin.KeyState[Plugin.Configuration.PinchKey])
             PinchAllRetainers();
 
-          var node = addon->UldManager.NodeList[27];
+          var node = addon->UldManager.NodeList[27]; // anchor node for button positioning
 
           if (node == null)
             return;
@@ -117,6 +127,7 @@ namespace Dagobert
       }
     }
 
+    /// <summary>Draws the Auto Pinch button on a single retainer's sell list.</summary>
     private void DrawForRetainerSellList()
     {
       unsafe
@@ -126,7 +137,7 @@ namespace Dagobert
           if (Plugin.Configuration.EnablePinchKey && Plugin.KeyState[Plugin.Configuration.PinchKey])
             PinchAllRetainerItems();
 
-          var node = addon->UldManager.NodeList[17];
+          var node = addon->UldManager.NodeList[17]; // anchor node for button positioning
 
           if (node == null)
             return;
@@ -138,6 +149,12 @@ namespace Dagobert
       }
     }
 
+    /// <summary>
+    /// Positions and styles an invisible ImGui window to overlay a game UI node.
+    /// Returns the previous font scale so it can be restored in ImGuiPostSetup.
+    /// </summary>
+    /// <param name="node">The game UI node to anchor the overlay to.</param>
+    /// <returns>The previous font scale, to be passed to ImGuiPostSetup for cleanup.</returns>
     private unsafe float ImGuiSetup(AtkResNode* node)
     {
       var position = GetNodePosition(node);
@@ -162,6 +179,8 @@ namespace Dagobert
       return oldSize;
     }
 
+    /// <summary>Restores ImGui state after drawing the overlay.</summary>
+    /// <param name="oldSize">The font scale returned by ImGuiSetup.</param>
     private static void ImGuiPostSetup(float oldSize)
     {
       ImGui.End();
@@ -171,6 +190,8 @@ namespace Dagobert
       ImGui.PopStyleColor();
     }
 
+    /// <summary>Draws Auto Pinch / Cancel button. Shows Cancel when busy.</summary>
+    /// <param name="specificPinchFunction">The pinch function to call (all retainers or single retainer's items).</param>
     private void DrawAutoPinchButton(Action specificPinchFunction)
     {
       if (_taskManager.IsBusy)
@@ -201,6 +222,11 @@ namespace Dagobert
       }
     }
 
+    /// <summary>
+    /// Entry point for "pinch all retainers": iterates every enabled retainer,
+    /// opens their sell list, and queues price adjustments for all their items.
+    /// Registers Talk dialog listeners to auto-dismiss retainer greeting dialogs.
+    /// </summary>
     private unsafe void PinchAllRetainers()
     {
       if (_taskManager.IsBusy)
@@ -209,6 +235,7 @@ namespace Dagobert
       ClearState();
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
       {
+        // Auto-dismiss the "Talk" dialog that appears when opening each retainer
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
         Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
 
@@ -249,6 +276,11 @@ namespace Dagobert
       }
     }
 
+    /// <summary>
+    /// Queues the full sequence for one retainer: click retainer → open sell list →
+    /// process all items → close sell list → close retainer.
+    /// </summary>
+    /// <param name="index">Retainer index in the RetainerList addon (0-based).</param>
     private void EnqueueSingleRetainer(int index)
     {
       _taskManager.Enqueue(() => ClickRetainer(index), $"ClickRetainer{index}");
@@ -263,6 +295,7 @@ namespace Dagobert
       _taskManager.DelayNext(100);
     }
 
+    /// <param name="index">Retainer index in the RetainerList addon.</param>
     private static unsafe bool? ClickRetainer(int index)
     {
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
@@ -317,6 +350,9 @@ namespace Dagobert
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
     }
 
+    /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
+    /// <param name="enqueueFunc">Function to queue each item (EnqueueSingleItem or InsertSingleItem).</param>
+    /// <param name="reverseOrder">If true, process items bottom-to-top (needed for Insert-based queuing).</param>
     private unsafe bool? EnqueueAllRetainerItems(Action<int> enqueueFunc, bool reverseOrder)
     {
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
@@ -347,6 +383,8 @@ namespace Dagobert
         return false;
     }
 
+    /// <summary>Queues the price adjustment steps for a single item (forward order).</summary>
+    /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
     private void EnqueueSingleItem(int index)
     {
       _taskManager.Enqueue(() => OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
@@ -359,9 +397,14 @@ namespace Dagobert
       _taskManager.Enqueue(SetNewPrice, $"SetNewPrice{index}");
     }
 
+    /// <summary>
+    /// Same as EnqueueSingleItem but uses Insert (prepend) instead of Enqueue (append).
+    /// Steps are added in reverse order because Insert pushes to the front of the queue.
+    /// Used when processing items within the PinchAllRetainers flow.
+    /// </summary>
+    /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
     private void InsertSingleItem(int index)
     {
-      // reverse order because we INSERT
       _taskManager.Insert(SetNewPrice, $"SetNewPrice{index}");
       _taskManager.InsertDelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
       _taskManager.Insert(ClickComparePrice, $"ClickComparePrice{index}");
@@ -372,6 +415,7 @@ namespace Dagobert
       _taskManager.Insert(() => OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
     }
 
+    /// <param name="itemIndex">Item index in the RetainerSellList addon.</param>
     private static unsafe bool? OpenItemContextMenu(int itemIndex)
     {
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
@@ -421,6 +465,10 @@ namespace Dagobert
                                         || e.Name.Equals("changer le prix", StringComparison.CurrentCultureIgnoreCase));
     }
 
+    /// <summary>
+    /// Conditionally adds a delay before opening the MB. If we already have a
+    /// cached price for this item, skip the delay (and the MB query entirely).
+    /// </summary>
     private unsafe bool? DelayMarketBoard()
     {
       if (_skipCurrentItem)
@@ -441,6 +489,10 @@ namespace Dagobert
       return false;
     }
 
+    /// <summary>
+    /// Opens the "Compare Prices" MB window — unless we have a cached price,
+    /// in which case we skip the MB entirely and use the cache.
+    /// </summary>
     private unsafe bool? ClickComparePrice()
     {
       if (_skipCurrentItem)
@@ -448,7 +500,6 @@ namespace Dagobert
 
       if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var addon) && GenericHelpers.IsAddonReady(&addon->AtkUnitBase))
       {
-        // if we have a cached price, dont click compare
         var itemName = addon->ItemName->NodeText.ToString();
         if (_cachedPrices.TryGetValue(itemName, out int? value) && value > 0)
         {
@@ -467,6 +518,11 @@ namespace Dagobert
       return false;
     }
 
+    /// <summary>
+    /// Final step: applies the calculated price to the listing.
+    /// Handles the happy path (valid price) and all error sentinels
+    /// (vendor floor, no listings, etc). Confirms or cancels the addon accordingly.
+    /// </summary>
     private unsafe bool? SetNewPrice()
     {
       try
@@ -551,6 +607,10 @@ namespace Dagobert
       }
     }
 
+    /// <summary>
+    /// Triggered when posting a new item to the MB. If the post-pinch hotkey
+    /// is held, automatically fetches the lowest price and undercuts it.
+    /// </summary>
     private void RetainerSellPostSetup(AddonEvent type, AddonArgs args)
     {
       if (_taskManager.IsBusy)
@@ -569,6 +629,9 @@ namespace Dagobert
       Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
     }
 
+    /// <summary>Walks the node tree to calculate absolute screen position.</summary>
+    /// <param name="node">Starting node to calculate position for.</param>
+    /// <returns>Absolute screen position accounting for all parent transforms.</returns>
     private static unsafe Vector2 GetNodePosition(AtkResNode* node)
     {
       var pos = new Vector2(node->X, node->Y);
@@ -583,6 +646,9 @@ namespace Dagobert
       return pos;
     }
 
+    /// <summary>Walks the node tree to calculate cumulative scale factor.</summary>
+    /// <param name="node">Starting node to calculate scale for.</param>
+    /// <returns>Cumulative scale factor from all parent nodes. Returns (1,1) if node is null.</returns>
     private static unsafe Vector2 GetNodeScale(AtkResNode* node)
     {
       if (node == null) return new Vector2(1, 1);
@@ -596,6 +662,8 @@ namespace Dagobert
       return scale;
     }
 
+    /// <summary>Speaks a message using Windows TTS. Disposes the synthesizer after playback.</summary>
+    /// <param name="msg">The text to speak.</param>
     private static bool? SpeakTTS(string msg)
     {
       if (!Plugin.Configuration.DontUseTTS)

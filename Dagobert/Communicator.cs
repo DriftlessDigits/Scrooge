@@ -9,10 +9,20 @@ using Lumina.Excel.Sheets;
 
 namespace Dagobert;
 
+/// <summary>
+/// Handles all in-game chat messages for the plugin.
+/// Each Print method creates an SeString with a clickable item link when possible,
+/// falling back to plain text if the item name can't be resolved.
+/// </summary>
 public static class Communicator
 {
   private static readonly ExcelSheet<Item> ItemSheet = Svc.Data.GetExcelSheet<Item>();
 
+  /// <summary>Shows the price change details when an item is successfully pinched.</summary>
+  /// <param name="itemName">Raw item name from the game addon (may contain SeString control chars).</param>
+  /// <param name="oldPrice">The item's previous listing price.</param>
+  /// <param name="newPrice">The new price that was set.</param>
+  /// <param name="cutPercentage">Percentage change from old to new (negative = price cut).</param>
   public static void PrintPriceUpdate(string itemName, int? oldPrice, int? newPrice, float cutPercentage)
   {
     if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
@@ -37,6 +47,15 @@ public static class Communicator
       Svc.Chat.Print($"{itemName}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0}, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%");
   }
 
+  /// <summary>
+  /// Converts a raw item name string (from the game's addon text nodes) into
+  /// an ItemPayload for creating clickable item links in chat.
+  /// Handles the messy encoding: SeString control characters, multi-payload
+  /// names, and the HQ icon suffix (U+E03C).
+  /// Returns null if the item can't be found in the game data.
+  /// </summary>
+  /// <param name="itemName">Raw item name from the game addon (may contain SeString control chars and HQ icon).</param>
+  /// <returns>An ItemPayload with the resolved item ID and HQ flag, or null if lookup fails.</returns>
   private static ItemPayload? RawItemNameToItemPayload(string itemName)
   {
     // Parse as SeString
@@ -100,6 +119,8 @@ public static class Communicator
     return null;
   }
 
+  /// <summary>Error: undercut exceeds the max undercut percentage safety cap.</summary>
+  /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintAboveMaxCutError(string itemName)
   {
     if (!Plugin.Configuration.ShowErrorsInChat)
@@ -120,6 +141,8 @@ public static class Communicator
       Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
   }
 
+  /// <summary>Error: undercut price would be less than what a vendor pays.</summary>
+  /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintBelowVendorPriceError(string itemName)
   {
     if (!Plugin.Configuration.ShowErrorsInChat)
@@ -140,6 +163,8 @@ public static class Communicator
       Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price below vendor price");
   }
 
+  /// <summary>Prints the retainer name header when starting to pinch a retainer's items.</summary>
+  /// <param name="name">The retainer's display name.</param>
   public static void PrintRetainerName(string name)
   {
     if (!Plugin.Configuration.ShowRetainerNames)
@@ -152,6 +177,8 @@ public static class Communicator
     Svc.Chat.Print(seString);
   }
 
+  /// <summary>Error: no valid price was found (no MB listings, or stale data).</summary>
+  /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintNoPriceToSetError(string itemName)
   {
     if (!Plugin.Configuration.ShowErrorsInChat)
@@ -171,7 +198,8 @@ public static class Communicator
       Svc.Chat.PrintError($"{itemName}: No price to set, please set price manually");
   }
 
-    public static void PrintAllRetainersDisabled()
+  /// <summary>Error: user tried to auto-pinch but all retainers are disabled in config.</summary>
+  public static void PrintAllRetainersDisabled()
     {
         var seString = new SeStringBuilder()
             .AddText("All retainers are disabled. Open configuration with ")

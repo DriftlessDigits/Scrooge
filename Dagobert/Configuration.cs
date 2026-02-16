@@ -5,46 +5,86 @@ using System.Collections.Generic;
 
 namespace Dagobert;
 
+/// <summary>
+/// Determines how the undercut price is calculated relative to the lowest MB listing.
+/// </summary>
 public enum UndercutMode
 {
+  /// <summary>Subtract a fixed gil amount from the lowest listing.</summary>
   FixedAmount,
-  Percentage
+  /// <summary>Subtract a percentage of the lowest listing's price.</summary>
+  Percentage,
+  /// <summary>Match the lowest listing exactly — no undercut.</summary>
+  GentlemansMatch
 }
 
+/// <summary>
+/// Persisted plugin configuration. Serialized to JSON by Dalamud.
+/// Default values are used both for new installs and when deserializing
+/// older configs that are missing newly added properties.
+/// </summary>
 [Serializable]
 public sealed class Configuration : IPluginConfiguration
 {
   public int Version { get; set; } = 0;
 
+  // --- Pricing behavior ---
+
+  /// <summary>Use HQ price when the listed item is HQ.</summary>
   public bool HQ { get; set; } = true;
 
+  public UndercutMode UndercutMode { get; set; } = UndercutMode.FixedAmount;
+
+  /// <summary>
+  /// Amount to undercut by. Interpreted as gil (FixedAmount) or percent (Percentage).
+  /// Ignored in GentlemansMatch mode.
+  /// </summary>
+  public int UndercutAmount { get; set; } = 1;
+
+  /// <summary>
+  /// Safety cap: skip the item if the undercut would exceed this percentage.
+  /// Prevents catastrophic price drops from outlier listings.
+  /// </summary>
+  public float MaxUndercutPercentage { get; set; } = 100.0f;
+
+  /// <summary>If true, undercut your own retainer listings too.</summary>
+  public bool UndercutSelf { get; set; } = false;
+
+  /// <summary>
+  /// Skip items where the undercut price would fall below vendor sell price (Item.PriceLow).
+  /// Prevents listing items for less than you'd get from vendoring them.
+  /// </summary>
+  public bool VendorPriceFloor { get; set; } = true;
+
+  // --- Timing ---
+
+  /// <summary>Delay before opening the MB price list. Too low = prices fail to load.</summary>
   public int GetMBPricesDelayMS { get; set; } = 3000;
 
+  /// <summary>How long to keep the MB open when fetching prices.</summary>
   public int MarketBoardKeepOpenMS { get; set; } = 1000;
 
-  public bool ShowErrorsInChat { get; set; } = true;
+  // --- Hotkeys ---
 
+  /// <summary>Enable hotkey to start auto-pinch from the retainer sell list.</summary>
   public bool EnablePinchKey { get; set; } = false;
 
   public VirtualKey PinchKey { get; set; } = VirtualKey.Q;
 
+  /// <summary>Enable hotkey to auto-pinch when posting a new item.</summary>
   public bool EnablePostPinchkey { get; set; } = true;
 
   public VirtualKey PostPinchKey { get; set; } = VirtualKey.SHIFT;
 
-  public UndercutMode UndercutMode { get; set; } = UndercutMode.FixedAmount;
+  // --- Chat output ---
 
-  public int UndercutAmount { get; set; } = 1;
-
-  public float MaxUndercutPercentage { get; set; } = 100.0f;
-
-  public bool UndercutSelf { get; set; } = false;
-
-  public bool VendorPriceFloor { get; set; } = true;
+  public bool ShowErrorsInChat { get; set; } = true;
 
   public bool ShowPriceAdjustmentsMessages { get; set; } = true;
 
   public bool ShowRetainerNames { get; set; } = true;
+
+  // --- Text-to-speech ---
 
   public bool TTSWhenAllDone { get; set; } = false;
 
@@ -56,6 +96,7 @@ public sealed class Configuration : IPluginConfiguration
 
   public int TTSVolume { get; set; } = 20;
 
+  /// <summary>Auto-set to true on platforms where System.Speech is unavailable.</summary>
   public bool DontUseTTS { get; set; } = false;
 
   /// <summary>
