@@ -9,8 +9,13 @@ using ECommons;
 
 namespace Dagobert;
 
+/// <summary>
+/// Plugin entry point. Dalamud instantiates this class and injects services
+/// via [PluginService]. Registers the /dagobert command and sets up the UI.
+/// </summary>
 public sealed class Plugin : IDalamudPlugin
 {
+  // Dalamud injects these via [PluginService] attribute — available globally as Plugin.ServiceName
   [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
   [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
   [PluginService] public static IMarketBoard MarketBoard { get; private set; } = null!;
