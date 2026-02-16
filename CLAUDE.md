@@ -47,7 +47,11 @@ Plugin (entry point, command registration, window management)
 
 **AddonLifecycle listeners**: Used to detect when game UI elements (RetainerSell, ItemSearchResult, RetainerList, ContextMenu) appear or update. Registered in both AutoPinch and MarketBoardHandler.
 
-**Undercut modes**: `FixedAmount` (subtract N gil) or `Percentage` (reduce by N%). Both clamp to minimum 1 gil. `MaxUndercutPercentage` skips items where the cut would be too aggressive.
+**Undercut modes**: `FixedAmount` (subtract N gil), `Percentage` (reduce by N%), or `GentlemansMatch` (copy lowest price exactly). FixedAmount and Percentage clamp to minimum 1 gil. `MaxUndercutPercentage` skips items where the cut would be too aggressive. The ConfigWindow hides undercut amount and max % fields when GentlemansMatch is selected.
+
+**Vendor price floor**: When enabled, items are skipped if the undercut price falls below `Item.PriceLow` (what a vendor pays you). Uses sentinel value `-2` to signal this case.
+
+**Sentinel values in NewPrice**: `> 0` = valid price to set, `-1` = no MB listings found, `-2` = below vendor price floor. AutoPinch uses a switch statement in the else block of `SetNewPrice()` to dispatch error messages for each sentinel.
 
 ### Dependencies
 
@@ -59,6 +63,12 @@ Plugin (entry point, command registration, window management)
 ### Multi-language Support
 
 Mannequin item detection checks context menu text in English, German, Japanese, and French. Any new context menu checks must handle all four languages.
+
+## Code Style
+
+- **Indent**: 2 spaces (configured in `.editorconfig`)
+- **Documentation**: XML doc comments (`<summary>`, `<param>`, `<returns>`) on all public and internal methods
+- **Readability over cleverness**: Prefer explicit loops and variables over one-liners
 
 ## Dalamud Documentation
 

@@ -14,6 +14,24 @@ public sealed class ConfigWindow : Window
 {
   private static readonly string[] _virtualKeyStrings = Enum.GetNames<VirtualKey>();
 
+  /// <summary>Converts PascalCase enum names to display-friendly format (e.g. "FixedAmount" → "Fixed Amount").</summary>
+  /// <param name="name">The raw PascalCase enum name.</param>
+  /// <returns>The name with spaces inserted before each capital letter (except the first).</returns>
+  private static string FormatEnumName(string name)
+  {
+    var result = new System.Text.StringBuilder();
+
+    for (int i = 0; i < name.Length; i++)
+    {
+      if (i > 0 && char.IsUpper(name[i]))
+        result.Append(' ');
+
+      result.Append(name[i]);
+    }
+
+    return result.ToString();
+  }
+
   public ConfigWindow()
     : base("Dagobert Configuration")
   { }
@@ -39,8 +57,9 @@ public sealed class ConfigWindow : Window
     ImGui.Text("Undercut Mode:");
     ImGui.SameLine();
     var enumValues = Enum.GetNames<UndercutMode>();
+    var displayNames = enumValues.Select(FormatEnumName).ToArray();
     int index = Array.IndexOf(enumValues, Plugin.Configuration.UndercutMode.ToString());
-    if (ImGui.Combo("##undercutModeCombo", ref index, enumValues, enumValues.Length))
+    if (ImGui.Combo("##undercutModeCombo", ref index, displayNames, displayNames.Length))
     {
       var value = Enum.Parse<UndercutMode>(enumValues[index]);
       if (value == UndercutMode.Percentage && Plugin.Configuration.UndercutAmount >= 100)
@@ -57,53 +76,56 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
-    ImGui.BeginGroup();
-    ImGui.Text("Undercut amount:");
-    ImGui.SameLine();
-    int amount = Plugin.Configuration.UndercutAmount;
-    if (Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount)
+    if (Plugin.Configuration.UndercutMode != UndercutMode.GentlemansMatch)
     {
-      if (ImGui.InputInt("##undercutAmountFixed", ref amount))
+      ImGui.BeginGroup();
+      ImGui.Text("Undercut amount:");
+      ImGui.SameLine();
+      int amount = Plugin.Configuration.UndercutAmount;
+      if (Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount)
       {
-        Plugin.Configuration.UndercutAmount = Math.Clamp(amount, 1, int.MaxValue);
-        Plugin.Configuration.Save();
+        if (ImGui.InputInt("##undercutAmountFixed", ref amount))
+        {
+          Plugin.Configuration.UndercutAmount = Math.Clamp(amount, 1, int.MaxValue);
+          Plugin.Configuration.Save();
+        }
       }
-    }
-    else
-    {
-      if (ImGui.SliderInt("##undercutAmountPercentage", ref amount, 1, 99))
+      else
       {
-        Plugin.Configuration.UndercutAmount = amount;
-        Plugin.Configuration.Save();
+        if (ImGui.SliderInt("##undercutAmountPercentage", ref amount, 1, 99))
+        {
+          Plugin.Configuration.UndercutAmount = amount;
+          Plugin.Configuration.Save();
+        }
       }
-    }
-    ImGui.SameLine();
-    ImGui.Text($"{(Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount ? "Gil" : "%%")}");
-    ImGui.EndGroup();
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Sets the amount by which to undercut");
-      ImGui.EndTooltip();
-    }
+      ImGui.SameLine();
+      ImGui.Text($"{(Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount ? "Gil" : "%%")}");
+      ImGui.EndGroup();
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Sets the amount by which to undercut");
+        ImGui.EndTooltip();
+      }
 
-    ImGui.BeginGroup();
-    ImGui.Text("Max Undercut percentage:");
-    ImGui.SameLine();
-    float maxUndercut = Plugin.Configuration.MaxUndercutPercentage;
-    if (ImGui.SliderFloat("##maximumUndercutAmountPercentage", ref maxUndercut, 0.1f, 99.9f, "%.1f"))
-    {
-      Plugin.Configuration.MaxUndercutPercentage = MathF.Round(maxUndercut, 1);
-      Plugin.Configuration.Save();
-    }
-    ImGui.SameLine();
-    ImGui.Text($"%");
-    ImGui.EndGroup();
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Sets the max amount of percentage allowed to be undercut");
-      ImGui.EndTooltip();
+      ImGui.BeginGroup();
+      ImGui.Text("Max Undercut percentage:");
+      ImGui.SameLine();
+      float maxUndercut = Plugin.Configuration.MaxUndercutPercentage;
+      if (ImGui.SliderFloat("##maximumUndercutAmountPercentage", ref maxUndercut, 0.1f, 99.9f, "%.1f"))
+      {
+        Plugin.Configuration.MaxUndercutPercentage = MathF.Round(maxUndercut, 1);
+        Plugin.Configuration.Save();
+      }
+      ImGui.SameLine();
+      ImGui.Text($"%");
+      ImGui.EndGroup();
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Sets the max amount of percentage allowed to be undercut");
+        ImGui.EndTooltip();
+      }
     }
 
     var undercutSelf = Plugin.Configuration.UndercutSelf;
