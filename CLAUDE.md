@@ -49,9 +49,9 @@ Plugin (entry point, command registration, window management)
 
 **Undercut modes**: `FixedAmount` (subtract N gil), `Percentage` (reduce by N%), or `GentlemansMatch` (copy lowest price exactly). FixedAmount and Percentage clamp to minimum 1 gil. `MaxUndercutPercentage` skips items where the cut would be too aggressive. The ConfigWindow hides undercut amount and max % fields when GentlemansMatch is selected.
 
-**Vendor price floor**: When enabled, items are skipped if the undercut price falls below `Item.PriceLow` (what a vendor pays you). Uses sentinel value `-2` to signal this case.
+**Price floor modes**: `PriceFloorMode` enum — `None` (no floor), `Vendor` (skip if below `Item.PriceLow`), `DomanEnclave` (skip if below 2x vendor price). Plus `MinimumListingPrice` as a flat gil threshold. Both checks run in `MarketBoardHandler` after the undercut calculation. ConfigWindow clears the price cache when floor settings change via `Plugin.AutoPinch.ClearCachedPrices()`.
 
-**Sentinel values in NewPrice**: `> 0` = valid price to set, `-1` = no MB listings found, `-2` = below vendor price floor. AutoPinch uses a switch statement in the else block of `SetNewPrice()` to dispatch error messages for each sentinel.
+**Sentinel values in NewPrice**: `> 0` = valid price to set, `-1` = no MB listings found, `-2` = below price floor (vendor or doman enclave), `-3` = below minimum listing price. AutoPinch uses a switch statement in the else block of `SetNewPrice()` to dispatch error messages for each sentinel.
 
 ### Dependencies
 
