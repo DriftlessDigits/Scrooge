@@ -561,8 +561,12 @@ namespace Dagobert
           {
             switch (_newPrice)
             {
+              case -3: // below minimum listing price
+                Communicator.PrintBelowMinimumListingPriceError(itemName);
+                break;
+
               case -2:
-                Communicator.PrintBelowVendorPriceError(itemName);
+                Communicator.PrintBelowPriceFloorError(itemName);
                 break;
 
               case -1: //no MB listings found
@@ -681,6 +685,12 @@ namespace Dagobert
       }
       return true;
     }
+
+    /// <summary>
+    /// Clears the cached price lookup table. Called when price floor settings
+    /// change so that affected items are re-queried from the market board.
+    /// </summary>
+    public void ClearCachedPrices() => _cachedPrices = [];
 
     private void ClearState()
     {

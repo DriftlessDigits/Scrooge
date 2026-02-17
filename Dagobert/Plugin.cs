@@ -28,7 +28,7 @@ public sealed class Plugin : IDalamudPlugin
   public static DalamudLinkPayload ConfigLinkPayload { get; private set; } = null!;
 #pragma warning restore CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
 
-  private readonly AutoPinch _autoPinch;
+  internal static AutoPinch AutoPinch { get; private set; } = null!;
 
   public readonly WindowSystem WindowSystem = new("Dagobert");
   private ConfigWindow ConfigWindow { get; init; }
@@ -52,14 +52,14 @@ public sealed class Plugin : IDalamudPlugin
     PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUI;
 
     ECommonsMain.Init(PluginInterface, this);
-    _autoPinch = new AutoPinch();
-    WindowSystem.AddWindow(_autoPinch);
+    AutoPinch = new AutoPinch();
+    WindowSystem.AddWindow(AutoPinch);
   }
 
   public void Dispose()
   {
     WindowSystem.RemoveAllWindows();
-    _autoPinch.Dispose();
+    AutoPinch.Dispose();
     CommandManager.RemoveHandler("/dagobert");
     ECommonsMain.Dispose();
   }

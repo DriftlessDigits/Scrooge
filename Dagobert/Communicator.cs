@@ -141,12 +141,14 @@ public static class Communicator
       Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
   }
 
-  /// <summary>Error: undercut price would be less than what a vendor pays.</summary>
+  /// <summary>Error: undercut price would be less than the configured price floor.</summary>
   /// <param name="itemName">Raw item name from the game addon.</param>
-  public static void PrintBelowVendorPriceError(string itemName)
+  public static void PrintBelowPriceFloorError(string itemName)
   {
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
+
+    var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
 
     var itemPayload = RawItemNameToItemPayload(itemName);
 
@@ -154,13 +156,34 @@ public static class Communicator
     {
       var seString = new SeStringBuilder()
           .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": Item ignored because it would cut the price below vendor price")
+          .AddText($": Item ignored because it would cut the price below {floorLabel}")
           .Build();
 
       Svc.Chat.PrintError(seString);
     }
     else
-      Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price below vendor price");
+      Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price below {floorLabel}");
+  }
+
+  public static void PrintBelowMinimumListingPriceError(string itemName)
+  {
+    if (!Plugin.Configuration.ShowErrorsInChat)
+      return;
+
+    var itemPayload = RawItemNameToItemPayload(itemName);
+
+    var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
+
+    if (itemPayload != null)
+    {
+      var seString = new SeStringBuilder()
+          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
+          .AddText($": Item ignored because it would cut the price below the minimum listing price of {minPrice} gil")
+          .Build();
+      Svc.Chat.PrintError(seString);
+    }
+    else
+      Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price below the minimum listing price of {minPrice} gil");
   }
 
   /// <summary>Prints the retainer name header when starting to pinch a retainer's items.</summary>
