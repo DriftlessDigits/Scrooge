@@ -44,17 +44,21 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.HQ = hq;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If checked, will use the hq price (if item is hq; will fail if there is no HQ price on the MB)");
+      ImGui.SetTooltip("When enabled, compares against HQ listings only for HQ items.\n\n" +
+                       "If there are no HQ listings on the market board, the item will be skipped.\n" +
+                       "Disable this to always compare against the cheapest listing regardless of quality.");
       ImGui.EndTooltip();
     }
 
     ImGui.Separator();
 
     ImGui.BeginGroup();
-    ImGui.Text("Undercut Mode:");
+    ImGui.Text("-- Undercut Mode --");
     ImGui.SameLine();
     var enumValues = Enum.GetNames<UndercutMode>();
     var displayNames = enumValues.Select(FormatEnumName).ToArray();
@@ -69,10 +73,16 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.Save();
     }
     ImGui.EndGroup();
+
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("Defines wether to undercut by a fixed Gil amount or use a percentage");
+      ImGui.SetTooltip("How to calculate the listing price relative to the lowest market board offer.\n\n" +
+                       "Fixed Amount: Subtract a flat gil amount from the lowest listing.\n" +
+                       "Percentage: Subtract a percentage of the lowest listing's price.\n" +
+                       "Gentlemans Match: Match the lowest listing exactly — no undercut.");
       ImGui.EndTooltip();
     }
 
@@ -101,10 +111,14 @@ public sealed class ConfigWindow : Window
       ImGui.SameLine();
       ImGui.Text($"{(Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount ? "Gil" : "%%")}");
       ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
       if (ImGui.IsItemHovered())
       {
         ImGui.BeginTooltip();
-        ImGui.SetTooltip("Sets the amount by which to undercut");
+        ImGui.SetTooltip("How much to undercut the lowest listing by.\n\n" +
+                         "Fixed Amount: The exact number of gil to subtract.\n" +
+                         "Percentage: The percentage of the listing price to subtract.");
         ImGui.EndTooltip();
       }
 
@@ -120,10 +134,14 @@ public sealed class ConfigWindow : Window
       ImGui.SameLine();
       ImGui.Text($"%");
       ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
       if (ImGui.IsItemHovered())
       {
         ImGui.BeginTooltip();
-        ImGui.SetTooltip("Sets the max amount of percentage allowed to be undercut");
+        ImGui.SetTooltip("Safety cap: skip an item if undercutting it would drop the price by more than this percentage.\n\n" +
+                         "Protects against accidentally tanking prices when a single low outlier listing exists.\n" +
+                         "Set to 99.9% to effectively disable this check.");
         ImGui.EndTooltip();
       }
     }
@@ -134,23 +152,67 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.UndercutSelf = undercutSelf;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If checked, your own retainer listings will be undercut");
+      ImGui.SetTooltip("When enabled, your own retainer listings are treated like any other seller's.\n\n" +
+                       "When disabled, if your retainer already has the lowest price, the listing is left unchanged.");
       ImGui.EndTooltip();
     }
 
-    var vendorPriceFloor = Plugin.Configuration.VendorPriceFloor;
-    if (ImGui.Checkbox("Vendor Price Floor", ref vendorPriceFloor))
+    ImGui.Separator();
+    ImGui.Text("-- Price Floors --");
+
+    // --- Price Floor Mode dropdown ---
+    ImGui.BeginGroup();
+    ImGui.Text("Price Floor Mode:");
+    ImGui.SameLine();
+    var floorEnumValues = Enum.GetNames<PriceFloorMode>();
+    var floorDisplayNames = floorEnumValues.Select(FormatEnumName).ToArray();
+    int floorIndex = Array.IndexOf(floorEnumValues, Plugin.Configuration.PriceFloorMode.ToString());
+    if (ImGui.Combo("##priceFloorModeCombo", ref floorIndex, floorDisplayNames, floorDisplayNames.Length))
     {
-      Plugin.Configuration.VendorPriceFloor = vendorPriceFloor;
+      Plugin.Configuration.PriceFloorMode = Enum.Parse<PriceFloorMode>(floorEnumValues[floorIndex]);
       Plugin.Configuration.Save();
+      Plugin.AutoPinch.ClearCachedPrices();
     }
+    ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If checked, items will be skipped when the undercut price would be less than what a vendor would pay for them");
+      ImGui.SetTooltip("Items are skipped when the undercut price falls below the selected floor.\n\n" +
+                       "None: No price floor. Items are listed at any price.\n" +
+                       "Vendor: Skip if price is below what a vendor would pay.\n" +
+                       "Doman Enclave: Skip if price is below 2x vendor price (Assumes max Doman Enclave donation rate).");
+      ImGui.EndTooltip();
+    }
+
+    // --- Minimum Listing Price ---
+    ImGui.BeginGroup();
+    ImGui.Text("Minimum Listing Price:");
+    ImGui.SameLine();
+    int minPrice = Plugin.Configuration.MinimumListingPrice;
+    if (ImGui.InputInt("##minimumListingPrice", ref minPrice))
+    {
+      Plugin.Configuration.MinimumListingPrice = Math.Max(minPrice, 0);
+      Plugin.Configuration.Save();
+      Plugin.AutoPinch.ClearCachedPrices();
+    }
+    ImGui.SameLine();
+    ImGui.Text("Gil");
+    ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("Items priced below this amount are skipped during auto-pinch.\n" +
+                       "Each retainer slot is valuable — don't waste them on low-value items.\n\n" +
+                       "Set to 0 to disable.");
       ImGui.EndTooltip();
     }
 
@@ -158,19 +220,21 @@ public sealed class ConfigWindow : Window
 
     int currentMBDelay = Plugin.Configuration.GetMBPricesDelayMS;
     ImGui.BeginGroup();
-    ImGui.Text("Market Board Price Check Delay (ms)");
+    ImGui.Text("-- Market Board Price Check Delay (ms) --");
     if (ImGui.SliderInt("###sliderMBDelay", ref currentMBDelay, 1, 10000))
     {
       Plugin.Configuration.GetMBPricesDelayMS = currentMBDelay;
       Plugin.Configuration.Save();
     }
     ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("Delay in milliseconds before opening the market board price list.\r\n" +
-                       "Lower delay means faster auto pinching but may also cause market board price data to be unable to load.\r\n" +
-                       "Recommended to keep between 3000 and 4000ms. Reduce at your own risk!");
+      ImGui.SetTooltip("How long to wait before opening the market board price list.\n\n" +
+                       "Too low and prices may fail to load. Too high and pinching is slow.\n" +
+                       "Recommended: 3000-4000ms. Reduce at your own risk!");
       ImGui.EndTooltip();
     }
 
@@ -183,12 +247,14 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.Save();
     }
     ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("Time in milliseconds to keep the marketboard open when fetching prices.\r\n" +
-                       "Lower delay means faster auto pinching but may also cause market board price data to be unable to load.\r\n" +
-                       "Recommended to keep between 1000 and 2000ms. Reduce at your own risk!");
+      ImGui.SetTooltip("How long to keep the market board open while fetching prices.\n\n" +
+                       "Too low and price data may not fully load.\n" +
+                       "Recommended: 1000-2000ms. Reduce at your own risk!");
       ImGui.EndTooltip();
     }
 
@@ -198,10 +264,13 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.ShowErrorsInChat = chatErrors;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If enabled shows pinching errors in the chat.");
+      ImGui.SetTooltip("Show error messages in chat when an item is skipped.\n\n" +
+                       "Reasons include: price floor violations, no market board listings, or exceeding the max undercut cap.");
       ImGui.EndTooltip();
     }
 
@@ -211,10 +280,13 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.ShowPriceAdjustmentsMessages = adjustmentsMessages;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If enabled shows detailed price adjustments messages in the chat.");
+      ImGui.SetTooltip("Show a chat message each time an item's price is adjusted.\n\n" +
+                       "Displays the old price, new price, and percentage change with a clickable item link.");
       ImGui.EndTooltip();
     }
 
@@ -227,23 +299,28 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.ShowRetainerNames = retainerNames;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If enabled, when pinching all retainers, the name of the retainer will be printed in the chat.");
+      ImGui.SetTooltip("Print the retainer's name in chat before processing their listings.\n\n" +
+                       "Helpful for tracking which retainer's items are being adjusted.");
       ImGui.EndTooltip();
     }
 
 
     ImGui.Separator();
 
-    ImGui.Text("Retainer Selection");
+    ImGui.Text("-- Retainer Selection --");
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("Select which retainers should be included in auto pinch.\r\n" +
-                       "Unchecked retainers will be skipped when using 'Auto Pinch' on all retainers.\r\n" +
-                       "Note: Open the retainer list in-game to see and configure your retainers.");
+      ImGui.SetTooltip("Choose which retainers are included when using Auto Pinch.\n\n" +
+                       "Unchecked retainers are skipped entirely.\n" +
+                       "Open the retainer list in-game to populate this list.");
       ImGui.EndTooltip();
     }
 
@@ -355,15 +432,18 @@ public sealed class ConfigWindow : Window
     ImGui.Separator();
 
     bool enablePostPinchKey = Plugin.Configuration.EnablePostPinchkey;
-    if (ImGui.Checkbox("Enable Post Pinch Hotkey", ref enablePostPinchKey))
+    if (ImGui.Checkbox(" --Enable Post Pinch Hotkey --", ref enablePostPinchKey))
     {
       Plugin.Configuration.EnablePostPinchkey = enablePostPinchKey;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If enabled allows you to hold a specified key to automatically get the lowest price when posting an item to the market board.");
+      ImGui.SetTooltip("Hold a key while posting an item to automatically set the undercut price.\n\n" +
+                       "Saves time when listing new items — no need to manually check prices.");
       ImGui.EndTooltip();
     }
 
@@ -381,11 +461,13 @@ public sealed class ConfigWindow : Window
       }
     }
     ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("The key to hold to start the auto pinching process for the newly posted item.\r\n" +
-                       "Be aware that the configured key still does every other hotkey action it is configured for.");
+      ImGui.SetTooltip("The key to hold when posting an item to trigger auto-pricing.\n\n" +
+                       "Note: This key still performs its normal game function as well.");
       ImGui.EndTooltip();
     }
 
@@ -395,10 +477,13 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.EnablePinchKey = enablePinchKey;
       Plugin.Configuration.Save();
     }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("If enabled allows you to press a specified key to start the auto pinching process.");
+      ImGui.SetTooltip("Press a key to start auto-pinching all items on the current retainer.\n\n" +
+                       "Works from both the retainer list and individual sell list views.");
       ImGui.EndTooltip();
     }
 
@@ -417,18 +502,20 @@ public sealed class ConfigWindow : Window
       }
     }
     ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("The key to press to start the auto pinching process.\r\n" +
-                       "Be aware that the configured key still does every other hotkey action it is configured for.");
+      ImGui.SetTooltip("The key to press to start the auto-pinching process.\n\n" +
+                       "Note: This key still performs its normal game function as well.");
       ImGui.EndTooltip();
     }
 
     if (!Plugin.Configuration.DontUseTTS)
     {
       ImGui.Separator();
-      ImGui.Text("Text-To-Speech");
+      ImGui.Text("-- Text-To-Speech --");
 
       ImGui.BeginGroup();
       bool ttsall = Plugin.Configuration.TTSWhenAllDone;
@@ -445,10 +532,13 @@ public sealed class ConfigWindow : Window
         Plugin.Configuration.Save();
       }
       ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
       if (ImGui.IsItemHovered())
       {
         ImGui.BeginTooltip();
-        ImGui.SetTooltip("If checked, will use Windows TTS to say the configured phrase once Auto Pinch has processed all retainers");
+        ImGui.SetTooltip("Speak a custom phrase when all retainers have been processed.\n\n" +
+                         "Great for AFK pinching — you'll hear when everything is done.");
         ImGui.EndTooltip();
       }
 
@@ -467,10 +557,13 @@ public sealed class ConfigWindow : Window
         Plugin.Configuration.Save();
       }
       ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
       if (ImGui.IsItemHovered())
       {
         ImGui.BeginTooltip();
-        ImGui.SetTooltip("If checked, will use Windows TTS to say the configured phrase once Auto Pinch has processed the current retainer's listings");
+        ImGui.SetTooltip("Speak a custom phrase after each retainer's listings are processed.\n\n" +
+                         "Useful for tracking progress when pinching multiple retainers.");
         ImGui.EndTooltip();
       }
 
@@ -486,10 +579,12 @@ public sealed class ConfigWindow : Window
       ImGui.SameLine();
       ImGui.Text("%");
       ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
       if (ImGui.IsItemHovered())
       {
         ImGui.BeginTooltip();
-        ImGui.SetTooltip("Sets the volume of the Text-to-speech message");
+        ImGui.SetTooltip("Volume level for text-to-speech notifications.");
         ImGui.EndTooltip();
       }
     }

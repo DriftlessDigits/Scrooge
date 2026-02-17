@@ -17,7 +17,8 @@ namespace Dagobert
   /// Sentinel values for NewPrice:
   ///   > 0  = valid price to set
   ///   -1   = no MB listings found (or duplicate request)
-  ///   -2   = undercut price is below vendor sell price
+  ///   -2   = undercut price is below price floor (vendor or doman enclave)
+  ///   -3   = undercut price is below minimum listing price
   /// </summary>
   internal unsafe sealed class MarketBoardHandler : IDisposable
   {
@@ -107,14 +108,25 @@ namespace Dagobert
         else
           price = (int)currentOfferings.ItemListings[i].PricePerUnit;  // GentlemansMatch — copy price exactly
 
-        // Vendor floor safety check: don't list below what a vendor would pay
-        if (Plugin.Configuration.VendorPriceFloor)
+        // Price floor checks
+        var itemId = currentOfferings.ItemListings[0].ItemId;
+
+        // Check 1: Mode-based floor (Vendor or Doman Enclave)
+        if (Plugin.Configuration.PriceFloorMode != PriceFloorMode.None)
         {
-          var vendorPrice = (int)_items.GetRow(currentOfferings.ItemListings[0].ItemId).PriceLow;
-          if (vendorPrice > 0 && price < vendorPrice)
+          var vendorPrice = (int)_items.GetRow(itemId).PriceLow;
+          var floorPrice = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave ? vendorPrice * 2 : vendorPrice;
+
+          if (floorPrice > 0 && price < floorPrice)
           {
-            price = -2; // sentinel: below vendor price floor
+            price = -2; // sentinel: below price floor
           }
+        }
+
+        // Check 2: Minimum listing price
+        if (price > 0 && Plugin.Configuration.MinimumListingPrice > 0 && price < Plugin.Configuration.MinimumListingPrice)
+        {
+          price = -3; // sentinel: below minimum listing price
         }
 
         NewPrice = price;

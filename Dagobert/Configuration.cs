@@ -19,6 +19,20 @@ public enum UndercutMode
 }
 
 /// <summary>
+/// Determines the minimum price floor when listing items.
+/// Items priced below the floor are skipped during auto-pinch.
+/// </summary>
+public enum PriceFloorMode
+{
+  /// <summary>No price floor — list at any price.</summary>
+  None,
+  /// <summary>Skip if undercut price falls below vendor sell price (Item.PriceLow).</summary>
+  Vendor,
+  /// <summary>Skip if undercut price falls below 2x vendor sell price (Doman Enclave rate).</summary>
+  DomanEnclave
+}
+
+/// <summary>
 /// Persisted plugin configuration. Serialized to JSON by Dalamud.
 /// Default values are used both for new installs and when deserializing
 /// older configs that are missing newly added properties.
@@ -51,10 +65,17 @@ public sealed class Configuration : IPluginConfiguration
   public bool UndercutSelf { get; set; } = false;
 
   /// <summary>
-  /// Skip items where the undercut price would fall below vendor sell price (Item.PriceLow).
-  /// Prevents listing items for less than you'd get from vendoring them.
+  /// Determines the price floor check mode. None disables the check (default),
+  /// Vendor skips items below vendor sell price,
+  /// DomanEnclave skips items below 2x vendor sell price.
   /// </summary>
-  public bool VendorPriceFloor { get; set; } = true;
+  public PriceFloorMode PriceFloorMode { get; set; } = PriceFloorMode.None;
+
+  /// <summary>
+  /// Minimum gil price for any listing. Items below this price are skipped.
+  /// Set to 0 to disable (default).
+  /// </summary>
+  public int MinimumListingPrice { get; set; } = 0;
 
   // --- Timing ---
 
