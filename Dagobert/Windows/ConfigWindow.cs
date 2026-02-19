@@ -38,31 +38,16 @@ public sealed class ConfigWindow : Window
 
   public override void Draw()
   {
-    var hq = Plugin.Configuration.HQ;
-    if (ImGui.Checkbox("Use HQ price", ref hq))
-    {
-      Plugin.Configuration.HQ = hq;
-      Plugin.Configuration.Save();
-    }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("When enabled, compares against HQ listings only for HQ items.\n\n" +
-                       "If there are no HQ listings on the market board, the item will be skipped.\n" +
-                       "Disable this to always compare against the cheapest listing regardless of quality.");
-      ImGui.EndTooltip();
-    }
 
-    ImGui.Separator();
-
+    // --- Undercut Settings ---
+    ImGui.Text("-- Undercut Settings --");
     ImGui.BeginGroup();
-    ImGui.Text("-- Undercut Mode --");
+    ImGui.Text("Mode: ");
     ImGui.SameLine();
     var enumValues = Enum.GetNames<UndercutMode>();
     var displayNames = enumValues.Select(FormatEnumName).ToArray();
     int index = Array.IndexOf(enumValues, Plugin.Configuration.UndercutMode.ToString());
+    ImGui.SetNextItemWidth(150);
     if (ImGui.Combo("##undercutModeCombo", ref index, displayNames, displayNames.Length))
     {
       var value = Enum.Parse<UndercutMode>(enumValues[index]);
@@ -89,11 +74,12 @@ public sealed class ConfigWindow : Window
     if (Plugin.Configuration.UndercutMode != UndercutMode.GentlemansMatch)
     {
       ImGui.BeginGroup();
-      ImGui.Text("Undercut amount:");
+      ImGui.Text("Amount:");
       ImGui.SameLine();
       int amount = Plugin.Configuration.UndercutAmount;
       if (Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount)
       {
+        ImGui.SetNextItemWidth(100);
         if (ImGui.InputInt("##undercutAmountFixed", ref amount))
         {
           Plugin.Configuration.UndercutAmount = Math.Clamp(amount, 1, int.MaxValue);
@@ -102,6 +88,7 @@ public sealed class ConfigWindow : Window
       }
       else
       {
+        ImGui.SetNextItemWidth(100);
         if (ImGui.SliderInt("##undercutAmountPercentage", ref amount, 1, 99))
         {
           Plugin.Configuration.UndercutAmount = amount;
@@ -109,7 +96,7 @@ public sealed class ConfigWindow : Window
         }
       }
       ImGui.SameLine();
-      ImGui.Text($"{(Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount ? "Gil" : "%%")}");
+      ImGui.Text($"{(Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount ? "Gil" : "%")}");
       ImGui.EndGroup();
       ImGui.SameLine();
       ImGui.TextDisabled("(?)");
@@ -126,6 +113,7 @@ public sealed class ConfigWindow : Window
       ImGui.Text("Max Undercut percentage:");
       ImGui.SameLine();
       float maxUndercut = Plugin.Configuration.MaxUndercutPercentage;
+      ImGui.SetNextItemWidth(150);
       if (ImGui.SliderFloat("##maximumUndercutAmountPercentage", ref maxUndercut, 0.1f, 99.9f, "%.1f"))
       {
         Plugin.Configuration.MaxUndercutPercentage = MathF.Round(maxUndercut, 1);
@@ -162,16 +150,34 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
-    ImGui.Separator();
-    ImGui.Text("-- Price Floors --");
+    ImGui.SameLine(0,40);
+    var hq = Plugin.Configuration.HQ;
+    if (ImGui.Checkbox("Use HQ price", ref hq))
+    {
+      Plugin.Configuration.HQ = hq;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("When enabled, compares against HQ listings only for HQ items.\n\n" +
+                       "If there are no HQ listings on the market board, the item will be skipped.\n" +
+                       "Disable this to always compare against the cheapest listing regardless of quality.");
+      ImGui.EndTooltip();
+    }
 
+    ImGui.Separator();
     // --- Price Floor Mode dropdown ---
+    ImGui.Text("-- Price Floors --");
     ImGui.BeginGroup();
     ImGui.Text("Price Floor Mode:");
     ImGui.SameLine();
     var floorEnumValues = Enum.GetNames<PriceFloorMode>();
     var floorDisplayNames = floorEnumValues.Select(FormatEnumName).ToArray();
     int floorIndex = Array.IndexOf(floorEnumValues, Plugin.Configuration.PriceFloorMode.ToString());
+    ImGui.SetNextItemWidth(150);
     if (ImGui.Combo("##priceFloorModeCombo", ref floorIndex, floorDisplayNames, floorDisplayNames.Length))
     {
       Plugin.Configuration.PriceFloorMode = Enum.Parse<PriceFloorMode>(floorEnumValues[floorIndex]);
@@ -190,12 +196,11 @@ public sealed class ConfigWindow : Window
                        "Doman Enclave: Skip if price is below 2x vendor price (Assumes max Doman Enclave donation rate).");
       ImGui.EndTooltip();
     }
-
-    // --- Minimum Listing Price ---
     ImGui.BeginGroup();
     ImGui.Text("Minimum Listing Price:");
     ImGui.SameLine();
     int minPrice = Plugin.Configuration.MinimumListingPrice;
+    ImGui.SetNextItemWidth(100);
     if (ImGui.InputInt("##minimumListingPrice", ref minPrice))
     {
       Plugin.Configuration.MinimumListingPrice = Math.Max(minPrice, 0);
@@ -216,14 +221,18 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
-    ImGui.Separator();
 
-    int currentMBDelay = Plugin.Configuration.GetMBPricesDelayMS;
+    ImGui.Separator();
+    // --- Market Board Timings ---
+    float currentMBDelay = Plugin.Configuration.GetMBPricesDelayMS / 1000f;
+    ImGui.Text("-- Market Board Timings --");
     ImGui.BeginGroup();
-    ImGui.Text("-- Market Board Price Check Delay (ms) --");
-    if (ImGui.SliderInt("###sliderMBDelay", ref currentMBDelay, 1, 10000))
+    ImGui.Text("Price Check Delay (s):");
+    ImGui.SameLine();
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderFloat("###sliderMBDelay", ref currentMBDelay, 0.1f, 10f, "%.1f"))
     {
-      Plugin.Configuration.GetMBPricesDelayMS = currentMBDelay;
+      Plugin.Configuration.GetMBPricesDelayMS = (int)(currentMBDelay * 1000);
       Plugin.Configuration.Save();
     }
     ImGui.EndGroup();
@@ -234,16 +243,18 @@ public sealed class ConfigWindow : Window
       ImGui.BeginTooltip();
       ImGui.SetTooltip("How long to wait before opening the market board price list.\n\n" +
                        "Too low and prices may fail to load. Too high and pinching is slow.\n" +
-                       "Recommended: 3000-4000ms. Reduce at your own risk!");
+                       "Recommended: 3-4s. Reduce at your own risk!");
       ImGui.EndTooltip();
     }
 
-    int currentMBKeepOpenDelay = Plugin.Configuration.MarketBoardKeepOpenMS;
+    float currentMBKeepOpenDelay = Plugin.Configuration.MarketBoardKeepOpenMS / 1000f;
     ImGui.BeginGroup();
-    ImGui.Text("Market Board Keep Open Time (ms)");
-    if (ImGui.SliderInt("###sliderMBKeepOpen", ref currentMBKeepOpenDelay, 1, 10000))
+    ImGui.Text("Keep Open Time (s):");
+    ImGui.SameLine();
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderFloat("###sliderMBKeepOpen", ref currentMBKeepOpenDelay, 0.1f, 10f, "%.1f"))
     {
-      Plugin.Configuration.MarketBoardKeepOpenMS = currentMBKeepOpenDelay;
+      Plugin.Configuration.MarketBoardKeepOpenMS = (int)(currentMBKeepOpenDelay * 1000);
       Plugin.Configuration.Save();
     }
     ImGui.EndGroup();
@@ -254,7 +265,7 @@ public sealed class ConfigWindow : Window
       ImGui.BeginTooltip();
       ImGui.SetTooltip("How long to keep the market board open while fetching prices.\n\n" +
                        "Too low and price data may not fully load.\n" +
-                       "Recommended: 1000-2000ms. Reduce at your own risk!");
+                       "Recommended: 1-2s. Reduce at your own risk!");
       ImGui.EndTooltip();
     }
 
@@ -292,8 +303,7 @@ public sealed class ConfigWindow : Window
 
     ImGui.SameLine(0, 40);
 
-    bool retainerNames = Plugin.Configuration.ShowRetainerNames
-      ;
+    bool retainerNames = Plugin.Configuration.ShowRetainerNames;
     if (ImGui.Checkbox("Show Retainer Names", ref retainerNames))
     {
       Plugin.Configuration.ShowRetainerNames = retainerNames;
@@ -311,7 +321,7 @@ public sealed class ConfigWindow : Window
 
 
     ImGui.Separator();
-
+    // --- Retainers ---
     ImGui.Text("-- Retainer Selection --");
     ImGui.SameLine();
     ImGui.TextDisabled("(?)");
@@ -365,19 +375,25 @@ public sealed class ConfigWindow : Window
       // Only display checkboxes if we have retainer names (either fetched or stored)
       if (namesToDisplay.Length > 0)
       {
+        // Calculate column offset from longest retainer name + checkbox width + padding
+        float maxNameWidth = 0;
+        for (int i = 0; i < namesToDisplay.Length; i++)
+          maxNameWidth = Math.Max(maxNameWidth, ImGui.CalcTextSize(namesToDisplay[i]).X);
+        float columnOffset = maxNameWidth + ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X + 40;
+
         for (int i = 0; i < namesToDisplay.Length; i++)
         {
           string retainerName = namesToDisplay[i];
-          
+
           // Empty set = all enabled, sentinel = all disabled, non-empty = explicit whitelist
           bool allDisabled = Plugin.Configuration.EnabledRetainerNames.Contains(Configuration.ALL_DISABLED_SENTINEL);
           bool enabled = !allDisabled && (Plugin.Configuration.EnabledRetainerNames.Count == 0 || Plugin.Configuration.EnabledRetainerNames.Contains(retainerName));
-          
+
           string label = $"{retainerName}##retainer{i}";
           if (ImGui.Checkbox(label, ref enabled))
           {
             Plugin.Configuration.EnabledRetainerNames.Remove(Configuration.ALL_DISABLED_SENTINEL);
-            
+
             if (enabled)
             {
               Plugin.Configuration.EnabledRetainerNames.Add(retainerName);
@@ -412,10 +428,10 @@ public sealed class ConfigWindow : Window
             }
             Plugin.Configuration.Save();
           }
-          
+
           // Place next checkbox on same line if it's an even index (0, 2, 4, 6, 8)
           if (i % 2 == 0 && i < namesToDisplay.Length - 1)
-            ImGui.SameLine(0, 150);
+            ImGui.SameLine(columnOffset);
         }
         
         if (retainerNameArray == null && !namesUpdated)
@@ -430,9 +446,11 @@ public sealed class ConfigWindow : Window
     }
 
     ImGui.Separator();
-
+    // --- Hotkeys ---
     bool enablePostPinchKey = Plugin.Configuration.EnablePostPinchkey;
-    if (ImGui.Checkbox(" --Enable Post Pinch Hotkey --", ref enablePostPinchKey))
+    ImGui.Text("-- Hotkeys --");
+    ImGui.BeginGroup();
+    if (ImGui.Checkbox("Enable Post'n'Pinch:", ref enablePostPinchKey))
     {
       Plugin.Configuration.EnablePostPinchkey = enablePostPinchKey;
       Plugin.Configuration.Save();
@@ -446,30 +464,34 @@ public sealed class ConfigWindow : Window
                        "Saves time when listing new items — no need to manually check prices.");
       ImGui.EndTooltip();
     }
+    ImGui.EndGroup();
 
     ImGui.BeginGroup();
     if (enablePostPinchKey)
     {
-      ImGui.Text("Auto Post Pinch Key:");
+      ImGui.Text("Post'n'Pinch Key:");
       ImGui.SameLine();
 
       index = Array.IndexOf(_virtualKeyStrings, Plugin.Configuration.PostPinchKey.ToString());
+      ImGui.SetNextItemWidth(150);
       if (ImGui.Combo("##postPinchKeyCombo", ref index, _virtualKeyStrings, _virtualKeyStrings.Length))
       {
         Plugin.Configuration.PostPinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[index]);
         Plugin.Configuration.Save();
       }
+
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("The key to hold when posting an item to trigger auto-pricing.\n\n" +
+                         "Note: This key still performs its normal game function as well.");
+        ImGui.EndTooltip();
+      }
     }
     ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("The key to hold when posting an item to trigger auto-pricing.\n\n" +
-                       "Note: This key still performs its normal game function as well.");
-      ImGui.EndTooltip();
-    }
+
 
     bool enablePinchKey = Plugin.Configuration.EnablePinchKey;
     if (ImGui.Checkbox("Enable Pinch Hotkey", ref enablePinchKey))
@@ -495,22 +517,25 @@ public sealed class ConfigWindow : Window
 
       string currentKey = Plugin.Configuration.PinchKey.ToString();
       index = Array.IndexOf(_virtualKeyStrings, currentKey);
+      ImGui.SetNextItemWidth(150);
       if (ImGui.Combo("##pinchKeyCombo", ref index, _virtualKeyStrings, _virtualKeyStrings.Length))
       {
         Plugin.Configuration.PinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[index]);
         Plugin.Configuration.Save();
       }
+
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("The key to press to start the auto-pinching process.\n\n" +
+                         "Note: This key still performs its normal game function as well.");
+        ImGui.EndTooltip();
+      }
     }
     ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("The key to press to start the auto-pinching process.\n\n" +
-                       "Note: This key still performs its normal game function as well.");
-      ImGui.EndTooltip();
-    }
+
 
     if (!Plugin.Configuration.DontUseTTS)
     {
@@ -526,6 +551,7 @@ public sealed class ConfigWindow : Window
       }
       ImGui.SameLine();
       string ttsallmsg = Plugin.Configuration.TTSWhenAllDoneMsg;
+      ImGui.SetNextItemWidth(500);
       if (ImGui.InputText("##ttsallmsg", ref ttsallmsg, 256, ImGuiInputTextFlags.AutoSelectAll | ImGuiInputTextFlags.EnterReturnsTrue))
       {
         Plugin.Configuration.TTSWhenAllDoneMsg = ttsallmsg;
@@ -551,6 +577,7 @@ public sealed class ConfigWindow : Window
       }
       ImGui.SameLine();
       string ttseachmsg = Plugin.Configuration.TTSWhenEachDoneMsg;
+      ImGui.SetNextItemWidth(500);
       if (ImGui.InputText("##ttseachmsg", ref ttseachmsg, 256, ImGuiInputTextFlags.AutoSelectAll | ImGuiInputTextFlags.EnterReturnsTrue))
       {
         Plugin.Configuration.TTSWhenEachDoneMsg = ttseachmsg;
@@ -571,6 +598,7 @@ public sealed class ConfigWindow : Window
       ImGui.Text("TTS Volume:");
       ImGui.SameLine();
       int volume = Plugin.Configuration.TTSVolume;
+      ImGui.SetNextItemWidth(150);
       if (ImGui.SliderInt("##ttsVolumeAmount", ref volume, 1, 99))
       {
         Plugin.Configuration.TTSVolume = volume;
