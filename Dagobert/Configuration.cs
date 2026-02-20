@@ -15,7 +15,9 @@ public enum UndercutMode
   /// <summary>Subtract a percentage of the lowest listing's price.</summary>
   Percentage,
   /// <summary>Match the lowest listing exactly — no undercut.</summary>
-  GentlemansMatch
+  GentlemansMatch,
+  /// <summary>Undercut by rounding down to a clean number. Interval scales with price.</summary>
+  CleanNumbers
 }
 
 /// <summary>

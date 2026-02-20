@@ -144,6 +144,21 @@ namespace Dagobert
           price = Math.Max(listingPrice - Plugin.Configuration.UndercutAmount, 1);
         else if (Plugin.Configuration.UndercutMode == UndercutMode.Percentage)
           price = Math.Max((100 - Plugin.Configuration.UndercutAmount) * listingPrice / 100, 1);
+        else if (Plugin.Configuration.UndercutMode == UndercutMode.CleanNumbers)
+        {
+          if (listingPrice <= 50)
+            price = Math.Max(listingPrice - 1, 1);
+          else
+          {
+            var p = listingPrice - 1;
+            if (p > 100000) p = p / 100 * 100;
+            else if (p > 10000) p = p / 50 * 50;
+            else if (p > 1000) p = p / 25 * 25;
+            else if (p > 500) p = p / 10 * 10;
+            else p = p / 5 * 5;
+            price = Math.Max(p, 1);
+          }
+        }
         else
           price = listingPrice;  // GentlemansMatch — copy price exactly
 

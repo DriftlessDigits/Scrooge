@@ -67,11 +67,13 @@ public sealed class ConfigWindow : Window
       ImGui.SetTooltip("How to calculate the listing price relative to the lowest market board offer.\n\n" +
                        "Fixed Amount: Subtract a flat gil amount from the lowest listing.\n" +
                        "Percentage: Subtract a percentage of the lowest listing's price.\n" +
-                       "Gentlemans Match: Match the lowest listing exactly — no undercut.");
+                       "Gentlemans Match: Match the lowest listing exactly — no undercut.\n" +
+                       "Clean Numbers: Ronds down to a clean number. Interval scales with price.");
       ImGui.EndTooltip();
     }
 
-    if (Plugin.Configuration.UndercutMode != UndercutMode.GentlemansMatch)
+    if (Plugin.Configuration.UndercutMode != UndercutMode.GentlemansMatch &&
+        Plugin.Configuration.UndercutMode != UndercutMode.CleanNumbers)
     {
       ImGui.BeginGroup();
       ImGui.Text("Amount:");
