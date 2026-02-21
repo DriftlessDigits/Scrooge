@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Dagobert is a Dalamud plugin for Final Fantasy XIV that automates market board price undercutting. It adjusts retainer listing prices to undercut the cheapest competing offer by a configurable amount (fixed gil or percentage).
+Scrooge is a Dalamud plugin for Final Fantasy XIV that automates market board price undercutting. It adjusts retainer listing prices to undercut the cheapest competing offer by a configurable amount (fixed gil or percentage). Forked from SHOEGAZEssb/Dagobert.
 
 - **SDK**: Dalamud.NET.Sdk 14.0.1
 - **Framework**: .NET 10.0 (net10.0-windows7.0)
@@ -15,10 +15,10 @@ Dagobert is a Dalamud plugin for Final Fantasy XIV that automates market board p
 
 ```bash
 # Build (from repo root)
-dotnet build Dagobert.sln -c Debug
+dotnet build Scrooge.sln -c Debug
 
 # Release build
-dotnet build Dagobert.sln -c Release
+dotnet build Scrooge.sln -c Release
 ```
 
 The build requires Dalamud libraries at `%appdata%\XIVLauncher\addon\Hooks\dev\` (configured in `Dalamud.Plugin.Bootstrap.targets`). No test project exists; testing is done manually in-game.

@@ -1,6 +1,6 @@
 {
   "Author": "DriftlessDigits",
-  "Name": "Dagobert",
+  "Name": "Scrooge",
   "Punchline": "A gil saved is a gil earned.",
   "Description": "\"You might say that everythin's for sale here in Ul'dah — as long as you've got the gil.\" — Momodi Modi",
   "ApplicableVersion": "any",
@@ -8,10 +8,8 @@
     "Utility"
   ],
   "RepoUrl": "https://github.com/DriftlessDigits/Dagobert",
-  "InternalName": "Dagobert",
-  "IconUrl": "",
-  "ImageUrls": [
-    ""
-  ],
+  "InternalName": "Scrooge",
+  "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
+  "ImageUrls": [],
   "Changelog": ""
 }

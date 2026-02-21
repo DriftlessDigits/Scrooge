@@ -21,7 +21,7 @@ using System.Speech.Synthesis;
 using Dalamud.Game.Text.SeStringHandling;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
 
-namespace Dagobert
+namespace Scrooge
 {
   /// <summary>
   /// Core automation engine. Extends Window to overlay an "Auto Pinch" button
@@ -42,7 +42,7 @@ namespace Dagobert
     private readonly Random _random = new Random();
 
     public AutoPinch()
-      : base("Dagobert", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
+      : base("Scrooge", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
     {
       _mbHandler = new MarketBoardHandler();
       _mbHandler.NewPriceReceived += MBHandler_NewPriceReceived;

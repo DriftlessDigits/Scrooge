@@ -13,8 +13,8 @@ jobs:
   release:
     uses: DriftlessDigits/DalamudPluginRepo/.github/workflows/reusable_create_release.yml@main
     with:
-      internal_name: Dagobert
-      solution_name: Dagobert
+      internal_name: Scrooge
+      solution_name: Scrooge
       build_configuration: Release
       personal_plugin_repo: DriftlessDigits/DalamudPluginRepo
       personal_plugin_repo_branch: main

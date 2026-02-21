@@ -8,7 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Dagobert.Windows;
+namespace Scrooge.Windows;
 
 public sealed class ConfigWindow : Window
 {
@@ -33,7 +33,7 @@ public sealed class ConfigWindow : Window
   }
 
   public ConfigWindow()
-    : base("Dagobert Configuration")
+    : base("Scrooge Configuration")
   { }
 
   public override void Draw()

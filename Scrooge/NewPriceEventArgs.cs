@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace Dagobert
+namespace Scrooge
 {
   /// <summary>
   /// Carries the calculated price from MarketBoardHandler to AutoPinch.

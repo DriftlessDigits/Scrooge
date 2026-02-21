@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.11.35208.52
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Dagobert", "Dagobert\Dagobert.csproj", "{13C812E9-0D42-4B95-8646-40EEBF30636F}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Scrooge", "Scrooge\Scrooge.csproj", "{13C812E9-0D42-4B95-8646-40EEBF30636F}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ECommons", "ECommons\ECommons\ECommons.csproj", "{1E7FE15C-61ED-4802-BD93-82A663BF1DC4}"
 EndProject

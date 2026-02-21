@@ -4,10 +4,10 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
-using Dagobert.Windows;
+using Scrooge.Windows;
 using ECommons;
 
-namespace Dagobert;
+namespace Scrooge;
 
 /// <summary>
 /// Plugin entry point. Dalamud instantiates this class and injects services
@@ -30,7 +30,7 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static AutoPinch AutoPinch { get; private set; } = null!;
 
-  public readonly WindowSystem WindowSystem = new("Dagobert");
+  public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
 
   public Plugin()
@@ -39,9 +39,9 @@ public sealed class Plugin : IDalamudPlugin
     ConfigWindow = new ConfigWindow();
     WindowSystem.AddWindow(ConfigWindow);
 
-    CommandManager.AddHandler("/dagobert", new CommandInfo(OnDagobertCommand)
+    CommandManager.AddHandler("/scrooge", new CommandInfo(OnScroogeCommand)
     {
-      HelpMessage = "Opens the Dagobert configuration window"
+      HelpMessage = "Opens the Scrooge configuration window"
     });
 
     // Register chat link handler for clickable config link
@@ -60,11 +60,11 @@ public sealed class Plugin : IDalamudPlugin
   {
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
-    CommandManager.RemoveHandler("/dagobert");
+    CommandManager.RemoveHandler("/scrooge");
     ECommonsMain.Dispose();
   }
 
-  private void OnDagobertCommand(string command, string args)
+  private void OnScroogeCommand(string command, string args)
   {
     // in response to the slash command, just toggle the display status of our main ui
     ToggleConfigUI();

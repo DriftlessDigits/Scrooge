@@ -3,7 +3,7 @@ using Dalamud.Game.ClientState.Keys;
 using System;
 using System.Collections.Generic;
 
-namespace Dagobert;
+namespace Scrooge;
 
 /// <summary>
 /// Determines how the undercut price is calculated relative to the lowest MB listing.

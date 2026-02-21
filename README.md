@@ -1,4 +1,4 @@
-## Dagobert
+## Scrooge
 
 A Dalamud plugin for FFXIV market board management. Fork of [SHOEGAZEssb/Dagobert](https://github.com/SHOEGAZEssb/Dagobert), with additional features inspired by the community forks.
 

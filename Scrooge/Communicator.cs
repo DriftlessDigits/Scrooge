@@ -7,7 +7,7 @@ using ECommons.DalamudServices;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
 
-namespace Dagobert;
+namespace Scrooge;
 
 /// <summary>
 /// Handles all in-game chat messages for the plugin.
@@ -253,7 +253,7 @@ public static class Communicator
         var seString = new SeStringBuilder()
             .AddText("All retainers are disabled. Open configuration with ")
             .Add(Plugin.ConfigLinkPayload)
-            .AddUiForeground("/dagobert", 31) // Bright yellow color for better visibility
+            .AddUiForeground("/scrooge", 31) // Bright yellow color for better visibility
             .Build();
         
         Svc.Chat.PrintError(seString);

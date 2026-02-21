@@ -14,7 +14,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="Dagobert.json" />
+    <Content Include="Scrooge.json" />
+    <Content Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

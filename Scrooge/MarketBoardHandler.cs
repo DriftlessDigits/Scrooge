@@ -8,7 +8,7 @@ using Lumina.Excel.Sheets;
 using System;
 using System.Linq;
 
-namespace Dagobert
+namespace Scrooge
 {
   /// <summary>
   /// Listens for MB price data and calculates the undercut price.
