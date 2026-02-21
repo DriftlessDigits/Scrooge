@@ -1,13 +1,6 @@
 ## Scrooge
 
-A Dalamud plugin for FFXIV market board management. Fork of [SHOEGAZEssb/Dagobert](https://github.com/SHOEGAZEssb/Dagobert), with additional features inspired by the community forks.
-
-### Features
-
-- Configurable market board pricing strategies
-- Multiple undercut modes
-- Timing controls with optional humanization
-- Retainer management integration
+Fork of [SHOEGAZEssb/Dagobert](https://github.com/SHOEGAZEssb/Dagobert), with additional features inspired by the community forks. Rename to avoid potential conflicts.
 
 ### Installation
 
