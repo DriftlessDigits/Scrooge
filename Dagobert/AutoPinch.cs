@@ -714,12 +714,8 @@ namespace Dagobert
 
       // Calculate offset
       var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * jitterMS);
-      var result = Math.Max(1000, baseMS + offset);
 
-      // DEBUG: log jitter details
-      Svc.Log.Debug($"[Jitter] base={baseMS}ms, offset={offset:+#;-#;0}ms, result={result}ms");
-
-      return result;
+      return Math.Max(1000, baseMS + offset);
     }
   }
 }

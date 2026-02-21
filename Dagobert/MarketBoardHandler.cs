@@ -150,8 +150,7 @@ namespace Dagobert
           else
             effectiveMode = UndercutMode.CleanNumbers;
 
-          // DEBUG: log effective mode for testing
-          Svc.Log.Debug($"[Humanized] Effective mode: {effectiveMode}");
+
         }
 
         // Calculate price based on the selected undercut mode
@@ -180,8 +179,7 @@ namespace Dagobert
         {
           var pinch = _random.Next(1, Plugin.Configuration.HumanizedMaxPinch + 1);
           price = Math.Max(listingPrice -  pinch, 1);
-          // DEBUG: log random pinch details
-          Svc.Log.Debug($"[Humanized] Random Pinch: -{pinch} gil (max config: {Plugin.Configuration.HumanizedMaxPinch})");
+
         }
         else
           price = listingPrice;  // GentlemansMatch — copy price exactly
