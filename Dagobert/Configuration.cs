@@ -17,7 +17,9 @@ public enum UndercutMode
   /// <summary>Match the lowest listing exactly — no undercut.</summary>
   GentlemansMatch,
   /// <summary>Undercut by rounding down to a clean number. Interval scales with price.</summary>
-  CleanNumbers
+  CleanNumbers,
+  /// <summary>Randomly picks Random Pinch, Gentleman's Match, or Clean Numbers per item.</summary>
+  Humanized
 }
 
 /// <summary>
@@ -63,6 +65,9 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public float MaxUndercutPercentage { get; set; } = 100.0f;
 
+  /// <summary>Max random undercut in gil when Humanized mode rolls Random Pinch. Range: 1–10.</summary>
+  public int HumanizedMaxPinch { get; set; } = 3;
+
   /// <summary>If true, undercut your own retainer listings too.</summary>
   public bool UndercutSelf { get; set; } = false;
 
@@ -103,11 +108,17 @@ public sealed class Configuration : IPluginConfiguration
 
   // --- Timing ---
 
+  /// <summary>When enabled, adds a jitter element to simulate human interaction.</summary>
+  public bool EnableJitter { get; set; } = false;
+
+  /// <summary>Random ± variance in ms applied to configurable delays. Slider range: 500–1500.</summary>
+  public int JitterMS { get; set; } = 1000;
+
   /// <summary>Delay before opening the MB price list. Too low = prices fail to load.</summary>
-  public int GetMBPricesDelayMS { get; set; } = 3000;
+  public int GetMBPricesDelayMS { get; set; } = 4000;
 
   /// <summary>How long to keep the MB open when fetching prices.</summary>
-  public int MarketBoardKeepOpenMS { get; set; } = 1000;
+  public int MarketBoardKeepOpenMS { get; set; } = 2000;
 
   // --- Hotkeys ---
 

@@ -39,6 +39,7 @@ namespace Dagobert
     private bool _skipCurrentItem = false;               // skip mannequin items
     private readonly TaskManager _taskManager;
     private Dictionary<string, int?> _cachedPrices = []; // avoids re-querying MB for duplicate items
+    private readonly Random _random = new Random();
 
     public AutoPinch()
       : base("Dagobert", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
@@ -393,7 +394,7 @@ namespace Dagobert
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(DelayMarketBoard, $"DelayMB{index}");
       _taskManager.Enqueue(ClickComparePrice, $"ClickComparePrice{index}");
-      _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
+      _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
       _taskManager.Enqueue(SetNewPrice, $"SetNewPrice{index}");
     }
 
@@ -406,7 +407,7 @@ namespace Dagobert
     private void InsertSingleItem(int index)
     {
       _taskManager.Insert(SetNewPrice, $"SetNewPrice{index}");
-      _taskManager.InsertDelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
+      _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
       _taskManager.Insert(ClickComparePrice, $"ClickComparePrice{index}");
       _taskManager.Insert(DelayMarketBoard, $"DelayMB{index}");
       _taskManager.InsertDelayNext(100);
@@ -480,7 +481,7 @@ namespace Dagobert
         if (!_cachedPrices.TryGetValue(itemName, out int? value) || value <= 0)
         {
           Svc.Log.Debug($"{itemName} has no cached price (or that price was <= 0), delaying next mb open");
-          _taskManager.InsertDelayNext(Plugin.Configuration.GetMBPricesDelayMS);
+          _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.GetMBPricesDelayMS));
         }
 
         return true;
@@ -623,7 +624,7 @@ namespace Dagobert
       if (Plugin.Configuration.EnablePostPinchkey && Plugin.KeyState[Plugin.Configuration.PostPinchKey])
       {
         _taskManager.Enqueue(ClickComparePrice, $"ClickComparePricePosted");
-        _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
+        _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
         _taskManager.Enqueue(SetNewPrice, $"SetNewPricePosted");
       }
     }
@@ -697,6 +698,24 @@ namespace Dagobert
       _newPrice = null;
       _cachedPrices = [];
       _skipCurrentItem = false;
+    }
+
+    private int ApplyJitter(int baseMS)
+    {
+      // Check if jitter is enabled
+      if (!Plugin.Configuration.EnableJitter)
+        return baseMS;
+
+      var jitterMS = Plugin.Configuration.JitterMS;
+
+      // Guard against weird
+      if (jitterMS <= 0) 
+        return baseMS;
+
+      // Calculate offset
+      var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * jitterMS);
+
+      return Math.Max(1000, baseMS + offset);
     }
   }
 }

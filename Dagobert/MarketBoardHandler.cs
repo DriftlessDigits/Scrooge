@@ -35,6 +35,7 @@ namespace Dagobert
     private bool _useHq;             // should we filter for HQ listings?
     private bool _itemHq;            // is the item we're pricing actually HQ?
     private int _lastRequestId = -1; // dedup: MB sends listings in batches of 10
+    private readonly Random _random = new Random();
 
     /// <summary>
     /// Setting NewPrice fires the event — this is the bridge to AutoPinch.
@@ -136,15 +137,28 @@ namespace Dagobert
         int price;
         var listingPrice = (int)currentOfferings.ItemListings[i].PricePerUnit;
         var isOwnRetainer = !Plugin.Configuration.UndercutSelf && IsOwnRetainer(currentOfferings.ItemListings[i].RetainerId);
+        var effectiveMode = Plugin.Configuration.UndercutMode;
+
+        if (!isOwnRetainer && effectiveMode == UndercutMode.Humanized)
+        {
+          // 0 = Random Pinch, 1 = Gentleman's Match, 2 = Clean Numbers
+          var roll = _random.Next(3);
+          if (roll == 0)
+            effectiveMode = UndercutMode.Humanized;  // stays Humanized — handled by its own branch below
+          else if (roll == 1)
+            effectiveMode = UndercutMode.GentlemansMatch;
+          else
+            effectiveMode = UndercutMode.CleanNumbers;
+        }
 
         // Calculate price based on the selected undercut mode
         if (isOwnRetainer)
           price = listingPrice;  // own listing — keep as-is
-        else if (Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount)
+        else if (effectiveMode == UndercutMode.FixedAmount)
           price = Math.Max(listingPrice - Plugin.Configuration.UndercutAmount, 1);
-        else if (Plugin.Configuration.UndercutMode == UndercutMode.Percentage)
+        else if (effectiveMode == UndercutMode.Percentage)
           price = Math.Max((100 - Plugin.Configuration.UndercutAmount) * listingPrice / 100, 1);
-        else if (Plugin.Configuration.UndercutMode == UndercutMode.CleanNumbers)
+        else if (effectiveMode == UndercutMode.CleanNumbers)
         {
           if (listingPrice <= 50)
             price = Math.Max(listingPrice - 1, 1);
@@ -158,6 +172,11 @@ namespace Dagobert
             else p = p / 5 * 5;
             price = Math.Max(p, 1);
           }
+        }
+        else if (effectiveMode == UndercutMode.Humanized)
+        {
+          var pinch = _random.Next(1, Plugin.Configuration.HumanizedMaxPinch + 1);
+          price = Math.Max(listingPrice -  pinch, 1);
         }
         else
           price = listingPrice;  // GentlemansMatch — copy price exactly

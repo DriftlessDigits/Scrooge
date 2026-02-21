@@ -68,12 +68,15 @@ public sealed class ConfigWindow : Window
                        "Fixed Amount: Subtract a flat gil amount from the lowest listing.\n" +
                        "Percentage: Subtract a percentage of the lowest listing's price.\n" +
                        "Gentlemans Match: Match the lowest listing exactly — no undercut.\n" +
-                       "Clean Numbers: Ronds down to a clean number. Interval scales with price.");
+                       "Clean Numbers: Ronds down to a clean number. Interval scales with price.\n" +
+                       "Humanized: Randomly picks between Random Pinch, Gentleman's Match, or Clean Numbers per item.\n" +
+                       "Simulates natural pricing — as if you checked the price and typed it from memory.");
       ImGui.EndTooltip();
     }
 
     if (Plugin.Configuration.UndercutMode != UndercutMode.GentlemansMatch &&
-        Plugin.Configuration.UndercutMode != UndercutMode.CleanNumbers)
+        Plugin.Configuration.UndercutMode != UndercutMode.CleanNumbers &&
+        Plugin.Configuration.UndercutMode != UndercutMode.Humanized)
     {
       ImGui.BeginGroup();
       ImGui.Text("Amount:");
@@ -132,6 +135,32 @@ public sealed class ConfigWindow : Window
         ImGui.SetTooltip("Safety cap: skip an item if undercutting it would drop the price by more than this percentage.\n\n" +
                          "Protects against accidentally tanking prices when a single low outlier listing exists.\n" +
                          "Set to 99.9% to effectively disable this check.");
+        ImGui.EndTooltip();
+      }
+    }
+
+    if (Plugin.Configuration.UndercutMode == UndercutMode.Humanized)
+    {
+      ImGui.BeginGroup();
+      ImGui.Text("Max Random Pinch:");
+      ImGui.SameLine();
+      int maxPinch = Plugin.Configuration.HumanizedMaxPinch;
+      ImGui.SetNextItemWidth(100);
+      if (ImGui.InputInt("##humanizedMaxPinch", ref maxPinch))
+      {
+        Plugin.Configuration.HumanizedMaxPinch = Math.Clamp(maxPinch, 1, 10);
+        Plugin.Configuration.Save();
+      }
+      ImGui.SameLine();
+      ImGui.Text("Gil");
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("When Random Pinch is rolled, undercut by a random amount from 1 to this value.\n\n" +
+                         "Default: 3 gil. Simulates a human who saw the price and typed something close.");
         ImGui.EndTooltip();
       }
     }
@@ -347,6 +376,46 @@ public sealed class ConfigWindow : Window
                        "Too low and price data may not fully load.\n" +
                        "Recommended: 1-2s. Reduce at your own risk!");
       ImGui.EndTooltip();
+    }
+
+    var enableJitter = Plugin.Configuration.EnableJitter;
+    if (ImGui.Checkbox("Timing Humanization", ref enableJitter))
+    {
+      Plugin.Configuration.EnableJitter = enableJitter;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("Add random jitter into the pinch process timings");
+      ImGui.EndTooltip();
+    }
+    if (Plugin.Configuration.EnableJitter)
+    {
+      float currentJitter = Plugin.Configuration.JitterMS / 1000f;
+      ImGui.BeginGroup();
+      ImGui.Text("Timing Jitter (s):");
+      ImGui.SameLine();
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.SliderFloat("##timingJitter", ref currentJitter, 0.5f, 1.5f, "%.1f"))
+      {
+        Plugin.Configuration.JitterMS = (int)(currentJitter * 1000);
+        Plugin.Configuration.Save();
+      }
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Random variance (±) added to the Price Check Delay and Keep Open Time.\n\n" +
+                         "Example: 1.0s jitter on a 4.0s delay → actual delay is 3.0s–5.0s.\n" +
+                         "Both timings are clamped to a minimum of 1s after jitter is applied.\n\n" +
+                         "Makes timing patterns look more natural.");
+        ImGui.EndTooltip();
+      }
     }
 
     ImGui.Separator();
