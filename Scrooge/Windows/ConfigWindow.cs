@@ -422,6 +422,8 @@ public sealed class ConfigWindow : Window
     // --- Chat Output ---
     ImGui.Text("-- Chat Output --");
 
+    ImGui.Columns(2, "##chatOutputColumns", false);
+
     bool chatErrors = Plugin.Configuration.ShowErrorsInChat;
     if (ImGui.Checkbox("Show errors in chat", ref chatErrors))
     {
@@ -437,6 +439,8 @@ public sealed class ConfigWindow : Window
                        "Reasons include: price floor violations, no market board listings, or exceeding the max undercut cap.");
       ImGui.EndTooltip();
     }
+
+    ImGui.NextColumn();
 
     bool adjustmentsMessages = Plugin.Configuration.ShowPriceAdjustmentsMessages;
     if (ImGui.Checkbox("Show Price Adjustments", ref adjustmentsMessages))
@@ -454,6 +458,8 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
+    ImGui.NextColumn();
+
     bool outlierMessages = Plugin.Configuration.ShowOutlierDetectionMessages;
     if (ImGui.Checkbox("Show Outlier Detection", ref outlierMessages))
     {
@@ -470,7 +476,7 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
-    ImGui.SameLine(0, 40);
+    ImGui.NextColumn();
 
     bool retainerNames = Plugin.Configuration.ShowRetainerNames;
     if (ImGui.Checkbox("Show Retainer Names", ref retainerNames))
@@ -488,6 +494,27 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
+    ImGui.NextColumn();
+
+    var enablePinchRunLog = Plugin.Configuration.EnablePinchRunLog;
+    if (ImGui.Checkbox("Show Pinch Run Log", ref enablePinchRunLog))
+    {
+      Plugin.Configuration.EnablePinchRunLog = enablePinchRunLog;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("Opens a separate window during auto-pinch that collects errors and warnings for review.\n\n" +
+                       "The log works independently of the chat settings above — errors and warnings\n" +
+                       "are always captured even when their chat messages are disabled.\n\n" +
+                       "The log auto-clears at the start of each run. Close the window when you're done reviewing.");
+      ImGui.EndTooltip();
+    }
+
+    ImGui.Columns(1);
 
     ImGui.Separator();
     // --- Retainers ---

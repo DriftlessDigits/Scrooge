@@ -30,6 +30,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static AutoPinch AutoPinch { get; private set; } = null!;
 
+  internal static PinchRunLogWindow PinchRunLog { get; private set; } = null!;
+
   public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
 
@@ -54,6 +56,9 @@ public sealed class Plugin : IDalamudPlugin
     ECommonsMain.Init(PluginInterface, this);
     AutoPinch = new AutoPinch();
     WindowSystem.AddWindow(AutoPinch);
+
+    PinchRunLog = new PinchRunLogWindow();
+    WindowSystem.AddWindow(PinchRunLog);
   }
 
   public void Dispose()

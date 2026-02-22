@@ -6,6 +6,7 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 using ECommons.DalamudServices;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
+using Scrooge.Windows;
 
 namespace Scrooge;
 
@@ -56,28 +57,30 @@ public static class Communicator
   /// </summary>
   /// <param name="itemName">Raw item name from the game addon (may contain SeString control chars and HQ icon).</param>
   /// <returns>An ItemPayload with the resolved item ID and HQ flag, or null if lookup fails.</returns>
-  private static ItemPayload? RawItemNameToItemPayload(string itemName)
+  /// <summary>
+  /// Strips SeString control characters from a raw item name, returning clean display text.
+  /// Also returns whether the item is HQ via the out parameter.
+  /// </summary>
+  private static string CleanItemName(string itemName, out bool isHq)
   {
-    // Parse as SeString
+    isHq = false;
+
     var seString = SeString.Parse(Encoding.UTF8.GetBytes(itemName));
 
-    // Find all text payloads
     var textPayloads = seString.Payloads
         .OfType<TextPayload>()
         .ToList();
 
     if (textPayloads.Count == 0)
-      return null;
+      return itemName;
 
-    var cleanedName = "";
-    var isHq = false;
+    string cleanedName;
 
     if (textPayloads.Count == 1)
     {
-      // Single text payload - just trim it
-      cleanedName = textPayloads[0].Text?.Trim();
+      cleanedName = textPayloads[0].Text?.Trim() ?? itemName;
     }
-    else if (textPayloads.Count >= 2)
+    else
     {
       // Skip the first payload (it's always just "%" with ETX)
       // Concatenate payloads starting from index 1
@@ -106,6 +109,13 @@ public static class Communicator
         cleanedName = cleanedName.TrimEnd();
     }
 
+    return cleanedName;
+  }
+
+  private static ItemPayload? RawItemNameToItemPayload(string itemName)
+  {
+    var cleanedName = CleanItemName(itemName, out var isHq);
+
     // Search for the item
     var item = ItemSheet.FirstOrDefault(i =>
         i.Name.ToString().Equals(cleanedName, StringComparison.OrdinalIgnoreCase));
@@ -123,6 +133,8 @@ public static class Communicator
   /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintAboveMaxCutError(string itemName)
   {
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
+
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
 
@@ -145,10 +157,11 @@ public static class Communicator
   /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintBelowPriceFloorError(string itemName)
   {
+    var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), $"Below {floorLabel}");
+
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
-
-    var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
 
     var itemPayload = RawItemNameToItemPayload(itemName);
 
@@ -167,12 +180,13 @@ public static class Communicator
 
   public static void PrintBelowMinimumListingPriceError(string itemName)
   {
+    var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), $"Below minimum listing price ({minPrice} gil)");
+
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
 
     var itemPayload = RawItemNameToItemPayload(itemName);
-
-    var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
 
     if (itemPayload != null)
     {
@@ -192,10 +206,13 @@ public static class Communicator
   /// <param name="nextPrice">The next valid price tier being used instead.</param>
   public static void PrintOutlierDetected(uint itemId, int outlierPrice, int nextPrice)
   {
+    var item = ItemSheet.GetRow(itemId);
+    var itemName = item.Name.ToString();
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Warning, itemName, $"Outlier: {outlierPrice:N0}g → {nextPrice:N0}g");
+
     if (!Plugin.Configuration.ShowOutlierDetectionMessages)
       return;
 
-    var item = ItemSheet.GetRow(itemId);
     var itemPayload = new ItemPayload(itemId, false);
 
     var seString = new SeStringBuilder()
@@ -216,6 +233,8 @@ public static class Communicator
   /// <param name="name">The retainer's display name.</param>
   public static void PrintRetainerName(string name)
   {
+    Plugin.PinchRunLog?.SetCurrentRetainer(name);
+
     if (!Plugin.Configuration.ShowRetainerNames)
       return;
 
@@ -230,6 +249,8 @@ public static class Communicator
   /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintNoPriceToSetError(string itemName)
   {
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), "No market board data");
+
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
 
@@ -249,13 +270,15 @@ public static class Communicator
 
   /// <summary>Error: user tried to auto-pinch but all retainers are disabled in config.</summary>
   public static void PrintAllRetainersDisabled()
-    {
-        var seString = new SeStringBuilder()
-            .AddText("All retainers are disabled. Open configuration with ")
-            .Add(Plugin.ConfigLinkPayload)
-            .AddUiForeground("/scrooge", 31) // Bright yellow color for better visibility
-            .Build();
+  {
+    var seString = new SeStringBuilder()
+        .AddText("All retainers are disabled. Open configuration with ")
+        .Add(Plugin.ConfigLinkPayload)
+        .AddUiForeground("/scrooge", 31) // Bright yellow color for better visibility
+        .Build();
         
-        Svc.Chat.PrintError(seString);
-    }
+    Svc.Chat.PrintError(seString);
+
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, "","All retainers disabled");
+  }
 }

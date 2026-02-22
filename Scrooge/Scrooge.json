@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": ""
+  "Changelog": "Added Pinch Run Log — a separate window that captures errors and warnings during auto-pinch runs for easy review."
 }

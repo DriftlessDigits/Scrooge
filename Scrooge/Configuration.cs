@@ -142,6 +142,14 @@ public sealed class Configuration : IPluginConfiguration
 
   public bool ShowRetainerNames { get; set; } = true;
 
+  // --- Pinch Run Log ---
+
+  /// <summary>
+  /// When enabled, opens a separate window during auto-pinch that collects
+  /// errors and warnings for review after the run.
+  /// </summary>
+  public bool EnablePinchRunLog { get; set; } = true;
+
   // --- Text-to-speech ---
 
   public bool TTSWhenAllDone { get; set; } = false;
