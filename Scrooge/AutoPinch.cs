@@ -234,6 +234,7 @@ namespace Scrooge
         return;
 
       ClearState();
+      Plugin.PinchRunLog.StartNewRun();
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
       {
         // Auto-dismiss the "Talk" dialog that appears when opening each retainer
@@ -348,6 +349,7 @@ namespace Scrooge
         return;
 
       ClearState();
+      Plugin.PinchRunLog.StartNewRun();
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
     }
 
