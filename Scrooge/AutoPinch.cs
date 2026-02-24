@@ -233,8 +233,6 @@ namespace Scrooge
       if (_taskManager.IsBusy)
         return;
 
-      ClearState();
-      Plugin.PinchRunLog.StartNewRun();
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
       {
         // Auto-dismiss the "Talk" dialog that appears when opening each retainer
@@ -255,7 +253,10 @@ namespace Scrooge
           Communicator.PrintAllRetainersDisabled();
           return;
         }
-        
+
+        ClearState();
+        Plugin.PinchRunLog.StartNewRun();
+
         // If no retainers are explicitly enabled, enable all by default
         bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
         
@@ -275,6 +276,8 @@ namespace Scrooge
         _taskManager.Enqueue(RemoveTalkAddonListeners);
         if (Plugin.Configuration.TTSWhenAllDone)
           _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
+
+        _taskManager.Enqueue(() => { Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
       }
     }
 
@@ -351,6 +354,8 @@ namespace Scrooge
       ClearState();
       Plugin.PinchRunLog.StartNewRun();
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
+      _taskManager.Enqueue(() => { Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
+
     }
 
     /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
@@ -528,6 +533,8 @@ namespace Scrooge
     /// </summary>
     private unsafe bool? SetNewPrice()
     {
+      var listingQuantity = 1;  // captured for finally block
+
       try
       {
         if (_skipCurrentItem)
@@ -542,6 +549,8 @@ namespace Scrooge
           var ui = &retainerSell->AtkUnitBase;
           var itemName = retainerSell->ItemName->NodeText.ToString();
           _oldPrice = retainerSell->AskingPrice->Value;
+          listingQuantity = retainerSell->AtkValues[8].Int;  // listing stack size
+
           if (_newPrice.HasValue && _newPrice > 0)
           {
             var cutPercentage = ((float)_newPrice.Value - _oldPrice.Value) / _oldPrice.Value * 100f;
@@ -590,6 +599,15 @@ namespace Scrooge
       }
       finally
       {
+
+        // Track listing value for run summary (before clearing state)
+        if (!_skipCurrentItem)
+        {
+          var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
+          if (listingValue > 0)
+            Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
+        }
+
         _oldPrice = null;
         _newPrice = null;
         _skipCurrentItem = false;

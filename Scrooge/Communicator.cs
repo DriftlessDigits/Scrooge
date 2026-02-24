@@ -26,6 +26,8 @@ public static class Communicator
   /// <param name="cutPercentage">Percentage change from old to new (negative = price cut).</param>
   public static void PrintPriceUpdate(string itemName, int? oldPrice, int? newPrice, float cutPercentage)
   {
+    Plugin.PinchRunLog?.IncrementAdjusted();
+
     if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
       return;
 
@@ -209,6 +211,7 @@ public static class Communicator
     var item = ItemSheet.GetRow(itemId);
     var itemName = item.Name.ToString();
     Plugin.PinchRunLog?.AddEntry(LogSeverity.Warning, itemName, $"Outlier: {outlierPrice:N0}g → {nextPrice:N0}g");
+    Plugin.PinchRunLog?.IncrementOutliers();
 
     if (!Plugin.Configuration.ShowOutlierDetectionMessages)
       return;
