@@ -4,6 +4,7 @@ using System.Text;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 using System.Linq;
+using System.Diagnostics;
 
 namespace Scrooge.Windows
 {
@@ -43,6 +44,12 @@ namespace Scrooge.Windows
     private int _itemsAdjusted = 0;
     private int _outliersDetected = 0;
     private long _totalListingGil = 0;
+    private readonly Stopwatch _runStopwatch = new Stopwatch();
+    private readonly Stopwatch _etaStopwatch = new Stopwatch();
+    private bool _runComplete = false;
+    private int _totalItems = 0;
+    private int _itemsProcessed = 0;
+    private float _etaCountdownMs = 0f;
 
     /// <summary>
     /// Clears the log and opens the window. Called at the start of each pinch run.
@@ -57,6 +64,12 @@ namespace Scrooge.Windows
       _itemsAdjusted = 0;
       _outliersDetected = 0;
       _totalListingGil = 0;
+      _runComplete = false;
+      _totalItems = 0;
+      _itemsProcessed = 0;
+      _etaCountdownMs = 0f;
+      _runStopwatch.Restart();
+      _etaStopwatch.Restart();
       _entries.Add(new RunEntry(RunEvent.Start, $"Run Started — {DateTime.Now:h:mm tt}"));
       IsOpen = true;
     }
@@ -129,8 +142,69 @@ namespace Scrooge.Windows
         _entries.Add(new RunEntry(RunEvent.Summary, $"{_outliersDetected} outliers"));
 
       _entries.Add(new RunEntry(RunEvent.Summary, $"{_totalListingGil:N0} gil on market"));
+
+      // Stop timer and mark run complete
+      _runComplete = true;
+      _runStopwatch.Stop();
+      _etaStopwatch.Stop();
+
+      // Update the rolling per-item average
+      if (_itemsProcessed > 0)
+      {
+        var currentAvg = (float)_runStopwatch.ElapsedMilliseconds / _itemsProcessed;
+        var stored = Plugin.Configuration.AvgMsPerItem;
+
+        if (stored <= 0f)
+          Plugin.Configuration.AvgMsPerItem = currentAvg; // first run ever
+        else
+          Plugin.Configuration.AvgMsPerItem = (stored * 0.7f) + (currentAvg * 0.3f);  // weighted blend
+
+        Plugin.Configuration.Save();
+      }
     }
 
+    /// <summary>
+    /// Sets the total expected item count for the run. Called once before
+    /// retainer processing begins, using pre-scanned counts from the
+    /// RetainerList addon's AtkValues. Calculates initial ETA countdown.
+    /// </summary>
+    public void SetTotalItems(int total)
+    {
+      _totalItems = total;
+
+      var storedAvg = Plugin.Configuration.AvgMsPerItem;
+      if (storedAvg > 0f)
+      {
+        _etaCountdownMs = storedAvg * total;
+        _etaStopwatch.Restart();
+      }
+    }
+
+    /// <summary>
+    /// Marks one item as processed (success or skip). Called from AutoPinch.SetNewPrice.
+    /// </summary>
+    public void IncrementProcessed()
+    {
+      _itemsProcessed++;
+
+      var storedAvg = Plugin.Configuration.AvgMsPerItem;
+      if (storedAvg > 0f)
+      {
+        var remaining = _totalItems - _itemsProcessed;
+        _etaCountdownMs = storedAvg * remaining;
+        _etaStopwatch.Restart();
+      }
+    }
+
+    /// <summary>
+    /// Cancels the current run and stops the timers
+    /// </summary>
+    public void CancelRun()
+    {
+      _runComplete = true;
+      _runStopwatch.Stop(); 
+      _etaStopwatch.Stop();
+    }
 
     public PinchRunLogWindow() : base("Scrooge - Pinch Run Log")
     {
@@ -222,7 +296,7 @@ namespace Scrooge.Windows
 
       ImGui.EndChild();
 
-      // Bottom bar: Clear button + entry count
+      // Bottom bar: Clear button + entry count + progress + timer + copy all
       ImGui.Separator();
       if (ImGui.Button("Clear"))
       {
@@ -230,11 +304,68 @@ namespace Scrooge.Windows
         _itemsAdjusted = 0;
         _outliersDetected = 0;
         _totalListingGil = 0;
-
+        _runComplete = false;
+        _runStopwatch.Reset();
+        _etaStopwatch.Reset();
+        _totalItems = 0;
+        _itemsProcessed = 0;
+        _etaCountdownMs = 0;
       }
       ImGui.SameLine();
       var logEntryCount = _entries.OfType<LogEntry>().Count();
       ImGui.Text($"{logEntryCount} {(logEntryCount == 1 ? "entry" : "entries")}");
+
+      // Progress + Timer display
+      if (_totalItems > 0)
+      {
+        ImGui.SameLine();
+        ImGui.TextDisabled(" | ");
+        ImGui.SameLine();
+        ImGui.Text($"{_itemsProcessed}/{_totalItems}");
+      }
+
+      // ETA / final time display
+      if (_runComplete)
+      {
+        // Run finished — show final elapsed time
+        ImGui.SameLine();
+        ImGui.TextDisabled(" | ");
+        ImGui.SameLine();
+
+        var elapsed = _runStopwatch.Elapsed;
+        var elapsedStr = elapsed.TotalMinutes >= 1
+          ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds:D2}s"
+          : $"{elapsed.Seconds}s";
+
+        ImGui.Text(elapsedStr);
+      }
+      else if (_runStopwatch.IsRunning && _totalItems > 0)
+      {
+        ImGui.SameLine();
+        ImGui.TextDisabled("|");
+        ImGui.SameLine();
+
+        if (_etaCountdownMs > 0f)
+        {
+          // Countdown: etaCountdownMs was set at last item completion (or initial SetTotalItems),
+          // etaStopwatch measures time elapsed since then
+          var remainingMs = _etaCountdownMs - (float)_etaStopwatch.ElapsedMilliseconds;
+          if (remainingMs < 0f) remainingMs = 0f;
+
+          var eta = TimeSpan.FromMilliseconds(remainingMs);
+          var etaStr = eta.TotalMinutes >= 1
+            ? $"~{(int)eta.TotalMinutes}m {eta.Seconds:D2}s"
+            : $"~{eta.Seconds}s";
+
+          ImGui.TextDisabled($"ETA: {etaStr}");
+        }
+        else
+        {
+          // First run ever — no stored average
+          ImGui.TextDisabled("Gathering data...");
+        }
+      }
+
       var copyButtonWidth = ImGui.CalcTextSize("Copy All").X + ImGui.GetStyle().FramePadding.X * 2;
       ImGui.SameLine(ImGui.GetWindowWidth() - copyButtonWidth - ImGui.GetStyle().WindowPadding.X);
       if (ImGui.Button("Copy All"))

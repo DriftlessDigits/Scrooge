@@ -1,10 +1,8 @@
 ﻿using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
-using Dalamud.Game.ClientState.Keys;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using ECommons;
-using ECommons.Automation;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.ImGuiMethods;
@@ -18,7 +16,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Speech.Synthesis;
-using Dalamud.Game.Text.SeStringHandling;
+using System.Text.RegularExpressions;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
 
 namespace Scrooge
@@ -201,6 +199,7 @@ namespace Scrooge
         {
           _taskManager.Abort();
           RemoveTalkAddonListeners();
+          Plugin.PinchRunLog.CancelRun();
         }
         if (ImGui.IsItemHovered())
         {
@@ -259,7 +258,25 @@ namespace Scrooge
 
         // If no retainers are explicitly enabled, enable all by default
         bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
-        
+
+        // Pre-calculate total items from RetainerList addon AtkValues
+        // Layout: base offset 3, 10 values per retainer, offset 6 = "Selling X items" text
+        // See: RetainerList Addon - AtkValue Map.md
+        int preRunTotal = 0;
+        for (int i = 0; i < num; i++)
+        {
+          var retainerName = retainers[i].Name;
+          if (!allEnabled && !Plugin.Configuration.EnabledRetainerNames.Contains(retainerName))
+            continue;
+
+          var atkIdx = 3 + (i * 10) + 6;
+          var sellingText = addon->AtkValues[atkIdx].GetValueAsString();
+          var match = Regex.Match(sellingText, @"\d+");
+          if (match.Success)
+            preRunTotal += int.Parse(match.Value);
+        }
+        Plugin.PinchRunLog.SetTotalItems(preRunTotal);
+
         for (int i = 0; i < num; i++)
         {
           var retainerName = retainers[i].Name;
@@ -353,6 +370,15 @@ namespace Scrooge
 
       ClearState();
       Plugin.PinchRunLog.StartNewRun();
+
+      // Get total items from the sell list
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
+        var listComponent = (AtkComponentList*)listNode->Component;
+        Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
+      }
+
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
       _taskManager.Enqueue(() => { Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
 
@@ -368,6 +394,7 @@ namespace Scrooge
         var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
         var listComponent = (AtkComponentList*)listNode->Component;
         int num = listComponent->ListLength;
+
         if (reverseOrder)
         {
           for (int i = num - 1; i >= 0; i--)
@@ -611,6 +638,7 @@ namespace Scrooge
         _oldPrice = null;
         _newPrice = null;
         _skipCurrentItem = false;
+        Plugin.PinchRunLog.IncrementProcessed();
       }
     }
 

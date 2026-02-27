@@ -150,6 +150,12 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public bool EnablePinchRunLog { get; set; } = true;
 
+  /// <summary>
+  /// Rolling average time per item in milliseconds, persisted across runs.
+  /// Used for ETA calculation. Updated at the end of each completed run.
+  /// </summary>
+  public float AvgMsPerItem { get; set; } = 0f;
+
   // --- Text-to-speech ---
 
   public bool TTSWhenAllDone { get; set; } = false;

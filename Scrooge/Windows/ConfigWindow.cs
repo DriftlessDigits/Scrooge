@@ -515,6 +515,20 @@ public sealed class ConfigWindow : Window
     }
 
     ImGui.Columns(1);
+    #if DEBUG
+        // Debug-only: reset stored ETA average for testing first-run behavior
+        if (Plugin.Configuration.AvgMsPerItem > 0f)
+        {
+          ImGui.SameLine();
+          if (ImGui.SmallButton("Reset ETA"))
+          {
+            Plugin.Configuration.AvgMsPerItem = 0f;
+            Plugin.Configuration.Save();
+          }
+          ImGui.SameLine();
+          ImGui.TextDisabled($"({Plugin.Configuration.AvgMsPerItem:F0}ms/item)");
+        }
+    #endif
 
     ImGui.Separator();
     // --- Retainers ---
