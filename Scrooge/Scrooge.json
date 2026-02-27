@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Added Pinch Run Summary — run start/end markers with timestamps and a per-run summary showing items adjusted, skipped, outliers detected, and total gil on market."
+  "Changelog": "Added Pinch Run Timer — countdown ETA during pinch runs with progress tracking, final elapsed time on completion, and a persisted per-item average for instant estimates."
 }
