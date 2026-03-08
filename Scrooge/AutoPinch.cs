@@ -583,10 +583,19 @@ namespace Scrooge
             var cutPercentage = ((float)_newPrice.Value - _oldPrice.Value) / _oldPrice.Value * 100f;
             if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
             {
-              Svc.Log.Debug($"Setting new price");
-              _cachedPrices.TryAdd(itemName, _newPrice);
-              retainerSell->AskingPrice->SetValue(_newPrice.Value);
-              Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
+              // Check if the price increase exceeds the cap
+              if (Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
+              {
+                Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
+              }
+              // Price normally
+              else
+              {
+                Svc.Log.Debug($"Setting new price");
+                _cachedPrices.TryAdd(itemName, _newPrice);
+                retainerSell->AskingPrice->SetValue(_newPrice.Value);
+                Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
+              }
             }
             else
               Communicator.PrintAboveMaxCutError(itemName);

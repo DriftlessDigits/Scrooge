@@ -65,6 +65,18 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public float MaxUndercutPercentage { get; set; } = 100.0f;
 
+  /// <summary>
+  /// When enabled, skips items where the new price would exceed the current
+  /// listing price by more than MaxPriceIncreasePercentage.
+  /// </summary>
+  public bool EnableMaxPriceIncreaseCap { get; set; } = false;
+
+  /// <summary>
+  /// Safety cap: skip the item if the new price would increase by more than this percentage.
+  /// Prevents overpricing when competition delists and the next listing is much higher.
+  /// </summary>
+  public float MaxPriceIncreasePercentage { get; set; } = 50.0f;
+
   /// <summary>Max random undercut in gil when Humanized mode rolls Random Pinch. Range: 1–10.</summary>
   public int HumanizedMaxPinch { get; set; } = 3;
 
@@ -105,6 +117,12 @@ public sealed class Configuration : IPluginConfiguration
   /// Range 1–9. A value of 3 means: compare the first listing against the next 3.
   /// </summary>
   public int OutlierSearchWindow { get; set; } = 3;
+
+  /// <summary>
+  /// When enabled, scales the outlier search window proportionally for batches
+  /// smaller than 10 listings. The slider value is used as-is for full batches.
+  /// </summary>
+  public bool RelativeOutlierWindow { get; set; } = false;
 
   // --- Timing ---
 

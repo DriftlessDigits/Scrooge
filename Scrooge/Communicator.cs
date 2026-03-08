@@ -155,6 +155,31 @@ public static class Communicator
       Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
   }
 
+  /// <summary>Error: Price increase exceeds the max price increase cap.</summary>
+  /// <param name="itemName">Raw item name from the game addon.</param>
+  /// <param name="increasePercentage">The actual increase percentage that was attempted, which exceeded the cap.</param>
+  public static void PrintAboveMaxIncreaseError(string itemName, float increasePercentage)
+  {
+    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _),
+      $"Price increase exceeds max ({Plugin.Configuration.MaxPriceIncreasePercentage}%) — would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}%");
+
+    if (!Plugin.Configuration.ShowErrorsInChat)
+      return;
+
+    var itemPayload = RawItemNameToItemPayload(itemName);
+
+    if (itemPayload != null)
+    {
+      var seString = new SeStringBuilder()
+          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
+          .AddText($": Item ignored because the price would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}% (max {Plugin.Configuration.MaxPriceIncreasePercentage}%)")
+          .Build();
+      Svc.Chat.PrintError(seString);
+    }
+    else
+      Svc.Chat.PrintError($"{itemName}: Item ignored because the price would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}% (max {Plugin.Configuration.MaxPriceIncreasePercentage}%)");
+  }
+
   /// <summary>Error: undercut price would be less than the configured price floor.</summary>
   /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintBelowPriceFloorError(string itemName)

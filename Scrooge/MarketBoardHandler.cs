@@ -102,7 +102,15 @@ namespace Scrooge
       // Treats all listings (NQ and HQ) as equals for gap analysis.
       if (Plugin.Configuration.OutlierDetection && !(_useHq && _itemHq))
       {
-        var searchEnd = Math.Min(currentOfferings.ItemListings.Count, (i + 1 + Plugin.Configuration.OutlierSearchWindow));
+        var itemCount = currentOfferings.ItemListings.Count;
+        var window = Plugin.Configuration.OutlierSearchWindow;
+
+        if (Plugin.Configuration.RelativeOutlierWindow && itemCount < 10)
+        {
+          // For small listing counts, dynamically adjust the search window to be a percentage of total listings
+          window = Math.Max(1, (int)Math.Round((float)window / 9f * itemCount)); // e.g. if window=2 and itemCount=5, then window becomes 1 (20% of 5)
+        }
+        var searchEnd = Math.Min(itemCount, (i + 1 + window));
 
         for (var j = i; j + 1 < searchEnd; j++)
         {

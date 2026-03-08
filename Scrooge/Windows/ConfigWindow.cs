@@ -139,6 +139,52 @@ public sealed class ConfigWindow : Window
       }
     }
 
+    // --- Max Price Increase Cap ---
+    var enableMaxIncrease = Plugin.Configuration.EnableMaxPriceIncreaseCap;
+    if (ImGui.Checkbox("Max Price Increase Cap", ref enableMaxIncrease))
+    {
+      Plugin.Configuration.EnableMaxPriceIncreaseCap = enableMaxIncrease;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("Skip an item if the new price would be much higher than your current listing.\n\n" +
+                       "Prevents overpricing when competition delists and the next listing is far above yours.\n" +
+                       "The item is skipped entirely — your current price stays unchanged.");
+      ImGui.EndTooltip();
+    }
+
+    if (Plugin.Configuration.EnableMaxPriceIncreaseCap)
+    {
+      ImGui.BeginGroup();
+      ImGui.Text("Max Price Increase:");
+      ImGui.SameLine();
+      float maxIncrease = Plugin.Configuration.MaxPriceIncreasePercentage;
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.SliderFloat("##maxPriceIncreasePercentage", ref maxIncrease, 10f, 200f, "%.0f"))
+      {
+        Plugin.Configuration.MaxPriceIncreasePercentage = MathF.Round(maxIncrease);
+        Plugin.Configuration.Save();
+      }
+      ImGui.SameLine();
+      ImGui.Text("%");
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Maximum allowed price increase as a percentage of your current listing price.\n\n" +
+                         "Example at 50%: If your item is listed at 10,000 gil, the new price can't exceed 15,000 gil.\n" +
+                         "If it would, the item is skipped and a warning is logged.\n\n" +
+                         "Higher = more permissive. Lower = stricter.");
+        ImGui.EndTooltip();
+      }
+    }
+
     if (Plugin.Configuration.UndercutMode == UndercutMode.Humanized)
     {
       ImGui.BeginGroup();
@@ -327,6 +373,25 @@ public sealed class ConfigWindow : Window
                          "9 = check all 10 listings in the batch.\n\n" +
                          "Lower = sell fast at market edge.\n" +
                          "Higher = look deeper, avoid outliers, may sell higher (eventually).");
+        ImGui.EndTooltip();
+      }
+
+      var relativeWindow = Plugin.Configuration.RelativeOutlierWindow;
+      if (ImGui.Checkbox("Scale window for small batches", ref relativeWindow))
+      {
+        Plugin.Configuration.RelativeOutlierWindow = relativeWindow;
+        Plugin.Configuration.Save();
+        Plugin.AutoPinch.ClearCachedPrices();
+      }
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("When enabled, scales the search window proportionally for batches with fewer than 10 listings.\n\n" +
+                         "Example: Search window of 3, and item with 6 listings -> checks 2 instead of 3.\n\n" +
+                         "Prevents over-aggressive outlier detection in thin markets where\n" +
+                         "a fixed window would scan most of the available listings.");
         ImGui.EndTooltip();
       }
     }
