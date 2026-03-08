@@ -35,6 +35,7 @@ namespace Scrooge
     private int? _oldPrice;                              // current listing price (read from addon)
     private int? _newPrice;                              // target price (from MB handler or cache)
     private bool _skipCurrentItem = false;               // skip mannequin items
+    private bool _isPinchRun = false;                    // true during an auto-pinch run
     private readonly TaskManager _taskManager;
     private Dictionary<string, int?> _cachedPrices = []; // avoids re-querying MB for duplicate items
     private readonly Random _random = new Random();
@@ -254,6 +255,7 @@ namespace Scrooge
         }
 
         ClearState();
+        _isPinchRun = true;
         Plugin.PinchRunLog.StartNewRun();
 
         // If no retainers are explicitly enabled, enable all by default
@@ -294,7 +296,7 @@ namespace Scrooge
         if (Plugin.Configuration.TTSWhenAllDone)
           _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
-        _taskManager.Enqueue(() => { Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
+        _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
       }
     }
 
@@ -369,6 +371,7 @@ namespace Scrooge
         return;
 
       ClearState();
+      _isPinchRun = true;
       Plugin.PinchRunLog.StartNewRun();
 
       // Get total items from the sell list
@@ -380,7 +383,7 @@ namespace Scrooge
       }
 
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
-      _taskManager.Enqueue(() => { Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
+      _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
 
     }
 
@@ -584,7 +587,7 @@ namespace Scrooge
             if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
             {
               // Check if the price increase exceeds the cap
-              if (Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
+              if (_isPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
               {
                 Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
               }
