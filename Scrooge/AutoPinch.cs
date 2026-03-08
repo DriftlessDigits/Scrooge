@@ -1,6 +1,7 @@
 ﻿using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Interface.Utility;
+using Dalamud.Utility;
 using Dalamud.Interface.Windowing;
 using ECommons;
 using ECommons.Automation.LegacyTaskManager;
@@ -296,7 +297,7 @@ namespace Scrooge
         if (Plugin.Configuration.TTSWhenAllDone)
           _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
-        _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
+        _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); Util.FlashWindow(); return true; }, "EndRunLog");
       }
     }
 
@@ -383,7 +384,7 @@ namespace Scrooge
       }
 
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
-      _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); return true; }, "EndRunLog");
+      _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); Util.FlashWindow(); return true; }, "EndRunLog");
 
     }
 
