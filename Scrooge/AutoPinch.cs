@@ -16,9 +16,14 @@ using Dalamud.Bindings.ImGui;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Speech.Synthesis;
+using System.Text;
 using System.Text.RegularExpressions;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
+#if DEBUG
+using ECommons.EzHookManager;
+#endif
 
 namespace Scrooge
 {
@@ -40,6 +45,25 @@ namespace Scrooge
     private readonly TaskManager _taskManager;
     private Dictionary<string, int?> _cachedPrices = []; // avoids re-querying MB for duplicate items
     private readonly Random _random = new Random();
+
+#if DEBUG
+    // --- Gil Tracking exploration: hook approach ---
+    [StructLayout(LayoutKind.Explicit, Size = 52)]
+    private unsafe struct RetainerHistoryData
+    {
+      [FieldOffset(0)]  public uint ItemID;
+      [FieldOffset(4)]  public uint Price;            // total price (price * quantity)
+      [FieldOffset(8)]  public uint UnixTimeSeconds;  // actual sale timestamp
+      [FieldOffset(12)] public uint Quantity;
+      [FieldOffset(16)] public bool IsHQ;
+      [FieldOffset(17)] public byte Unk17;
+      [FieldOffset(18)] public bool IsMannequinn;
+      [FieldOffset(19)] public fixed byte BuyerName[32]; // null-terminated UTF-8
+    }
+
+    private unsafe delegate nint RetainerHistoryDelegate(nint a1, nint data);
+    private EzHook<RetainerHistoryDelegate>? _retainerHistoryHook;
+#endif
 
     public AutoPinch()
       : base("Scrooge", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
@@ -78,11 +102,34 @@ namespace Scrooge
       }
 
       Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, RetainerSellPostSetup);
+
+#if DEBUG
+      // --- Gil Tracking exploration ---
+      // Approach 1: Dump AtkValues when RetainerHistory addon receives data
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostRefresh, "RetainerHistory", DebugDumpRetainerHistory);
+
+      // Approach 2: Hook the RetainerHistory function to capture raw struct data
+      try
+      {
+        _retainerHistoryHook = new EzHook<RetainerHistoryDelegate>(
+          "40 53 56 57 41 57 48 83 EC 38 48 8B F1",
+          DebugRetainerHistoryDetour);
+        Svc.Log.Debug("[GilTrack] RetainerHistory hook installed");
+      }
+      catch (Exception ex)
+      {
+        Svc.Log.Error($"[GilTrack] Hook failed: {ex.Message}");
+      }
+#endif
     }
 
     public void Dispose()
     {
       Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, RetainerSellPostSetup);
+#if DEBUG
+      Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostRefresh, DebugDumpRetainerHistory);
+      _retainerHistoryHook?.Disable();
+#endif
       _mbHandler.NewPriceReceived -= MBHandler_NewPriceReceived;
       _mbHandler.Dispose();
     }
@@ -312,10 +359,22 @@ namespace Scrooge
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(ClickSellItems, $"ClickSellItems{index}");
       _taskManager.DelayNext(500);
+#if DEBUG
+      _taskManager.Enqueue(DebugDumpRetainerSellList, $"DebugDumpSellList{index}");
+#endif
       _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
       _taskManager.DelayNext(500);
       _taskManager.Enqueue(CloseRetainerSellList, $"CloseRetainerSellList{index}");
       _taskManager.DelayNext(100);
+
+#if DEBUG
+      // Gil Tracking exploration: view sale history to trigger both debug approaches
+      _taskManager.Enqueue(ClickSaleHistory, $"ClickSaleHistory{index}");
+      _taskManager.DelayNext(1500);
+      _taskManager.Enqueue(CloseSaleHistory, $"CloseSaleHistory{index}");
+      _taskManager.DelayNext(100);
+#endif
+
       _taskManager.Enqueue(CloseRetainer, $"CloseRetainer{index}");
       _taskManager.DelayNext(100);
     }
@@ -366,6 +425,105 @@ namespace Scrooge
         return false;
     }
 
+#if DEBUG
+    /// <summary>
+    /// Clicks "Sale History" in the retainer SelectString menu.
+    /// Index may vary — validate text before clicking in production.
+    /// </summary>
+    private static unsafe bool? ClickSaleHistory()
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        var selectString = new AddonMaster.SelectString(addon);
+        var entries = selectString.Entries;
+        // Log all entries so we can verify the correct index
+        for (int i = 0; i < entries.Length; i++)
+          Svc.Log.Debug($"[GilTrack] SelectString[{i}] = \"{entries[i].Text}\"");
+
+        // Click the sale history entry — assumed [4], but the log above will confirm
+        selectString.Entries[4].Select();
+        return true;
+      }
+      else
+        return false;
+    }
+
+    /// <summary>
+    /// Closes the RetainerHistory addon after data has been captured.
+    /// </summary>
+    private static unsafe bool? CloseSaleHistory()
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerHistory", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        addon->Close(true);
+        return true;
+      }
+      else
+        return false;
+    }
+#endif
+
+#if DEBUG
+    // --- RetainerSellList AtkValues dump ---
+    private static unsafe bool? DebugDumpRetainerSellList()
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        var totalValues = addon->AtkValuesCount;
+        Svc.Log.Debug($"=== RetainerSellList AtkValues: {totalValues} total ===");
+        for (int i = 0; i < totalValues; i++)
+        {
+          var v = addon->AtkValues[i];
+          Svc.Log.Debug($"  [{i}] Type={v.Type} | Int={v.Int} | UInt={v.UInt} | String=\"{v.GetValueAsString()}\"");
+        }
+        return true;
+      }
+      return false;
+    }
+
+    // --- Approach 1: Addon AtkValues dump ---
+    private unsafe void DebugDumpRetainerHistory(AddonEvent type, AddonArgs args)
+    {
+      var addon = (AtkUnitBase*)args.Addon.Address;
+      var totalValues = addon->AtkValuesCount;
+      Svc.Log.Debug($"[GilTrack-Addon] === RetainerHistory AtkValues: {totalValues} total ===");
+      for (int i = 0; i < totalValues; i++)
+      {
+        var v = addon->AtkValues[i];
+        Svc.Log.Debug($"[GilTrack-Addon]   [{i}] Type={v.Type} | Int={v.Int} | UInt={v.UInt} | String=\"{v.GetValueAsString()}\"");
+      }
+    }
+
+    // --- Approach 2: Hook detour ---
+    private unsafe nint DebugRetainerHistoryDetour(nint a1, nint data)
+    {
+      Svc.Log.Debug("[GilTrack-Hook] === RetainerHistory hook fired ===");
+      try
+      {
+        for (int i = 0; i < 20; i++)
+        {
+          // CashFlow pattern: 8-byte header, then 52-byte records
+          var entry = *(RetainerHistoryData*)(data + 8 + sizeof(RetainerHistoryData) * i);
+          if (entry.ItemID == 0) break;
+
+          var buyerName = Encoding.UTF8.GetString(entry.BuyerName, 32).TrimEnd('\0');
+          var itemRow = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>()?.GetRow(entry.ItemID);
+          var itemName = itemRow?.Name.ToString() ?? $"Unknown({entry.ItemID})";
+          var category = itemRow?.ItemUICategory.ValueNullable?.Name.ToString() ?? "Unknown";
+          var saleTime = DateTimeOffset.FromUnixTimeSeconds(entry.UnixTimeSeconds).LocalDateTime;
+
+          Svc.Log.Debug($"[GilTrack-Hook]   [{i}] {itemName} ({category}) | {entry.Price:N0}g x{entry.Quantity} | HQ={entry.IsHQ} | Mannequin={entry.IsMannequinn} | Buyer={buyerName} | {saleTime:g}");
+        }
+      }
+      catch (Exception ex)
+      {
+        Svc.Log.Error($"[GilTrack-Hook] Parse error: {ex.Message}");
+      }
+
+      return _retainerHistoryHook!.Original(a1, data);
+    }
+#endif
+
     private unsafe void PinchAllRetainerItems()
     {
       if (_taskManager.IsBusy)
@@ -383,7 +541,23 @@ namespace Scrooge
         Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
       }
 
+#if DEBUG
+      _taskManager.Enqueue(DebugDumpRetainerSellList, "DebugDumpSellList");
+#endif
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
+
+#if DEBUG
+      // Gil Tracking exploration: close sell list → view sale history → reopen sell list
+      _taskManager.Enqueue(CloseRetainerSellList, "GilTrack_CloseSellList");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(ClickSaleHistory, "GilTrack_ClickSaleHistory");
+      _taskManager.DelayNext(1500);
+      _taskManager.Enqueue(CloseSaleHistory, "GilTrack_CloseSaleHistory");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(ClickSellItems, "GilTrack_ReopenSellList");
+      _taskManager.DelayNext(100);
+#endif
+
       _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); Util.FlashWindow(); return true; }, "EndRunLog");
 
     }
