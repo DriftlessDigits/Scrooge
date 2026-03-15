@@ -19,6 +19,7 @@ using System.Linq;
 using System.Speech.Synthesis;
 using System.Text.RegularExpressions;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace Scrooge
 {
@@ -258,6 +259,8 @@ namespace Scrooge
         ClearState();
         _isPinchRun = true;
         Plugin.PinchRunLog.StartNewRun();
+        if (Plugin.Configuration.EnableGilTracking)
+          GilTracker.StartRun();
 
         // If no retainers are explicitly enabled, enable all by default
         bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
@@ -297,7 +300,14 @@ namespace Scrooge
         if (Plugin.Configuration.TTSWhenAllDone)
           _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
-        _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); Util.FlashWindow(); return true; }, "EndRunLog");
+        _taskManager.Enqueue(() => { 
+          _isPinchRun = false;
+          Plugin.PinchRunLog.EndRun();
+          if (Plugin.Configuration.EnableGilTracking)
+            GilTracker.FinalizeRun();
+          Util.FlashWindow();
+          return true;
+        }, "EndRunLog");
       }
     }
 
@@ -312,10 +322,27 @@ namespace Scrooge
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(ClickSellItems, $"ClickSellItems{index}");
       _taskManager.DelayNext(500);
+
+      // Gil tracking: snapshot all listings from the sell list
+      if (Plugin.Configuration.EnableGilTracking)
+      {
+        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, $"SnapshotListings{index}");
+      }
+
       _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
       _taskManager.DelayNext(500);
       _taskManager.Enqueue(CloseRetainerSellList, $"CloseRetainerSellList{index}");
       _taskManager.DelayNext(100);
+
+      // Gil tracking: view sale history to capture sales via hook
+      if (Plugin.Configuration.EnableGilTracking)
+      {
+        _taskManager.Enqueue(ClickSaleHistory, $"ClickSaleHistory{index}");
+        _taskManager.DelayNext(1500); // wait for server response + hook to fire
+        _taskManager.Enqueue(CloseSaleHistory, $"CloseSaleHistory{index}");
+        _taskManager.DelayNext(100);
+      }
+
       _taskManager.Enqueue(CloseRetainer, $"CloseRetainer{index}");
       _taskManager.DelayNext(100);
     }
@@ -325,8 +352,14 @@ namespace Scrooge
     {
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
       {
-        Communicator.PrintRetainerName(new AddonMaster.RetainerList(addon).Retainers[index].Name);
+        var retainerName = new AddonMaster.RetainerList(addon).Retainers[index].Name;
+
+        Communicator.PrintRetainerName(retainerName);
+        if (Plugin.Configuration.EnableGilTracking)
+          GilTracker.SetRetainer(retainerName);
+
         ECommons.Automation.Callback.Fire(addon, true, 2, index);
+
         return true;
       }
       else
@@ -366,6 +399,39 @@ namespace Scrooge
         return false;
     }
 
+    /// <summary>
+    /// Clicks "Sale History" in the retainer SelectString menu.
+    /// Index may vary — validate text before clicking in production.
+    /// </summary>
+    private static unsafe bool? ClickSaleHistory()
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        var selectString = new AddonMaster.SelectString(addon);
+        var entries = selectString.Entries;
+        // Validate entry text before clicking (guard against menu changes in patches)
+        if (entries.Length > 4 && entries[4].Text.Contains("sale history", StringComparison.OrdinalIgnoreCase))
+        {
+          entries[4].Select();
+          return true;
+        }
+        Svc.Log.Warning("[GilTrack] SelectString[4] is not Sale History — skipping");
+        return true; // skip silently, don't block the run
+      }
+      return false;
+    }
+
+    /// <summary>Close the RetainerHistory (Sale History) addon.</summary>
+    private static unsafe bool? CloseSaleHistory()
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerHistory", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        addon->Close(true);
+        return true;
+      }
+      return true; // might not be open yet — don't block
+    }
+
     private unsafe void PinchAllRetainerItems()
     {
       if (_taskManager.IsBusy)
@@ -383,8 +449,38 @@ namespace Scrooge
         Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
       }
 
+      // Gil tracking: start run, set retainer, snapshot
+      if (Plugin.Configuration.EnableGilTracking)
+      {
+        GilTracker.StartRun();
+        var rm = RetainerManager.Instance();
+        GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+      }
+        
       EnqueueAllRetainerItems(EnqueueSingleItem, false);
-      _taskManager.Enqueue(() => { _isPinchRun = false; Plugin.PinchRunLog.EndRun(); Util.FlashWindow(); return true; }, "EndRunLog");
+
+      // Gil tracking: close sell list → view sale history → reopen sell list
+      if (Plugin.Configuration.EnableGilTracking)
+      {
+        _taskManager.Enqueue(CloseRetainerSellList, "GilTrack_CloseSellList");
+        _taskManager.DelayNext(100);
+        _taskManager.Enqueue(ClickSaleHistory, "GilTrack_ClickSaleHistory");
+        _taskManager.DelayNext(1500);
+        _taskManager.Enqueue(CloseSaleHistory, "GilTrack_CloseSaleHistory");
+        _taskManager.DelayNext(100);
+        _taskManager.Enqueue(ClickSellItems, "GilTrack_ReopenSellList");
+        _taskManager.DelayNext(100);
+      }
+
+      _taskManager.Enqueue(() => { 
+        _isPinchRun = false; 
+        Plugin.PinchRunLog.EndRun();
+        if (Plugin.Configuration.EnableGilTracking)
+          GilTracker.FinalizeRun();
+        Util.FlashWindow(); 
+        return true; 
+      }, "EndRunLog");
 
     }
 

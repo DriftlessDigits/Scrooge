@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Added Pricing Guards — optional max price increase cap to prevent overpricing when competition delists, and relative outlier window scaling for thin markets. Taskbar flashes when a pinch run completes while alt-tabbed."
+  "Changelog": "Added Gil Tracking — captures retainer sales, gil balances, and listing duration during pinch runs. Gil Dashboard (/giltrack) with portfolio summary, recent sales, category breakdown, and slow movers."
 }

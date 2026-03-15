@@ -174,6 +174,14 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public float AvgMsPerItem { get; set; } = 0f;
 
+  // --- Gil Tracking ---
+
+  /// <summary>
+  /// When enabled, captures sale history, listing snapshots, and gil balances
+  /// during pinch runs. Adds ~1.5s per retainer to view sale history.
+  /// </summary>
+  public bool EnableGilTracking { get; set; } = true;
+
   // --- Text-to-speech ---
 
   public bool TTSWhenAllDone { get; set; } = false;

@@ -1,11 +1,13 @@
+using System;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
+using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
-using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
-using Scrooge.Windows;
 using ECommons;
+using ECommons.DalamudServices;
+using Scrooge.Windows;
 
 namespace Scrooge;
 
@@ -31,6 +33,10 @@ public sealed class Plugin : IDalamudPlugin
   internal static AutoPinch AutoPinch { get; private set; } = null!;
 
   internal static PinchRunLogWindow PinchRunLog { get; private set; } = null!;
+
+  internal static GilWindow GilDashboard { get; private set; } = null!;
+
+  private RetainerHistoryHook? _retainerHistoryHook;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
@@ -59,6 +65,25 @@ public sealed class Plugin : IDalamudPlugin
 
     PinchRunLog = new PinchRunLogWindow();
     WindowSystem.AddWindow(PinchRunLog);
+
+    // Gil tracking
+    GilStorage.Load();
+    try
+    {
+      _retainerHistoryHook = new RetainerHistoryHook();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "RetainerHistory hook failed — gil tracking will not capture sale history");
+    }
+
+    GilDashboard = new GilWindow();
+    WindowSystem.AddWindow(GilDashboard);
+
+    CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
+    {
+      HelpMessage = "Opens the Scrooge gil dashboard"
+    });
   }
 
   public void Dispose()
@@ -66,6 +91,8 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    _retainerHistoryHook?.Dispose();
+    CommandManager.RemoveHandler("/giltrack");
     ECommonsMain.Dispose();
   }
 
@@ -74,6 +101,8 @@ public sealed class Plugin : IDalamudPlugin
     // in response to the slash command, just toggle the display status of our main ui
     ToggleConfigUI();
   }
+
+  private void OnGilTrackCommand(string command, string args) => GilDashboard.Toggle();
 
   private void DrawUI()
   {

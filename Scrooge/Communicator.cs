@@ -63,7 +63,7 @@ public static class Communicator
   /// Strips SeString control characters from a raw item name, returning clean display text.
   /// Also returns whether the item is HQ via the out parameter.
   /// </summary>
-  private static string CleanItemName(string itemName, out bool isHq)
+  internal static string CleanItemName(string itemName, out bool isHq)
   {
     isHq = false;
 
@@ -114,7 +114,7 @@ public static class Communicator
     return cleanedName;
   }
 
-  private static ItemPayload? RawItemNameToItemPayload(string itemName)
+  internal static ItemPayload? RawItemNameToItemPayload(string itemName)
   {
     var cleanedName = CleanItemName(itemName, out var isHq);
 
