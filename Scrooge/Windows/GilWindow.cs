@@ -12,7 +12,7 @@ namespace Scrooge.Windows;
 /// </summary>
 internal sealed class GilWindow: Window
 {
-  public GilWindow() : base("Scrooge - Gil Dashboard", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+  public GilWindow() : base("Scrooge - Gil Dashboard")
   {
     SizeConstraints = new WindowSizeConstraints
     {
@@ -26,7 +26,7 @@ internal sealed class GilWindow: Window
     var data = GilStorage.Data;
 
     // --- Portfolio Summary ---
-    ImGui.Text("PORTFOLIO");
+    ImGui.Text("Portfolio");
     ImGui.Separator();
 
     var latestGil = data.GilHistory.LastOrDefault();
@@ -43,21 +43,40 @@ internal sealed class GilWindow: Window
     }
 
     ImGui.Spacing();
-    ImGui.Spacing();
+    if (ImGui.BeginTabBar("##GilTabs"))
+    {
+      if (ImGui.BeginTabItem("Sales"))
+      {
+        DrawSalesTab(data);
+        ImGui.EndTabItem();
+      }
 
-    // --- Recent Sales ---
-    ImGui.Text("RECENT SALES");
-    ImGui.Separator();
+      if (ImGui.BeginTabItem("Categories"))
+      {
+        DrawCategoriesTab(data);
+        ImGui.EndTabItem();
+      }
 
+      if (ImGui.BeginTabItem("Slow Movers"))
+      {
+        DrawSlowMoversTab(data);
+        ImGui.EndTabItem();
+      }
+
+      ImGui.EndTabBar();
+    }
+  }
+
+  private static void DrawSalesTab(GilData data)
+  {
     var recentSales = data.Sales
-    .OrderByDescending(s => s.SaleTimestamp)
-    .Take(20)
-    .ToList();
+      .OrderByDescending(s => s.SaleTimestamp)
+      .Take(20)
+      .ToList();
 
     if (recentSales.Count > 0)
     {
-      if (ImGui.BeginTable("RecentSales", 5,
-          ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      if (ImGui.BeginTable("RecentSales", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
         ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.None, 30);
@@ -83,13 +102,12 @@ internal sealed class GilWindow: Window
     {
       ImGui.TextDisabled("No sales recorded yet.");
     }
+  }
 
+  private static void DrawCategoriesTab(GilData data)
+  {
+    ImGui.TextDisabled("Last 30 days");
     ImGui.Spacing();
-    ImGui.Spacing();
-
-    // --- Sales by Category ---
-    ImGui.Text("SALES BY CATEGORY (last 30 days)");
-    ImGui.Separator();
 
     var thirtyDaysAgo = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (30 * 24 * 3600L);
     var byCategory = data.Sales
@@ -101,8 +119,7 @@ internal sealed class GilWindow: Window
 
     if (byCategory.Count > 0)
     {
-      if (ImGui.BeginTable("Categories", 3,
-          ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      if (ImGui.BeginTable("Categories", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
         ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.None, 150);
         ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 60);
@@ -124,13 +141,12 @@ internal sealed class GilWindow: Window
     {
       ImGui.TextDisabled("No category data yet.");
     }
+  }
 
+  private static void DrawSlowMoversTab(GilData data)
+  {
+    ImGui.TextDisabled("Listed 7+ days");
     ImGui.Spacing();
-    ImGui.Spacing();
-
-    // --- Slow Movers ---
-    ImGui.Text("SLOW MOVERS (listed 7+ days)");
-    ImGui.Separator();
 
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     var sevenDays = 7 * 24 * 3600L;
@@ -141,8 +157,7 @@ internal sealed class GilWindow: Window
 
     if (slowMovers.Count > 0)
     {
-      if (ImGui.BeginTable("SlowMovers", 4,
-          ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      if (ImGui.BeginTable("SlowMovers", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
         ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 80);
