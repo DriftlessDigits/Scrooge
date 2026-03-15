@@ -596,6 +596,30 @@ public sealed class ConfigWindow : Window
     #endif
 
     ImGui.Separator();
+    // --- Gil Tracking ---
+    ImGui.Text("-- Gil Tracking --");
+
+    var enableGil = Plugin.Configuration.EnableGilTracking;
+    if (ImGui.Checkbox("Gil Tracking", ref enableGil))
+    {
+      Plugin.Configuration.EnableGilTracking = enableGil;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("Track sales, gil balances, and listing duration during pinch runs.\n\n" +
+                       "Adds ~1.5 seconds per retainer to view each retainer's sale history.\n" +
+                       "Data is shown in the Gil Dashboard (use the button below or /giltrack).");
+      ImGui.EndTooltip();
+    }
+
+    if (ImGui.Button("Open Gil Dashboard"))
+      Plugin.GilDashboard.Toggle();
+
+    ImGui.Separator();
     // --- Retainers ---
     ImGui.Text("-- Retainer Selection --");
     ImGui.SameLine();
