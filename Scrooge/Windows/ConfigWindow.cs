@@ -14,6 +14,20 @@ public sealed class ConfigWindow : Window
 {
   private static readonly string[] _virtualKeyStrings = Enum.GetNames<VirtualKey>();
 
+  private string _currentQuote = string.Empty;
+
+  private string _currentQuoteAuthor = string.Empty;
+
+  public override void OnOpen()
+  {
+    var quote = GilStorage.GetRandomQuote();
+    if (quote != null)
+    {
+      _currentQuote = quote.Text;
+      _currentQuoteAuthor = quote.Author;
+    }
+  }
+
   /// <summary>Converts PascalCase enum names to display-friendly format (e.g. "FixedAmount" → "Fixed Amount").</summary>
   /// <param name="name">The raw PascalCase enum name.</param>
   /// <returns>The name with spaces inserted before each capital letter (except the first).</returns>
@@ -38,6 +52,16 @@ public sealed class ConfigWindow : Window
 
   public override void Draw()
   {
+
+    // Quote header
+    if (!string.IsNullOrEmpty(_currentQuote))
+    {
+      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.6f, 0.6f, 1f));
+      ImGui.TextWrapped($"\"{_currentQuote}\"");
+      ImGui.Text($"    — {_currentQuoteAuthor}");
+      ImGui.PopStyleColor();
+      ImGui.Spacing();
+    }
 
     // Tab bar
     if (ImGui.BeginTabBar("##ConfigTabs"))
@@ -662,6 +686,15 @@ public sealed class ConfigWindow : Window
                        "Data is shown in the Gil Dashboard (use the button below or /giltrack).");
       ImGui.EndTooltip();
     }
+
+    #if DEBUG
+    if (ImGui.SmallButton("Reset DB"))
+    {
+      GilStorage.Dispose();
+      System.IO.File.Delete(GilStorage.DbPath);
+      GilStorage.Initialize();
+    }
+    #endif
 
     if (ImGui.Button("Open Gil Dashboard"))
       Plugin.GilDashboard.Toggle();
