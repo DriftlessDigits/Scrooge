@@ -219,7 +219,6 @@ internal static class GilTracker
         UnitPrice = (int)entry.UnitPrice,  // UnitPrice confirmed via debug — no division needed
         Quantity = (int)entry.Quantity,
         IsHQ = entry.IsHQ,
-        IsMannequin = entry.IsMannequinn,
         RetainerName = retainerName,
         BuyerName = entry.BuyerName,
         SaleTimestamp = entry.UnixTimeSeconds

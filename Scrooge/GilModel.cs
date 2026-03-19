@@ -17,7 +17,6 @@ public record SaleRecord
   public int Quantity { get; init; }
   public long TotalGil => (long)UnitPrice * Quantity;
   public bool IsHQ { get; init; }
-  public bool IsMannequin { get; init; }
   public string RetainerName { get; init; } = string.Empty;
   public string BuyerName { get; init; } = string.Empty;
   public long SaleTimestamp { get; init; }                     // Unix seconds from game server
@@ -64,4 +63,32 @@ public record MarketSnapshot
   public int ItemCount { get; init; }                // Total # of listings across all retainers
   public long TotalListingValue { get; init; }       // Sum of UnitPrice * Quantity for all listings
   public double AverageListingAgeDays { get; init; } // Average days on market across all listings
+}
+
+/// <summary>
+/// A quote for the ConfigWindow header, selected from the SQLite quotes table.
+/// </summary>
+public record QuoteRecord
+{
+  public int Id { get; init; }
+  public string Text { get; init; } = string.Empty;
+  public string Author {  get; init; } = string.Empty;
+}
+
+public class GilData
+{
+  public int Version { get; set; } = 1;
+  public List<SaleRecord> Sales { get; set; } = [];
+  public List<GilSnapshot> GilHistory { get; set; } = [];
+  public List<MarketSnapshot> MarketHistory { get; set; } = [];
+  public List<ListingRecord> CurrentListings { get; set; } = [];
+
+  /// <summary>
+  /// First-seen timestamps for listing duration tracking.
+  /// Key format: "retainerName|slotIndex|itemId" (e.g., "Dragamama|5|12345")
+  /// Uses retainer inventory slot (0–19) for unique listing identity.
+  /// ItemId included so slot reuse for a different item gets a fresh timestamp.
+  /// Value: Unix seconds when first detected.
+  /// </summary>
+  public Dictionary<string, long> FirstSeenTimestamps { get; set; } = new();
 }

@@ -85,21 +85,3 @@ internal static class GilStorage
     }
   }
 }
-
-public class GilData
-{
-  public int Version { get; set; } = 1;
-  public List<SaleRecord> Sales { get; set; } = [];
-  public List<GilSnapshot> GilHistory { get; set; } = [];
-  public List<MarketSnapshot> MarketHistory { get; set; } = [];
-  public List<ListingRecord> CurrentListings { get; set; } = [];
-
-  /// <summary>
-  /// First-seen timestamps for listing duration tracking.
-  /// Key format: "retainerName|slotIndex|itemId" (e.g., "Dragamama|5|12345")
-  /// Uses retainer inventory slot (0–19) for unique listing identity.
-  /// ItemId included so slot reuse for a different item gets a fresh timestamp.
-  /// Value: Unix seconds when first detected.
-  /// </summary>
-  public Dictionary<string, long> FirstSeenTimestamps { get; set; } = new();
-}
