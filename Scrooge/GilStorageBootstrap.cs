@@ -148,41 +148,40 @@ internal class GilStorageBootstrap
 
       using var transaction = connection.BeginTransaction();
 
-      // TODO: Uncomment in Phase 3 when GilStorage SQLite methods exist.
-      //// Sales -> transactions
-      //foreach (var sale in data.Sales)
-      //{
-      //  GilStorage.InsertTransaction(sale.SaleTimestamp, "earned", "retainer_sale",
-      //      sale.TotalGil, sale.ItemId, sale.ItemName, sale.Category,
-      //      sale.Quantity, sale.UnitPrice, sale.IsHQ, sale.RetainerName,
-      //      sale.BuyerName);
-      //}
+      // Sales -> transactions
+      foreach (var sale in data.Sales)
+      {
+        GilStorage.InsertTransaction(sale.SaleTimestamp, "earned", "retainer_sale",
+            sale.TotalGil, sale.ItemId, sale.ItemName, sale.Category,
+            sale.Quantity, sale.UnitPrice, sale.IsHQ, sale.RetainerName,
+            sale.BuyerName);
+      }
 
-      //// GilSnapshots -> gil_snapshots + retainer_snapshots
-      //foreach (var snap in data.GilHistory)
-      //{
-      //  var snapshotId = GilStorage.InsertGilSnapshot(snap.Timestamp, snap.PlayerGil, "pinch_run");
-      //  foreach (var (name, gil) in snap.RetainerGil)
-      //  {
-      //    GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
-      //  }
-      //}
+      // GilSnapshots -> gil_snapshots + retainer_snapshots
+      foreach (var snap in data.GilHistory)
+      {
+        var snapshotId = GilStorage.InsertGilSnapshot(snap.Timestamp, snap.PlayerGil, "pinch_run");
+        foreach (var (name, gil) in snap.RetainerGil)
+        {
+          GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
+        }
+      }
 
-      //// MarketSnapshots -> market_snapshots
-      //foreach (var ms in data.MarketHistory)
-      //{
-      //  GilStorage.InsertMarketSnapshot(ms.Timestamp, ms.ItemCount,
-      //      ms.TotalListingValue, ms.AverageListingAgeDays);
-      //}
+      // MarketSnapshots -> market_snapshots
+      foreach (var ms in data.MarketHistory)
+      {
+        GilStorage.InsertMarketSnapshot(ms.Timestamp, ms.ItemCount,
+            ms.TotalListingValue, ms.AverageListingAgeDays);
+      }
 
-      //// CurrentListings -> listings
-      //foreach (var listing in data.CurrentListings)
-      //{
-      //  GilStorage.UpsertListing(listing.RetainerName, listing.SlotIndex,
-      //      listing.ItemId, listing.ItemName, listing.Category,
-      //      listing.UnitPrice, listing.Quantity, listing.IsHQ,
-      //      listing.FirstSeenTimestamp, listing.LastUpdatedTimestamp);
-      //}
+      // CurrentListings -> listings
+      foreach (var listing in data.CurrentListings)
+      {
+        GilStorage.UpsertListing(listing.RetainerName, listing.SlotIndex,
+            listing.ItemId, listing.ItemName, listing.Category,
+            listing.UnitPrice, listing.Quantity, listing.IsHQ,
+            listing.FirstSeenTimestamp, listing.LastUpdatedTimestamp);
+      }
 
       transaction.Commit();
       File.Move(jsonPath, jsonPath + ".bak", overwrite: true);

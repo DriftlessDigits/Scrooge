@@ -67,7 +67,15 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.AddWindow(PinchRunLog);
 
     // Gil tracking
-    GilStorage.Load();
+    try
+    {
+      GilStorage.Initialize();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Error(ex, "[GilTrack] Failed to initialize database — gil tracking disabled");
+    }
+
     try
     {
       _retainerHistoryHook = new RetainerHistoryHook();
@@ -92,6 +100,7 @@ public sealed class Plugin : IDalamudPlugin
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
     _retainerHistoryHook?.Dispose();
+    GilStorage.Dispose();
     CommandManager.RemoveHandler("/giltrack");
     ECommonsMain.Dispose();
   }
