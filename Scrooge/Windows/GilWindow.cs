@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Numerics;
+using Dalamud.Game.Text;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 
@@ -21,16 +22,24 @@ internal sealed class GilWindow: Window
     };
   }
 
+  private GilSnapshot? _cachedSnapshot;
+  private DateTime _lastRefresh = DateTime.MinValue;
+  private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+
   public override void Draw()
   {
-    var data = GilStorage.Data;
-
     // --- Portfolio Summary ---
     ImGui.Text("Portfolio");
     ImGui.Separator();
 
-    var latestGil = data.GilHistory.LastOrDefault();
-    if (latestGil != null )
+    if (DateTime.UtcNow - _lastRefresh > RefreshInterval)
+    {
+      _cachedSnapshot = GilStorage.GetLatestSnapshot();
+      _lastRefresh = DateTime.UtcNow;
+    }
+    var latestGil = _cachedSnapshot;
+
+    if (latestGil != null)
     {
       ImGui.Text($"  Player Gil:     {latestGil.PlayerGil:N0}");
       ImGui.Text($"  Retainer Gil:   {latestGil.RetainerGil.Values.Sum():N0}");
@@ -47,19 +56,19 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTabItem("Sales"))
       {
-        DrawSalesTab(data);
+        DrawSalesTab();
         ImGui.EndTabItem();
       }
 
       if (ImGui.BeginTabItem("Categories"))
       {
-        DrawCategoriesTab(data);
+        DrawCategoriesTab();
         ImGui.EndTabItem();
       }
 
       if (ImGui.BeginTabItem("Slow Movers"))
       {
-        DrawSlowMoversTab(data);
+        DrawSlowMoversTab();
         ImGui.EndTabItem();
       }
 
@@ -67,12 +76,9 @@ internal sealed class GilWindow: Window
     }
   }
 
-  private static void DrawSalesTab(GilData data)
+  private static void DrawSalesTab()
   {
-    var recentSales = data.Sales
-      .OrderByDescending(s => s.SaleTimestamp)
-      .Take(20)
-      .ToList();
+    var recentSales = GilStorage.GetRecentSales(20);
 
     if (recentSales.Count > 0)
     {
@@ -88,7 +94,7 @@ internal sealed class GilWindow: Window
         foreach (var sale in recentSales)
         {
           ImGui.TableNextRow();
-          ImGui.TableNextColumn(); ImGui.Text(sale.ItemName + (sale.IsHQ ? " \u2726" : ""));
+          ImGui.TableNextColumn(); ImGui.Text(sale.ItemName + (sale.IsHQ ? " " + (char)SeIconChar.HighQuality : ""));
           ImGui.TableNextColumn(); ImGui.Text($"x{sale.Quantity}");
           ImGui.TableNextColumn(); ImGui.Text($"{sale.UnitPrice:N0}");
           ImGui.TableNextColumn(); ImGui.Text($"{sale.TotalGil:N0}");
@@ -104,18 +110,13 @@ internal sealed class GilWindow: Window
     }
   }
 
-  private static void DrawCategoriesTab(GilData data)
+  private static void DrawCategoriesTab()
   {
     ImGui.TextDisabled("Last 30 days");
     ImGui.Spacing();
 
     var thirtyDaysAgo = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (30 * 24 * 3600L);
-    var byCategory = data.Sales
-        .Where(s => s.SaleTimestamp > thirtyDaysAgo)
-        .GroupBy(s => s.Category)
-        .Select(g => new { Category = g.Key, Count = g.Count(), Gil = g.Sum(s => s.TotalGil) })
-        .OrderByDescending(g => g.Gil)
-        .ToList();
+    var byCategory = GilStorage.GetCategorySales(thirtyDaysAgo);
 
     if (byCategory.Count > 0)
     {
@@ -143,17 +144,13 @@ internal sealed class GilWindow: Window
     }
   }
 
-  private static void DrawSlowMoversTab(GilData data)
+  private static void DrawSlowMoversTab()
   {
     ImGui.TextDisabled("Listed 7+ days");
     ImGui.Spacing();
 
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-    var sevenDays = 7 * 24 * 3600L;
-    var slowMovers = data.CurrentListings
-        .Where(l => now - l.FirstSeenTimestamp > sevenDays)
-        .OrderByDescending(l => now - l.FirstSeenTimestamp)
-        .ToList();
+    var sevenDaysAgo = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (7 * 24 * 3600L);
+    var slowMovers = GilStorage.GetSlowMovers(sevenDaysAgo);
 
     if (slowMovers.Count > 0)
     {
@@ -168,7 +165,7 @@ internal sealed class GilWindow: Window
         foreach (var item in slowMovers)
         {
           ImGui.TableNextRow();
-          ImGui.TableNextColumn(); ImGui.Text(item.ItemName + (item.IsHQ ? " \u2726" : ""));
+          ImGui.TableNextColumn(); ImGui.Text(item.ItemName + (item.IsHQ ? " " + (char)SeIconChar.HighQuality : ""));
           ImGui.TableNextColumn(); ImGui.Text($"{item.UnitPrice:N0}");
           ImGui.TableNextColumn(); ImGui.Text(item.Category);
           ImGui.TableNextColumn(); ImGui.Text(FormatAge(item.FirstSeenTimestamp));

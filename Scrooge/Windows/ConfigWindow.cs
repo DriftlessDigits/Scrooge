@@ -1,18 +1,32 @@
-﻿using Dalamud.Game.ClientState.Keys;
-using Dalamud.Interface.Windowing;
-using Dalamud.Bindings.ImGui;
-using ECommons.UIHelpers.AddonMasterImplementations;
-using static ECommons.GenericHelpers;
-using FFXIVClientStructs.FFXIV.Component.GUI;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Game.ClientState.Keys;
+using Dalamud.Interface.Windowing;
+using ECommons.UIHelpers.AddonMasterImplementations;
+using FFXIVClientStructs.FFXIV.Component.GUI;
+using static ECommons.GenericHelpers;
 
 namespace Scrooge.Windows;
 
 public sealed class ConfigWindow : Window
 {
   private static readonly string[] _virtualKeyStrings = Enum.GetNames<VirtualKey>();
+
+  private string _currentQuote = string.Empty;
+
+  private string _currentQuoteAuthor = string.Empty;
+
+  public override void OnOpen()
+  {
+    var quote = GilStorage.GetRandomQuote();
+    if (quote != null)
+    {
+      _currentQuote = quote.Text;
+      _currentQuoteAuthor = quote.Author;
+    }
+  }
 
   /// <summary>Converts PascalCase enum names to display-friendly format (e.g. "FixedAmount" → "Fixed Amount").</summary>
   /// <param name="name">The raw PascalCase enum name.</param>
@@ -39,6 +53,62 @@ public sealed class ConfigWindow : Window
   public override void Draw()
   {
 
+    // Quote header
+    if (!string.IsNullOrEmpty(_currentQuote))
+    {
+      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.6f, 0.6f, 1f));
+      ImGui.TextWrapped($"\"{_currentQuote}\"");
+      ImGui.Text($"    — {_currentQuoteAuthor}");
+      ImGui.PopStyleColor();
+      ImGui.Spacing();
+    }
+
+    // Tab bar
+    if (ImGui.BeginTabBar("##ConfigTabs"))
+    {
+      if (ImGui.BeginTabItem("Pricing"))
+      {
+        DrawPricingTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Timing"))
+      {
+        DrawTimingTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Output"))
+      {
+        DrawOutputTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Gil Tracking"))
+      {
+        DrawGilTrackingTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Retainers"))
+      {
+        DrawRetainersTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Hotkeys"))
+      {
+        DrawHotkeysTab();
+        ImGui.EndTabItem();
+      }
+
+      ImGui.EndTabBar();
+    }
+    
+  }
+
+  private void DrawPricingTab()
+  {
     // --- Undercut Settings ---
     ImGui.Text("-- Undercut Settings --");
     ImGui.BeginGroup();
@@ -46,11 +116,11 @@ public sealed class ConfigWindow : Window
     ImGui.SameLine();
     var enumValues = Enum.GetNames<UndercutMode>();
     var displayNames = enumValues.Select(FormatEnumName).ToArray();
-    int index = Array.IndexOf(enumValues, Plugin.Configuration.UndercutMode.ToString());
+    int undercutIndex = Array.IndexOf(enumValues, Plugin.Configuration.UndercutMode.ToString());
     ImGui.SetNextItemWidth(150);
-    if (ImGui.Combo("##undercutModeCombo", ref index, displayNames, displayNames.Length))
+    if (ImGui.Combo("##undercutModeCombo", ref undercutIndex, displayNames, displayNames.Length))
     {
-      var value = Enum.Parse<UndercutMode>(enumValues[index]);
+      var value = Enum.Parse<UndercutMode>(enumValues[undercutIndex]);
       if (value == UndercutMode.Percentage && Plugin.Configuration.UndercutAmount >= 100)
         Plugin.Configuration.UndercutAmount = 1;
 
@@ -227,7 +297,7 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
-    ImGui.SameLine(0,40);
+    ImGui.SameLine(0, 40);
     var hq = Plugin.Configuration.HQ;
     if (ImGui.Checkbox("Use HQ price", ref hq))
     {
@@ -395,11 +465,12 @@ public sealed class ConfigWindow : Window
         ImGui.EndTooltip();
       }
     }
+  }
 
-    ImGui.Separator();
+  private void DrawTimingTab()
+  {
     // --- Market Board Timings ---
     float currentMBDelay = Plugin.Configuration.GetMBPricesDelayMS / 1000f;
-    ImGui.Text("-- Market Board Timings --");
     ImGui.BeginGroup();
     ImGui.Text("Price Check Delay (s):");
     ImGui.SameLine();
@@ -482,11 +553,11 @@ public sealed class ConfigWindow : Window
         ImGui.EndTooltip();
       }
     }
+  }
 
-    ImGui.Separator();
+  private void DrawOutputTab()
+  {
     // --- Chat Output ---
-    ImGui.Text("-- Chat Output --");
-
     ImGui.Columns(2, "##chatOutputColumns", false);
 
     bool chatErrors = Plugin.Configuration.ShowErrorsInChat;
@@ -581,24 +652,24 @@ public sealed class ConfigWindow : Window
 
     ImGui.Columns(1);
     #if DEBUG
-        // Debug-only: reset stored ETA average for testing first-run behavior
-        if (Plugin.Configuration.AvgMsPerItem > 0f)
-        {
-          ImGui.SameLine();
-          if (ImGui.SmallButton("Reset ETA"))
-          {
-            Plugin.Configuration.AvgMsPerItem = 0f;
-            Plugin.Configuration.Save();
-          }
-          ImGui.SameLine();
-          ImGui.TextDisabled($"({Plugin.Configuration.AvgMsPerItem:F0}ms/item)");
-        }
+    // Debug-only: reset stored ETA average for testing first-run behavior
+    if (Plugin.Configuration.AvgMsPerItem > 0f)
+    {
+      ImGui.SameLine();
+      if (ImGui.SmallButton("Reset ETA"))
+      {
+        Plugin.Configuration.AvgMsPerItem = 0f;
+        Plugin.Configuration.Save();
+      }
+      ImGui.SameLine();
+      ImGui.TextDisabled($"({Plugin.Configuration.AvgMsPerItem:F0}ms/item)");
+    }
     #endif
+  }
 
-    ImGui.Separator();
+  private void DrawGilTrackingTab()
+  {
     // --- Gil Tracking ---
-    ImGui.Text("-- Gil Tracking --");
-
     var enableGil = Plugin.Configuration.EnableGilTracking;
     if (ImGui.Checkbox("Gil Tracking", ref enableGil))
     {
@@ -616,48 +687,46 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
+    #if DEBUG
+    if (ImGui.SmallButton("Reset DB"))
+    {
+      GilStorage.ResetDatabase();
+    }
+    #endif
+
     if (ImGui.Button("Open Gil Dashboard"))
       Plugin.GilDashboard.Toggle();
+  }
 
-    ImGui.Separator();
+  private void DrawRetainersTab()
+  {
     // --- Retainers ---
-    ImGui.Text("-- Retainer Selection --");
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Choose which retainers are included when using Auto Pinch.\n\n" +
-                       "Unchecked retainers are skipped entirely.\n" +
-                       "Open the retainer list in-game to populate this list.");
-      ImGui.EndTooltip();
-    }
-
+    ImGui.TextDisabled("Select which retainers are included during Auto Pinch.");
     // Try to fetch retainer names from the RetainerList addon if available
     unsafe
     {
       string[]? retainerNameArray = null;
       bool namesUpdated = false;
-      
+
       if (TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && IsAddonReady(addon))
       {
         try
         {
           var retainerList = new AddonMaster.RetainerList(addon);
           retainerNameArray = [.. retainerList.Retainers.Select(r => r.Name)];
-          
+
           // Update stored retainer names if they changed
           var currentNames = new HashSet<string>(retainerNameArray);
           var storedNames = new HashSet<string>(Plugin.Configuration.LastKnownRetainerNames);
-          
+
           if (!currentNames.SetEquals(storedNames))
           {
             // Names changed - update the stored list
             Plugin.Configuration.LastKnownRetainerNames = [.. retainerNameArray];
-            
+
             // Remove enabled status for retainers that no longer exist
             Plugin.Configuration.EnabledRetainerNames.RemoveWhere(name => !currentNames.Contains(name) && name != Configuration.ALL_DISABLED_SENTINEL);
-            
+
             Plugin.Configuration.Save();
             namesUpdated = true;
           }
@@ -732,7 +801,7 @@ public sealed class ConfigWindow : Window
           if (i % 2 == 0 && i < namesToDisplay.Length - 1)
             ImGui.SameLine(columnOffset);
         }
-        
+
         if (retainerNameArray == null && !namesUpdated)
         {
           ImGui.TextColored(new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1), "(Using cached retainer list - open retainer list to refresh)");
@@ -743,8 +812,10 @@ public sealed class ConfigWindow : Window
         ImGui.TextColored(new System.Numerics.Vector4(1, 1, 0, 1), "Open retainer list in-game to configure retainer selection");
       }
     }
+  }
 
-    ImGui.Separator();
+  private void DrawHotkeysTab()
+  {
     // --- Hotkeys ---
     bool enablePostPinchKey = Plugin.Configuration.EnablePostPinchkey;
     ImGui.Text("-- Hotkeys --");
@@ -771,11 +842,11 @@ public sealed class ConfigWindow : Window
       ImGui.Text("Post'n'Pinch Key:");
       ImGui.SameLine();
 
-      index = Array.IndexOf(_virtualKeyStrings, Plugin.Configuration.PostPinchKey.ToString());
+      var postPinchKeyIndex = Array.IndexOf(_virtualKeyStrings, Plugin.Configuration.PostPinchKey.ToString());
       ImGui.SetNextItemWidth(150);
-      if (ImGui.Combo("##postPinchKeyCombo", ref index, _virtualKeyStrings, _virtualKeyStrings.Length))
+      if (ImGui.Combo("##postPinchKeyCombo", ref postPinchKeyIndex, _virtualKeyStrings, _virtualKeyStrings.Length))
       {
-        Plugin.Configuration.PostPinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[index]);
+        Plugin.Configuration.PostPinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[postPinchKeyIndex]);
         Plugin.Configuration.Save();
       }
 
@@ -815,11 +886,11 @@ public sealed class ConfigWindow : Window
       ImGui.SameLine();
 
       string currentKey = Plugin.Configuration.PinchKey.ToString();
-      index = Array.IndexOf(_virtualKeyStrings, currentKey);
+      var pinchKeyIndex = Array.IndexOf(_virtualKeyStrings, currentKey);
       ImGui.SetNextItemWidth(150);
-      if (ImGui.Combo("##pinchKeyCombo", ref index, _virtualKeyStrings, _virtualKeyStrings.Length))
+      if (ImGui.Combo("##pinchKeyCombo", ref pinchKeyIndex, _virtualKeyStrings, _virtualKeyStrings.Length))
       {
-        Plugin.Configuration.PinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[index]);
+        Plugin.Configuration.PinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[pinchKeyIndex]);
         Plugin.Configuration.Save();
       }
 

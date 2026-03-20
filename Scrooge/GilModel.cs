@@ -17,7 +17,6 @@ public record SaleRecord
   public int Quantity { get; init; }
   public long TotalGil => (long)UnitPrice * Quantity;
   public bool IsHQ { get; init; }
-  public bool IsMannequin { get; init; }
   public string RetainerName { get; init; } = string.Empty;
   public string BuyerName { get; init; } = string.Empty;
   public long SaleTimestamp { get; init; }                     // Unix seconds from game server
@@ -64,4 +63,14 @@ public record MarketSnapshot
   public int ItemCount { get; init; }                // Total # of listings across all retainers
   public long TotalListingValue { get; init; }       // Sum of UnitPrice * Quantity for all listings
   public double AverageListingAgeDays { get; init; } // Average days on market across all listings
+}
+
+/// <summary>
+/// A quote for the ConfigWindow header, selected from the SQLite quotes table.
+/// </summary>
+public record QuoteRecord
+{
+  public int Id { get; init; }
+  public string Text { get; init; } = string.Empty;
+  public string Author {  get; init; } = string.Empty;
 }
