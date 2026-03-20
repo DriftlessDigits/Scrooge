@@ -43,6 +43,29 @@ internal static class GilStorage
   /// <summary>Begins a transaction. Caller must Commit() or Dispose() to rollback.</summary>
   internal static SqliteTransaction BeginTransaction() => _connection!.BeginTransaction();
 
+  /// <summary>Drops all tables, restores JSON backup if available, and re-runs bootstrap. Debug only.</summary>
+  internal static void ResetDatabase()
+  {
+    var tables = new[] { "transactions", "retainer_snapshots", "gil_snapshots",
+        "market_snapshots", "listings", "category_groups", "quotes" };
+    foreach (var table in tables)
+    {
+      using var cmd = new SqliteCommand($"DROP TABLE IF EXISTS {table}", _connection);
+      cmd.ExecuteNonQuery();
+    }
+    using var pragma = new SqliteCommand("PRAGMA user_version = 0;", _connection);
+    pragma.ExecuteNonQuery();
+
+    // Restore JSON backup so migration can re-run
+    var jsonPath = Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "gil_data.json");
+    var bakPath = jsonPath + ".bak";
+    if (!File.Exists(jsonPath) && File.Exists(bakPath))
+      File.Move(bakPath, jsonPath);
+
+    GilStorageBootstrap.Run(_connection!);
+    Prune();
+  }
+
   /// <summary>Closes the database connection. Called from Plugin.Dispose().</summary>
   internal static void Dispose()
   {
@@ -50,6 +73,7 @@ internal static class GilStorage
     _connection?.Dispose();
     _connection = null;
   }
+
 
   // =========================================================================
   // Gil Tracking — Writes (called from GilTracker)
@@ -59,13 +83,15 @@ internal static class GilStorage
   /// Inserts a gil balance snapshot. Returns the new row ID so retainer
   /// snapshots can be linked to it.
   /// </summary>
-  internal static long InsertGilSnapshot(long timestamp, long playerGil, string source)
+  internal static long InsertGilSnapshot(long timestamp, long playerGil, string source,
+      SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
       @"INSERT INTO gil_snapshots (timestamp, player_gil, source)
       VALUES (@ts, @gil, @src);
       SELECT last_insert_rowid();",
       _connection);
+    cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@gil", playerGil);
     cmd.Parameters.AddWithValue("@src", source);
@@ -73,12 +99,14 @@ internal static class GilStorage
   }
 
   /// <summary>Inserts a single retainer's gil balance, linked to a snapshot.</summary>
-  internal static void InsertRetainerSnapshot(long snapshotId, string retainerName, long gil)
+  internal static void InsertRetainerSnapshot(long snapshotId, string retainerName, long gil,
+      SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO retainer_snapshots (snapshot_id, retainer_name, gil) 
+      @"INSERT INTO retainer_snapshots (snapshot_id, retainer_name, gil)
       VALUES (@sid, @name, @gil)",
       _connection);
+    cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@sid", snapshotId);
     cmd.Parameters.AddWithValue("@name", retainerName);
     cmd.Parameters.AddWithValue("@gil", gil);
@@ -88,12 +116,14 @@ internal static class GilStorage
   /// <summary>Inserts a gil transaction (sale, purchase, etc.).</summary>
   internal static void InsertTransaction(long timestamp, string direction, string source,
       long amount, uint itemId, string itemName, string category, int quantity,
-      int unitPrice, bool isHq, string retainerName, string counterparty)
+      int unitPrice, bool isHq, string retainerName, string counterparty,
+      SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
       @"INSERT INTO transactions (timestamp, direction, source, amount, item_id, item_name, category, quantity, unit_price, is_hq, retainer_name, counterparty)
       VALUES (@ts, @dir, @src, @amt, @iid, @iname, @cat, @qty, @up, @hq, @ret, @cpty)",
       _connection);
+    cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@dir", direction);
     cmd.Parameters.AddWithValue("@src", source);
@@ -146,13 +176,14 @@ internal static class GilStorage
   /// </summary>
   internal static void UpsertListing(string retainerName, int slotIndex, uint itemId,
       string itemName, string category, int unitPrice, int quantity, bool isHq,
-      long firstSeen, long lastUpdated)
+      long firstSeen, long lastUpdated, SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
       @"INSERT OR REPLACE INTO listings
       (retainer_name, slot_index, item_id, item_name, category, unit_price, quantity, is_hq, first_seen, last_updated)
       VALUES (@ret, @slot, @iid, @iname, @cat, @up, @qty, @hq, @fs, @lu)",
       _connection);
+    cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ret", retainerName);
     cmd.Parameters.AddWithValue("@slot", slotIndex);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
@@ -172,22 +203,24 @@ internal static class GilStorage
   /// first_seen is preserved because SnapshotListings reads it via
   /// GetFirstSeen() before this delete runs.
   /// </summary>
-  internal static void DeleteRetainerListings(string retainerName)
+  internal static void DeleteRetainerListings(string retainerName, SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
       "DELETE FROM listings WHERE retainer_name = @ret", _connection);
+    cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ret", retainerName);
     cmd.ExecuteNonQuery();
   }
 
   /// <summary>Inserts aggregate market stats for a pinch run.</summary>
   internal static void InsertMarketSnapshot(long timestamp, int itemCount,
-      long totalValue, double avgAge)
+      long totalValue, double avgAge, SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
       @"INSERT INTO market_snapshots (timestamp, item_count, total_listing_value, avg_listing_age_days)
       VALUES (@ts, @cnt, @val, @avg)",
       _connection);
+    cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@cnt", itemCount);
     cmd.Parameters.AddWithValue("@val", totalValue);

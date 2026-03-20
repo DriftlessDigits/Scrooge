@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using ECommons.DalamudServices;
@@ -154,16 +155,16 @@ internal class GilStorageBootstrap
         GilStorage.InsertTransaction(sale.SaleTimestamp, "earned", "retainer_sale",
             sale.TotalGil, sale.ItemId, sale.ItemName, sale.Category,
             sale.Quantity, sale.UnitPrice, sale.IsHQ, sale.RetainerName,
-            sale.BuyerName);
+            sale.BuyerName, transaction);
       }
 
       // GilSnapshots -> gil_snapshots + retainer_snapshots
       foreach (var snap in data.GilHistory)
       {
-        var snapshotId = GilStorage.InsertGilSnapshot(snap.Timestamp, snap.PlayerGil, "pinch_run");
+        var snapshotId = GilStorage.InsertGilSnapshot(snap.Timestamp, snap.PlayerGil, "pinch_run", transaction);
         foreach (var (name, gil) in snap.RetainerGil)
         {
-          GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
+          GilStorage.InsertRetainerSnapshot(snapshotId, name, gil, transaction);
         }
       }
 
@@ -171,7 +172,7 @@ internal class GilStorageBootstrap
       foreach (var ms in data.MarketHistory)
       {
         GilStorage.InsertMarketSnapshot(ms.Timestamp, ms.ItemCount,
-            ms.TotalListingValue, ms.AverageListingAgeDays);
+            ms.TotalListingValue, ms.AverageListingAgeDays, transaction);
       }
 
       // CurrentListings -> listings
@@ -180,7 +181,7 @@ internal class GilStorageBootstrap
         GilStorage.UpsertListing(listing.RetainerName, listing.SlotIndex,
             listing.ItemId, listing.ItemName, listing.Category,
             listing.UnitPrice, listing.Quantity, listing.IsHQ,
-            listing.FirstSeenTimestamp, listing.LastUpdatedTimestamp);
+            listing.FirstSeenTimestamp, listing.LastUpdatedTimestamp, transaction);
       }
 
       transaction.Commit();
@@ -324,6 +325,7 @@ internal class GilStorageBootstrap
     {
       using var cmd = new SqliteCommand(
           "INSERT INTO quotes (text, author) VALUES (@t, @a)", connection);
+      cmd.Transaction = transaction;
       cmd.Parameters.AddWithValue("@t", text);
       cmd.Parameters.AddWithValue("@a", author);
       cmd.ExecuteNonQuery();
@@ -461,10 +463,23 @@ internal class GilStorageBootstrap
       using var cmd = new SqliteCommand(
           "INSERT INTO category_groups (ui_category, display_group) VALUES (@ui, @dg)",
           connection);
+      cmd.Transaction = transaction;
       cmd.Parameters.AddWithValue("@ui", uiCategory);
       cmd.Parameters.AddWithValue("@dg", displayGroup);
       cmd.ExecuteNonQuery();
     }
     transaction.Commit();
+  }
+
+  // =========================================================================
+  // Legacy JSON model (used only for migration from v2.2.0)
+  // =========================================================================
+
+  private class GilData
+  {
+    public List<SaleRecord> Sales { get; set; } = [];
+    public List<GilSnapshot> GilHistory { get; set; } = [];
+    public List<MarketSnapshot> MarketHistory { get; set; } = [];
+    public List<ListingRecord> CurrentListings { get; set; } = [];
   }
 }

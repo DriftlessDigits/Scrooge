@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Numerics;
+using Dalamud.Game.Text;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 
@@ -93,7 +94,7 @@ internal sealed class GilWindow: Window
         foreach (var sale in recentSales)
         {
           ImGui.TableNextRow();
-          ImGui.TableNextColumn(); ImGui.Text(sale.ItemName + (sale.IsHQ ? " \u2726" : ""));
+          ImGui.TableNextColumn(); ImGui.Text(sale.ItemName + (sale.IsHQ ? " " + (char)SeIconChar.HighQuality : ""));
           ImGui.TableNextColumn(); ImGui.Text($"x{sale.Quantity}");
           ImGui.TableNextColumn(); ImGui.Text($"{sale.UnitPrice:N0}");
           ImGui.TableNextColumn(); ImGui.Text($"{sale.TotalGil:N0}");
@@ -164,7 +165,7 @@ internal sealed class GilWindow: Window
         foreach (var item in slowMovers)
         {
           ImGui.TableNextRow();
-          ImGui.TableNextColumn(); ImGui.Text(item.ItemName + (item.IsHQ ? " \u2726" : ""));
+          ImGui.TableNextColumn(); ImGui.Text(item.ItemName + (item.IsHQ ? " " + (char)SeIconChar.HighQuality : ""));
           ImGui.TableNextColumn(); ImGui.Text($"{item.UnitPrice:N0}");
           ImGui.TableNextColumn(); ImGui.Text(item.Category);
           ImGui.TableNextColumn(); ImGui.Text(FormatAge(item.FirstSeenTimestamp));

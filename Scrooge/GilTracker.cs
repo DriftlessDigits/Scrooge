@@ -86,7 +86,7 @@ internal static class GilTracker
     // Without this, a cancelled run would leave partial/empty listings in the DB.
     using var transaction = GilStorage.BeginTransaction();
 
-    GilStorage.DeleteRetainerListings(CurrentRetainerName);
+    GilStorage.DeleteRetainerListings(CurrentRetainerName, transaction);
 
     // Re-insert current items + build in-memory list
     for (int i = 0; i < itemCount; i++)
@@ -114,7 +114,7 @@ internal static class GilTracker
       // Write to DB
       GilStorage.UpsertListing(CurrentRetainerName, slotIndex, itemID,
           cleanName, GetItemCategory(itemID), pricePerUnit, quantity,
-          isHQ, firstSeen, now);
+          isHQ, firstSeen, now, transaction);
 
       // Keep in-memory for FinalizeRun calculations
       _runListings.Add(new ListingRecord

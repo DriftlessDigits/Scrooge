@@ -690,9 +690,7 @@ public sealed class ConfigWindow : Window
     #if DEBUG
     if (ImGui.SmallButton("Reset DB"))
     {
-      GilStorage.Dispose();
-      System.IO.File.Delete(GilStorage.DbPath);
-      GilStorage.Initialize();
+      GilStorage.ResetDatabase();
     }
     #endif
 
