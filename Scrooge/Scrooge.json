@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Added Gil Tracking — captures retainer sales, gil balances, and listing duration during pinch runs. Gil Dashboard (/giltrack) with portfolio summary, recent sales, category breakdown, and slow movers."
+  "Changelog": "SQLite replaces JSON storage for gil tracking data. ConfigWindow reorganized into tabs. Random money quote header in settings. HQ icon in Gil Dashboard."
 }
