@@ -9,13 +9,12 @@ using System.Diagnostics;
 namespace Scrooge.Windows
 {
 
-  /// <summary>Log entry severity for the pinch run log window.</summary>
-  public enum LogSeverity
+  /// <summary>Outcome type for pinch run log entries.</summary>
+  public enum ItemOutcome
   {
-    Debug,
-    Info,
-    Warning,
-    Error
+    Skipped,  // red — rule blocked, no price set
+    NoData,   // yellow — no competition, player decides
+    Outlier   // normal — system handled it, got a price
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
@@ -30,16 +29,24 @@ namespace Scrooge.Windows
   public interface ILogItem { }
 
   /// <summary>A single entry in the pinch run log.</summary>
-  public record LogEntry (LogSeverity Severity, string RetainerName, string ItemName, string Message) : ILogItem;
+  public record LogEntry(ItemOutcome Outcome, string RetainerName, string ItemName, string Message) : ILogItem
+  {
+    public int BaitPrice { get; init; }
+    public int UsedPrice { get; init; }
+  }
 
   /// <summary>A run-level entry (start/end markers, summary stats).</summary>
   public record RunEntry (RunEvent EventType, string Message) : ILogItem;
+
+  /// <summary>Retainer section header. Inserted lazily on first entry for each retainer.</summary>
+  public record RetainerHeader(string RetainerName) : ILogItem;
 
   internal class PinchRunLogWindow : Window
   {
 
     private readonly List<ILogItem> _entries = [];
     private string _currentRetainer = string.Empty;
+    private string _lastRetainerHeader = string.Empty;
     private bool _autoScroll = true;
     private int _itemsAdjusted = 0;
     private int _outliersDetected = 0;
@@ -61,6 +68,7 @@ namespace Scrooge.Windows
 
       _entries.Clear();
       _currentRetainer = string.Empty;
+      _lastRetainerHeader = string.Empty;
       _itemsAdjusted = 0;
       _outliersDetected = 0;
       _totalListingGil = 0;
@@ -83,14 +91,41 @@ namespace Scrooge.Windows
     }
 
     /// <summary>
-    /// Adds an entry to the log. Guards on EnablePinchRunLog internally.
+    /// Adds an entry to the log. Inserts a retainer header automatically
+    /// on the first entry for each retainer. Guards on EnablePinchRunLog.
     /// </summary>
-    public void AddEntry(LogSeverity severity, string itemName, string message)
+    public void AddEntry(ItemOutcome outcome, string itemName, string message)
     {
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      _entries.Add(new LogEntry(severity, _currentRetainer, itemName, message));
+      // Insert retainer header on first entry for this retainer
+      if (_currentRetainer != _lastRetainerHeader && !string.IsNullOrEmpty(_currentRetainer))
+      {
+        _entries.Add(new RetainerHeader(_currentRetainer));
+        _lastRetainerHeader = _currentRetainer;
+      }
+
+      _entries.Add(new LogEntry(outcome, _currentRetainer, itemName, message));
+    }
+
+    /// <summary>Adds an outlier entry with bait/used prices for colored rendering.</summary>
+    public void AddOutlierEntry(string itemName, int baitPrice, int usedPrice)
+    {
+      if (!Plugin.Configuration.EnablePinchRunLog)
+        return;
+
+      if (_currentRetainer != _lastRetainerHeader && !string.IsNullOrEmpty(_currentRetainer))
+      {
+        _entries.Add(new RetainerHeader(_currentRetainer));
+        _lastRetainerHeader = _currentRetainer;
+      }
+
+      _entries.Add(new LogEntry(ItemOutcome.Outlier, _currentRetainer, itemName, "")
+      {
+        BaitPrice = baitPrice,
+        UsedPrice = usedPrice
+      });
     }
 
     /// <summary>
@@ -132,7 +167,7 @@ namespace Scrooge.Windows
     /// </summary>
     public void EndRun()
     {
-      var skipped = _entries.OfType<LogEntry>().Count(e => e.Severity == LogSeverity.Error);
+      var skipped = _entries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.Skipped);
 
       _entries.Add(new RunEntry(RunEvent.End, $"Run Complete — {DateTime.Now:h:mm tt}"));
       _entries.Add(new RunEntry(RunEvent.Summary, $"{_itemsAdjusted} adjusted"));
@@ -226,69 +261,83 @@ namespace Scrooge.Windows
       var footerHeight = ImGui.GetFrameHeightWithSpacing() + 4;
       ImGui.BeginChild("##logEntries", new System.Numerics.Vector2(0, -footerHeight), false);
 
+      bool treeOpen = false;
+
       foreach (var item in _entries)
       {
         switch (item)
         {
           case RunEntry run:
+          {
+            if (treeOpen) { ImGui.TreePop(); treeOpen = false; }
+
+            if (run.EventType == RunEvent.Start || run.EventType == RunEvent.End)
             {
-              // Visual separator for Start/End, indented summary lines
-              if (run.EventType == RunEvent.Start || run.EventType == RunEvent.End)
-              {
-                ImGui.Spacing();
-                ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.5f, 0.5f, 0.5f, 1f)); // gray
-                ImGui.TextWrapped($"--- {run.Message} ---");
-                ImGui.PopStyleColor();
-                ImGui.Spacing();
-              }
-              else if (run.EventType == RunEvent.Summary)
-              {
-                ImGui.Indent(16);
-                ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.8f, 1f, 1f)); // light blue
-                ImGui.TextWrapped(run.Message);
-                ImGui.PopStyleColor();
-                ImGui.Unindent(16);
-              }
-              break;
+              ImGui.Spacing();
+              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.5f, 0.5f, 0.5f, 1f));
+              ImGui.TextWrapped($"--- {run.Message} ---");
+              ImGui.PopStyleColor();
+              ImGui.Spacing();
             }
+            else if (run.EventType == RunEvent.Summary)
+            {
+              ImGui.Indent(16);
+              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.8f, 1f, 1f));
+              ImGui.TextWrapped(run.Message);
+              ImGui.PopStyleColor();
+              ImGui.Unindent(16);
+            }
+            break;
+          }
+
+          case RetainerHeader header:
+          {
+            if (treeOpen) ImGui.TreePop();
+            treeOpen = ImGui.TreeNodeEx(header.RetainerName, ImGuiTreeNodeFlags.DefaultOpen);
+            break;
+          }
 
           case LogEntry entry:
-            {
-              // Color by severity
-              var color = entry.Severity switch
-              {
-                LogSeverity.Error => new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f),   // red
-                LogSeverity.Warning => new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f), // yellow
-                LogSeverity.Info => new System.Numerics.Vector4(0.6f, 0.8f, 1f, 1f),    // light blue
-                LogSeverity.Debug => new System.Numerics.Vector4(0.6f, 0.6f, 0.6f, 1f), // gray
-                _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)                        // white fallback
-              };
+          {
+            if (!treeOpen) break;
 
-              var icon = entry.Severity switch
+            if (entry.Outcome == ItemOutcome.Outlier)
+            {
+              // Normal text with colored prices — mimics in-game chat
+              ImGui.Text($"{entry.ItemName} — skipping ");
+              ImGui.SameLine(0, 0);
+              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f));
+              ImGui.Text($"{entry.BaitPrice:N0}");
+              ImGui.PopStyleColor();
+              ImGui.SameLine(0, 0);
+              ImGui.Text(" gil, using ");
+              ImGui.SameLine(0, 0);
+              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.4f, 1f, 0.4f, 1f));
+              ImGui.Text($"{entry.UsedPrice:N0}");
+              ImGui.PopStyleColor();
+              ImGui.SameLine(0, 0);
+              ImGui.Text(" gil");
+            }
+            else
+            {
+              var color = entry.Outcome switch
               {
-                LogSeverity.Error => "Error: ",
-                LogSeverity.Warning => "Warning: ",
-                LogSeverity.Info => "Info: ",
-                LogSeverity.Debug => "Debug: ",
-                _ => "·"
+                ItemOutcome.Skipped => new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f),
+                ItemOutcome.NoData => new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f),
+                _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
               };
 
               ImGui.PushStyleColor(ImGuiCol.Text, color);
-              var header = string.IsNullOrEmpty(entry.RetainerName)
-                ? $"{icon} {entry.ItemName}"
-                : $"{icon} [{entry.RetainerName}] {entry.ItemName}";
-              ImGui.TextWrapped(header);
+              ImGui.TextWrapped($"{entry.ItemName} — {entry.Message}");
               ImGui.PopStyleColor();
-
-              ImGui.Indent(16);
-              ImGui.TextWrapped(entry.Message);
-              ImGui.Unindent(16);
-
-              ImGui.Spacing();
-              break;
             }
+
+            break;
+          }
         }
       }
+
+      if (treeOpen) ImGui.TreePop();
 
       // Auto-scroll to bottom when new entries appear
       if (_autoScroll && ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 20)
@@ -301,6 +350,8 @@ namespace Scrooge.Windows
       if (ImGui.Button("Clear"))
       {
         _entries.Clear();
+        _currentRetainer = string.Empty;
+        _lastRetainerHeader = string.Empty;
         _itemsAdjusted = 0;
         _outliersDetected = 0;
         _totalListingGil = 0;
@@ -366,8 +417,16 @@ namespace Scrooge.Windows
         }
       }
 
-      var copyButtonWidth = ImGui.CalcTextSize("Copy All").X + ImGui.GetStyle().FramePadding.X * 2;
-      ImGui.SameLine(ImGui.GetWindowWidth() - copyButtonWidth - ImGui.GetStyle().WindowPadding.X);
+      var gilBtnWidth = ImGui.CalcTextSize("Gil Dashboard").X + ImGui.GetStyle().FramePadding.X * 2;
+      var copyBtnWidth = ImGui.CalcTextSize("Copy All").X + ImGui.GetStyle().FramePadding.X * 2;
+      var spacing = ImGui.GetStyle().ItemSpacing.X;
+      var padding = ImGui.GetStyle().WindowPadding.X;
+
+      ImGui.SameLine(ImGui.GetWindowWidth() - gilBtnWidth - copyBtnWidth - spacing - padding);
+      if (ImGui.Button("Gil Dashboard"))
+        Plugin.GilDashboard.IsOpen = true;
+
+      ImGui.SameLine();
       if (ImGui.Button("Copy All"))
       {
         var sb = new StringBuilder();
@@ -382,12 +441,23 @@ namespace Scrooge.Windows
                 sb.Append("  ").AppendLine(run.Message);
               break;
 
+            case RetainerHeader rh:
+              sb.AppendLine($"[{rh.RetainerName}]");
+              break;
+
             case LogEntry entry:
-              var header = string.IsNullOrEmpty(entry.RetainerName)
-                ? $"{entry.Severity}: {entry.ItemName}"
-                : $"{entry.Severity}: [{entry.RetainerName}] {entry.ItemName}";
-              sb.AppendLine(header);
-              sb.Append("  ").AppendLine(entry.Message);
+              if (entry.Outcome == ItemOutcome.Outlier)
+                sb.Append("  ").AppendLine($"Outlier: {entry.ItemName} — skipping {entry.BaitPrice:N0} gil, using {entry.UsedPrice:N0} gil");
+              else
+              {
+                var prefix = entry.Outcome switch
+                {
+                  ItemOutcome.Skipped => "Skipped",
+                  ItemOutcome.NoData => "No data",
+                  _ => "Entry"
+                };
+                sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");
+              }
               break;
           }
         }

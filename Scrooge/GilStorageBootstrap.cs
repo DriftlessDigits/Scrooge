@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 1;
+  private const int CurrentSchemaVersion = 2;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -32,8 +32,17 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 1);
     }
 
-    // Future migrations:
-    // if (version < 2) { MigrateV2(connection); SetSchemaVersion(connection, 2); }
+    if (version < 2)
+    {
+      MigrateV2(connection);
+      SetSchemaVersion(connection, 2);
+    }
+
+    // Idempotent fixes — safe to run every startup
+    using var fixDashes = new SqliteCommand(
+        "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
+        connection);
+    fixDashes.ExecuteNonQuery();
   }
 
   private static int GetSchemaVersion(SqliteConnection connection)
@@ -378,10 +387,10 @@ internal class GilStorageBootstrap
             ("Marauder's Arm", "Weapons"),
             ("Archer's Arm", "Weapons"),
             ("Lancer's Arm", "Weapons"),
-            ("One–handed Thaumaturge's Arm", "Weapons"),
-            ("Two–handed Thaumaturge's Arm", "Weapons"),
-            ("One–handed Conjurer's Arm", "Weapons"),
-            ("Two–handed Conjurer's Arm", "Weapons"),
+            ("One-handed Thaumaturge's Arm", "Weapons"),
+            ("Two-handed Thaumaturge's Arm", "Weapons"),
+            ("One-handed Conjurer's Arm", "Weapons"),
+            ("Two-handed Conjurer's Arm", "Weapons"),
             ("Arcanist's Grimoire", "Weapons"),
             ("Scholar's Arm", "Weapons"),
             ("Rogue's Arm", "Weapons"),
@@ -465,6 +474,48 @@ internal class GilStorageBootstrap
           connection);
       cmd.Transaction = transaction;
       cmd.Parameters.AddWithValue("@ui", uiCategory);
+      cmd.Parameters.AddWithValue("@dg", displayGroup);
+      cmd.ExecuteNonQuery();
+    }
+    transaction.Commit();
+  }
+
+  // =========================================================================
+  // Schema V2: Add macro_group to category_groups
+  // =========================================================================
+
+  /// <summary>Schema v2: Add macro_group column to category_groups for 3-level category tree.</summary>
+  private static void MigrateV2(SqliteConnection connection)
+  {
+    using var alterCmd = new SqliteCommand(
+        "ALTER TABLE category_groups ADD COLUMN macro_group TEXT NOT NULL DEFAULT ''",
+        connection);
+    alterCmd.ExecuteNonQuery();
+
+    var macroMap = new Dictionary<string, string>
+    {
+      { "Armor", "Gear" },
+      { "Weapons", "Gear" },
+      { "Tools", "Gear" },
+      { "Accessories", "Gear" },
+      { "Crafting Materials", "Crafting" },
+      { "Consumables", "Consumables" },
+      { "Housing", "Housing" },
+      { "Collectibles", "Collectibles" },
+      { "Materia", "Other" },
+      { "Dye", "Other" },
+      { "Gardening", "Other" },
+      { "Miscellany", "Other" },
+    };
+
+    using var transaction = connection.BeginTransaction();
+    foreach (var (displayGroup, macroGroup) in macroMap)
+    {
+      using var cmd = new SqliteCommand(
+          "UPDATE category_groups SET macro_group = @macro WHERE display_group = @dg",
+          connection);
+      cmd.Transaction = transaction;
+      cmd.Parameters.AddWithValue("@macro", macroGroup);
       cmd.Parameters.AddWithValue("@dg", displayGroup);
       cmd.ExecuteNonQuery();
     }
