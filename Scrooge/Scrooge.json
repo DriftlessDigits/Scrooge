@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "SQLite replaces JSON storage for gil tracking data. ConfigWindow reorganized into tabs. Random money quote header in settings. HQ icon in Gil Dashboard."
+  "Changelog": "Pinch Run Log overhaul — outcome-based entries with collapsible retainer sections. Gil Dashboard — 3-level category breakdown, new Retainers summary tab."
 }
