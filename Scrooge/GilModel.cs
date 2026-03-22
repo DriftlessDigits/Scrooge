@@ -74,3 +74,15 @@ public record QuoteRecord
   public string Text { get; init; } = string.Empty;
   public string Author {  get; init; } = string.Empty;
 }
+
+/// <summary>
+/// Per-retainer summary for the Retainers tab in the Gil Dashboard.
+/// </summary>
+public record RetainerSummary
+{
+  public string RetainerName { get; init; } = string.Empty;
+  public long LastSaleTimestamp { get; init; }
+  public int SaleCount { get; init; }
+  public long TotalGil { get; init; }
+  public double AvgListingAgeDays { get; init; }
+}

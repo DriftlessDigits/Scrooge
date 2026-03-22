@@ -135,7 +135,7 @@ public static class Communicator
   /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintAboveMaxCutError(string itemName)
   {
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
+    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _), $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
 
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
@@ -160,7 +160,7 @@ public static class Communicator
   /// <param name="increasePercentage">The actual increase percentage that was attempted, which exceeded the cap.</param>
   public static void PrintAboveMaxIncreaseError(string itemName, float increasePercentage)
   {
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _),
+    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _),
       $"Price increase exceeds max ({Plugin.Configuration.MaxPriceIncreasePercentage}%) — would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}%");
 
     if (!Plugin.Configuration.ShowErrorsInChat)
@@ -185,7 +185,7 @@ public static class Communicator
   public static void PrintBelowPriceFloorError(string itemName)
   {
     var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), $"Below {floorLabel}");
+    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _), $"Below {floorLabel}");
 
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
@@ -208,7 +208,7 @@ public static class Communicator
   public static void PrintBelowMinimumListingPriceError(string itemName)
   {
     var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), $"Below minimum listing price ({minPrice} gil)");
+    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _), $"Below minimum listing price ({minPrice} gil)");
 
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
@@ -235,7 +235,7 @@ public static class Communicator
   {
     var item = ItemSheet.GetRow(itemId);
     var itemName = item.Name.ToString();
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Warning, itemName, $"Outlier: {outlierPrice:N0}g → {nextPrice:N0}g");
+    Plugin.PinchRunLog?.AddOutlierEntry(itemName, outlierPrice, nextPrice);
     Plugin.PinchRunLog?.IncrementOutliers();
 
     if (!Plugin.Configuration.ShowOutlierDetectionMessages)
@@ -277,7 +277,7 @@ public static class Communicator
   /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintNoPriceToSetError(string itemName)
   {
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, CleanItemName(itemName, out _), "No market board data");
+    Plugin.PinchRunLog?.AddEntry(ItemOutcome.NoData, CleanItemName(itemName, out _), "No market board data");
 
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
@@ -306,7 +306,5 @@ public static class Communicator
         .Build();
         
     Svc.Chat.PrintError(seString);
-
-    Plugin.PinchRunLog?.AddEntry(LogSeverity.Error, "","All retainers disabled");
   }
 }

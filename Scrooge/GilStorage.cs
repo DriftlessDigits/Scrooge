@@ -306,29 +306,89 @@ internal static class GilStorage
   }
 
   /// <summary>
-  /// Gets sales grouped by display group since a timestamp.
-  /// JOINs with category_groups to roll up granular UI categories
-  /// (e.g., "Gladiator's Arm" → "Weapons"). Unmapped categories
-  /// fall back to their raw ItemUICategory name.
+  /// Gets sales grouped by macro_group, display_group, and raw ui_category
+  /// for the 3-level category tree in the Gil Dashboard.
   /// </summary>
-  internal static List<(string Category, int Count, long Gil)> GetCategorySales(
-      long sinceTimestamp)
+  internal static List<(string MacroGroup, string MainGroup, string Category, int Count, long Gil)>
+      GetCategoryTree(long sinceTimestamp)
   {
-    var results = new List<(string Category, int Count, long Gil)>();
+    var results = new List<(string MacroGroup, string MainGroup, string Category, int Count, long Gil)>();
     using var cmd = new SqliteCommand(
-      @"SELECT COALESCE(cg.display_group, t.category) as grp,
+      @"SELECT COALESCE(cg.macro_group, '') as macro,
+      COALESCE(cg.display_group, t.category) as main,
+      t.category as micro,
       COUNT(*) as cnt, SUM(t.amount) as gil
       FROM transactions t
       LEFT JOIN category_groups cg ON t.category = cg.ui_category
       WHERE t.direction = 'earned' AND t.source = 'retainer_sale' AND t.timestamp > @since
-      GROUP BY grp
-      ORDER BY gil DESC",
+      GROUP BY macro, main, micro
+      ORDER BY macro, gil DESC",
       _connection);
     cmd.Parameters.AddWithValue("@since", sinceTimestamp);
     using var reader = cmd.ExecuteReader();
     while (reader.Read())
     {
-      results.Add((reader.GetString(0), reader.GetInt32(1), reader.GetInt64(2)));
+      results.Add((
+        reader.GetString(0),
+        reader.GetString(1),
+        reader.GetString(2),
+        reader.GetInt32(3),
+        reader.GetInt64(4)));
+    }
+    return results;
+  }
+
+  /// <summary>
+  /// Gets per-retainer summary: last sale, sale count, total gil, and average listing age.
+  /// Sources retainer names from both transactions and listings so retainers appear
+  /// regardless of which table has data.
+  /// </summary>
+  internal static List<RetainerSummary> GetRetainerSummary(long sinceTimestamp)
+  {
+    var results = new List<RetainerSummary>();
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    using var cmd = new SqliteCommand(
+      @"SELECT
+      r.retainer_name,
+      COALESCE(t.last_sale, 0) as last_sale,
+      COALESCE(t.sale_count, 0) as sale_count,
+      COALESCE(t.total_gil, 0) as total_gil,
+      COALESCE(la.avg_age, 0) as avg_age_days
+      FROM (
+        SELECT retainer_name FROM transactions WHERE direction = 'earned' AND source = 'retainer_sale'
+        UNION
+        SELECT retainer_name FROM listings
+      ) r
+      LEFT JOIN (
+        SELECT retainer_name,
+          MAX(timestamp) as last_sale,
+          COUNT(*) as sale_count,
+          SUM(amount) as total_gil
+        FROM transactions
+        WHERE direction = 'earned' AND source = 'retainer_sale' AND timestamp > @since
+        GROUP BY retainer_name
+      ) t ON r.retainer_name = t.retainer_name
+      LEFT JOIN (
+        SELECT retainer_name, AVG((@now - first_seen) / 86400.0) as avg_age
+        FROM listings
+        GROUP BY retainer_name
+      ) la ON r.retainer_name = la.retainer_name
+      ORDER BY COALESCE(t.total_gil, 0) DESC",
+      _connection);
+    cmd.Parameters.AddWithValue("@since", sinceTimestamp);
+    cmd.Parameters.AddWithValue("@now", now);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      results.Add(new RetainerSummary
+      {
+        RetainerName = reader.GetString(0),
+        LastSaleTimestamp = reader.GetInt64(1),
+        SaleCount = reader.GetInt32(2),
+        TotalGil = reader.GetInt64(3),
+        AvgListingAgeDays = reader.GetDouble(4),
+      });
     }
     return results;
   }
