@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Pinch Run Log overhaul — outcome-based entries with collapsible retainer sections. Gil Dashboard — 3-level category breakdown, new Retainers summary tab."
+  "Changelog": "Fixed gil tracking — listings and market snapshots now capture correctly with post-adjustment prices. Added sortable column headers to Gil Dashboard tables."
 }
