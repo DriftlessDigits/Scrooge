@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Game.Text;
@@ -88,14 +89,24 @@ internal sealed class GilWindow: Window
 
     if (recentSales.Count > 0)
     {
-      if (ImGui.BeginTable("RecentSales", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      if (ImGui.BeginTable("RecentSales", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
         ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.None, 30);
         ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 80);
         ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 80);
-        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.None, 100);
+        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 100);
         ImGui.TableHeadersRow();
+
+        var (col, asc) = GetSortSpec();
+        recentSales = col switch
+        {
+          1 => Order(recentSales, s => s.Quantity, asc),
+          2 => Order(recentSales, s => s.UnitPrice, asc),
+          3 => Order(recentSales, s => s.TotalGil, asc),
+          4 => Order(recentSales, s => s.SaleTimestamp, asc),
+          _ => Order(recentSales, s => s.ItemName, asc),
+        };
 
         foreach (var sale in recentSales)
         {
@@ -145,12 +156,20 @@ internal sealed class GilWindow: Window
 
     if (ImGui.CollapsingHeader("By Group", ImGuiTreeNodeFlags.DefaultOpen))
     {
-      if (ImGui.BeginTable("CatMacro", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      if (ImGui.BeginTable("CatMacro", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
         ImGui.TableSetupColumn("Group", ImGuiTableColumnFlags.None, 150);
         ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 60);
-        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.None, 100);
+        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.DefaultSort, 100);
         ImGui.TableHeadersRow();
+
+        var (col, asc) = GetSortSpec();
+        macroGroups = col switch
+        {
+          1 => Order(macroGroups, g => g.Count, asc),
+          2 => Order(macroGroups, g => g.Gil, asc),
+          _ => Order(macroGroups, g => g.Group, asc),
+        };
 
         foreach (var g in macroGroups)
         {
@@ -233,14 +252,24 @@ internal sealed class GilWindow: Window
       return;
     }
 
-    if (ImGui.BeginTable("Retainers", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+    if (ImGui.BeginTable("Retainers", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
     {
-      ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.None, 120);
+      ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.DefaultSort, 120);
       ImGui.TableSetupColumn("Last Sale", ImGuiTableColumnFlags.None, 70);
       ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 50);
       ImGui.TableSetupColumn("Gil Earned", ImGuiTableColumnFlags.None, 100);
       ImGui.TableSetupColumn("Avg Listing Age", ImGuiTableColumnFlags.None, 90);
       ImGui.TableHeadersRow();
+
+      var (col, asc) = GetSortSpec();
+      retainers = col switch
+      {
+        1 => Order(retainers, r => r.LastSaleTimestamp, asc),
+        2 => Order(retainers, r => r.SaleCount, asc),
+        3 => Order(retainers, r => r.TotalGil, asc),
+        4 => Order(retainers, r => r.AvgListingAgeDays, asc),
+        _ => Order(retainers, r => r.RetainerName, asc),
+      };
 
       foreach (var r in retainers)
       {
@@ -266,13 +295,22 @@ internal sealed class GilWindow: Window
 
     if (slowMovers.Count > 0)
     {
-      if (ImGui.BeginTable("SlowMovers", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      if (ImGui.BeginTable("SlowMovers", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
         ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 80);
         ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.None, 100);
-        ImGui.TableSetupColumn("Listed", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableSetupColumn("Listed", ImGuiTableColumnFlags.DefaultSort, 60);
         ImGui.TableHeadersRow();
+
+        var (col, asc) = GetSortSpec();
+        slowMovers = col switch
+        {
+          1 => Order(slowMovers, m => m.UnitPrice, asc),
+          2 => Order(slowMovers, m => m.Category, asc),
+          3 => Order(slowMovers, m => m.FirstSeenTimestamp, asc),
+          _ => Order(slowMovers, m => m.ItemName, asc),
+        };
 
         foreach (var item in slowMovers)
         {
@@ -298,5 +336,23 @@ internal sealed class GilWindow: Window
     if (age < 3600) return $"{age / 60}m ago";
     if (age < 86400) return $"{age / 3600}h ago";
     return $"{age / 86400}d ago";
+  }
+
+  private static (int Column, bool Ascending) GetSortSpec()
+  {
+    var specs = ImGui.TableGetSortSpecs();
+    if (specs.SpecsCount > 0)
+    {
+      var spec = specs.Specs;
+      return (spec.ColumnIndex, spec.SortDirection == ImGuiSortDirection.Ascending);
+    }
+    return (0, true);
+  }
+
+  private static List<T> Order<T, TKey>(List<T> list, Func<T, TKey> keySelector, bool ascending)
+  {
+    return ascending
+        ? list.OrderBy(keySelector).ToList()
+        : list.OrderByDescending(keySelector).ToList();
   }
 }

@@ -1,4 +1,5 @@
 ﻿using Dalamud.Game.Addon.Lifecycle;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Interface.Utility;
 using Dalamud.Utility;
@@ -323,10 +324,14 @@ namespace Scrooge
       _taskManager.Enqueue(ClickSellItems, $"ClickSellItems{index}");
       _taskManager.DelayNext(500);
 
-      // Gil tracking: snapshot all listings from the sell list
+      // Gil tracking: set retainer context and snapshot all listings from the sell list
       if (Plugin.Configuration.EnableGilTracking)
       {
-        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, $"SnapshotListings{index}");
+        _taskManager.Enqueue(() => { unsafe {
+            var rm = RetainerManager.Instance();
+            GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+        } GilTracker.SnapshotListings(); return true;
+        }, $"SnapshotListings{index}");
       }
 
       _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
@@ -452,9 +457,10 @@ namespace Scrooge
       // Gil tracking: start run, set retainer, snapshot
       if (Plugin.Configuration.EnableGilTracking)
       {
-        GilTracker.StartRun();
         var rm = RetainerManager.Instance();
-        GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+        var retainerName = rm->GetActiveRetainer()->NameString;
+        GilTracker.StartRun(retainerName);
+        GilTracker.SetRetainer(retainerName);
         _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
       }
         
@@ -661,6 +667,7 @@ namespace Scrooge
     private unsafe bool? SetNewPrice()
     {
       var listingQuantity = 1;  // captured for finally block
+      ItemPayload? itemPayload = null;
 
       try
       {
@@ -675,6 +682,9 @@ namespace Scrooge
         {
           var ui = &retainerSell->AtkUnitBase;
           var itemName = retainerSell->ItemName->NodeText.ToString();
+          itemPayload = Communicator.RawItemNameToItemPayload(itemName);
+          if (itemPayload != null)
+            GilTracker.GetItemCategory(itemPayload.ItemId);
           _oldPrice = retainerSell->AskingPrice->Value;
           listingQuantity = retainerSell->AtkValues[8].Int;  // listing stack size
 
@@ -741,7 +751,11 @@ namespace Scrooge
         {
           var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
           if (listingValue > 0)
+          {
             Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
+            if (Plugin.Configuration.EnableGilTracking && itemPayload != null)
+              GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
+          }
         }
 
         _oldPrice = null;

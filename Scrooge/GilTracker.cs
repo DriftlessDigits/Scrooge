@@ -17,9 +17,13 @@ namespace Scrooge;
 internal static class GilTracker
 {
   private static readonly Lumina.Excel.ExcelSheet<Item> _items = Svc.Data.GetExcelSheet<Item>();
+  private static HashSet<string>? _mappedCategories;
 
   // Run-level State
   private static readonly List<ListingRecord> _runListings = [];
+  private static string _runSource = "full";
+  private static int _finalItemCount;
+  private static long _finalListingValue;
 
   /// <summary>Current retainer name — set by AutoPinch, read by the hook.</summary>
   public static string CurrentRetainerName { get; set; } = String.Empty;
@@ -28,7 +32,11 @@ internal static class GilTracker
 
   public static string GetItemCategory(uint itemID)
   {
-    return _items.GetRow(itemID).ItemUICategory.ValueNullable?.Name.ToString() ?? "Unknown";
+    var category = _items.GetRow(itemID).ItemUICategory.ValueNullable?.Name.ToString() ?? "Unknown";
+    _mappedCategories ??= GilStorage.GetMappedCategories();
+    if (!_mappedCategories.Contains(category))
+      Svc.Log.Warning($"[GilTrack] Unmapped category: \"{category}\" (itemID={itemID}, name={GetItemName(itemID)})");
+    return category;
   }
 
   public static string GetItemName(uint itemID)
@@ -39,10 +47,26 @@ internal static class GilTracker
   // --- Pinch Run Integration ---
 
   /// <summary>Called at pinch run start. Clears run-level state.</summary>
-  public static void StartRun()
+  /// <param name="source">"full" for all-retainer runs, or the retainer name for single-retainer runs.</param>
+  public static void StartRun(string source = "full")
   {
     _runListings.Clear();
     CurrentRetainerName = String.Empty;
+    _runSource = source;
+    _finalItemCount = 0;
+    _finalListingValue = 0;
+    _mappedCategories ??= GilStorage.GetMappedCategories();
+  }
+
+  /// <summary>
+  /// Records the final (post-adjustment) price for an item and updates the listing in the DB.
+  /// Called from AutoPinch.SetNewPrice for every item after pricing.
+  /// </summary>
+  public static void RecordFinalPrice(uint itemId, int unitPrice, int quantity)
+  {
+    _finalItemCount++;
+    _finalListingValue += (long)unitPrice * quantity;
+    GilStorage.UpdateListingPrice(CurrentRetainerName, itemId, unitPrice);
   }
 
   /// <summary>Set the current retainer context (called per retainer in the run).</summary>
@@ -99,7 +123,8 @@ internal static class GilTracker
       var slotIndex = addon->AtkValues[baseIdx + 5].Int;
 
       var isHQ = iconId >= 1000000;
-      if (!int.TryParse(priceStr.Replace(",", ""), out var pricePerUnit))
+      var priceDigits = new string(priceStr.Where(char.IsDigit).ToArray());
+      if (!int.TryParse(priceDigits, out var pricePerUnit))
         continue;
 
       var cleanName = Communicator.CleanItemName(itemName, out _);
@@ -162,15 +187,14 @@ internal static class GilTracker
     foreach (var (name, gil) in retainerGil)
       GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
 
-    // Market snapshot → DB (computed from _runListings, same as before)
-    var totalListingValue = _runListings.Sum(l => (long)l.UnitPrice * l.Quantity);
+    // Market snapshot → DB (post-adjustment values from RecordFinalPrice)
     var avgAgeDays = _runListings.Count > 0
         ? _runListings.Average(l => (now - l.FirstSeenTimestamp) / 86400.0)
         : 0.0;
-    GilStorage.InsertMarketSnapshot(now, _runListings.Count, totalListingValue, avgAgeDays);
+    GilStorage.InsertMarketSnapshot(now, _finalItemCount, _finalListingValue, avgAgeDays, _runSource);
 
-    Svc.Log.Info($"[GilTrack] Run complete: {_runListings.Count} listings, " +
-        $"{totalListingValue:N0}g on market, {playerGil:N0}g player");
+    Svc.Log.Info($"[GilTrack] Run complete: {_finalItemCount} listings, " +
+        $"{_finalListingValue:N0}g on market, {playerGil:N0}g player");
   }
 
   // --- Sale History Processing (called from hook) ---

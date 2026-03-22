@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 2;
+  private const int CurrentSchemaVersion = 3;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -36,6 +36,12 @@ internal class GilStorageBootstrap
     {
       MigrateV2(connection);
       SetSchemaVersion(connection, 2);
+    }
+
+    if (version < 3)
+    {
+      MigrateV3(connection);
+      SetSchemaVersion(connection, 3);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -109,7 +115,8 @@ internal class GilStorageBootstrap
                 timestamp INTEGER NOT NULL,
                 item_count INTEGER NOT NULL,
                 total_listing_value INTEGER NOT NULL,
-                avg_listing_age_days REAL NOT NULL
+                avg_listing_age_days REAL NOT NULL,
+                source TEXT NOT NULL DEFAULT 'full'
             )",
             @"CREATE TABLE IF NOT EXISTS category_groups (
                 ui_category TEXT PRIMARY KEY,
@@ -181,7 +188,7 @@ internal class GilStorageBootstrap
       foreach (var ms in data.MarketHistory)
       {
         GilStorage.InsertMarketSnapshot(ms.Timestamp, ms.ItemCount,
-            ms.TotalListingValue, ms.AverageListingAgeDays, transaction);
+            ms.TotalListingValue, ms.AverageListingAgeDays, "full", transaction);
       }
 
       // CurrentListings -> listings
@@ -520,6 +527,24 @@ internal class GilStorageBootstrap
       cmd.ExecuteNonQuery();
     }
     transaction.Commit();
+  }
+
+  // =========================================================================
+  // Schema V3: Add source to market_snapshots
+  // =========================================================================
+
+  /// <summary>Schema v3: Add source column to market_snapshots to distinguish full vs single-retainer runs.</summary>
+  private static void MigrateV3(SqliteConnection connection)
+  {
+    // Column may already exist from CreateTables (fresh installs / DB resets)
+    using var check = new SqliteCommand(
+        "SELECT COUNT(*) FROM pragma_table_info('market_snapshots') WHERE name='source'", connection);
+    if ((long)check.ExecuteScalar()! > 0) return;
+
+    using var cmd = new SqliteCommand(
+        "ALTER TABLE market_snapshots ADD COLUMN source TEXT NOT NULL DEFAULT 'full'",
+        connection);
+    cmd.ExecuteNonQuery();
   }
 
   // =========================================================================

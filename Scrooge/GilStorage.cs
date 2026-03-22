@@ -197,6 +197,20 @@ internal static class GilStorage
     cmd.ExecuteNonQuery();
   }
 
+  /// <summary>Updates the unit_price for a listing after price adjustment.</summary>
+  internal static void UpdateListingPrice(string retainerName, uint itemId, int newPrice)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE listings SET unit_price = @price, last_updated = @now
+      WHERE retainer_name = @ret AND item_id = @iid",
+      _connection);
+    cmd.Parameters.AddWithValue("@price", newPrice);
+    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.ExecuteNonQuery();
+  }
+
   /// <summary>
   /// Deletes all listings for a retainer. Called BEFORE UpsertListing
   /// calls in SnapshotListings — the upserts re-insert current items.
@@ -214,17 +228,18 @@ internal static class GilStorage
 
   /// <summary>Inserts aggregate market stats for a pinch run.</summary>
   internal static void InsertMarketSnapshot(long timestamp, int itemCount,
-      long totalValue, double avgAge, SqliteTransaction? transaction = null)
+      long totalValue, double avgAge, string source, SqliteTransaction? transaction = null)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO market_snapshots (timestamp, item_count, total_listing_value, avg_listing_age_days)
-      VALUES (@ts, @cnt, @val, @avg)",
+      @"INSERT INTO market_snapshots (timestamp, item_count, total_listing_value, avg_listing_age_days, source)
+      VALUES (@ts, @cnt, @val, @avg, @src)",
       _connection);
     cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@cnt", itemCount);
     cmd.Parameters.AddWithValue("@val", totalValue);
     cmd.Parameters.AddWithValue("@avg", avgAge);
+    cmd.Parameters.AddWithValue("@src", source);
     cmd.ExecuteNonQuery();
   }
 
@@ -391,6 +406,17 @@ internal static class GilStorage
       });
     }
     return results;
+  }
+
+  /// <summary>Returns the set of all ui_category values that have a mapping in category_groups.</summary>
+  internal static HashSet<string> GetMappedCategories()
+  {
+    var categories = new HashSet<string>();
+    using var cmd = new SqliteCommand("SELECT ui_category FROM category_groups", _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      categories.Add(reader.GetString(0));
+    return categories;
   }
 
   /// <summary>
