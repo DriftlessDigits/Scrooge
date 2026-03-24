@@ -54,6 +54,7 @@ namespace Scrooge.Windows
     private readonly Stopwatch _runStopwatch = new Stopwatch();
     private readonly Stopwatch _etaStopwatch = new Stopwatch();
     private bool _runComplete = false;
+    private bool _isHawkRun = false;
     private int _totalItems = 0;
     private int _itemsProcessed = 0;
     private float _etaCountdownMs = 0f;
@@ -61,7 +62,7 @@ namespace Scrooge.Windows
     /// <summary>
     /// Clears the log and opens the window. Called at the start of each pinch run.
     /// </summary>
-    public void StartNewRun()
+    public void StartNewRun(bool isHawkRun = false)
     {
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
@@ -73,12 +74,15 @@ namespace Scrooge.Windows
       _outliersDetected = 0;
       _totalListingGil = 0;
       _runComplete = false;
+      _isHawkRun = isHawkRun;
       _totalItems = 0;
       _itemsProcessed = 0;
       _etaCountdownMs = 0f;
       _runStopwatch.Restart();
       _etaStopwatch.Restart();
-      _entries.Add(new RunEntry(RunEvent.Start, $"Run Started — {DateTime.Now:h:mm tt}"));
+      var label = isHawkRun ? "Hawk Run" : "Run";
+      WindowName = isHawkRun ? "Scrooge - Hawk Run Log" : "Scrooge - Pinch Run Log";
+      _entries.Add(new RunEntry(RunEvent.Start, $"{label} Started — {DateTime.Now:h:mm tt}"));
       IsOpen = true;
     }
 
@@ -168,15 +172,24 @@ namespace Scrooge.Windows
     public void EndRun()
     {
       var skipped = _entries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.Skipped);
+      var noData = _entries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.NoData);
+      var label = _isHawkRun ? "Hawk Run" : "Run";
 
-      _entries.Add(new RunEntry(RunEvent.End, $"Run Complete — {DateTime.Now:h:mm tt}"));
-      _entries.Add(new RunEntry(RunEvent.Summary, $"{_itemsAdjusted} adjusted"));
-      _entries.Add(new RunEntry(RunEvent.Summary, $"{skipped} skipped"));
+      _entries.Add(new RunEntry(RunEvent.End, $"{label} Complete — {DateTime.Now:h:mm tt}"));
+      _entries.Add(new RunEntry(RunEvent.Summary, _isHawkRun
+        ? $"{_itemsAdjusted} listed"
+        : $"{_itemsAdjusted} adjusted"));
+      if (skipped > 0)
+        _entries.Add(new RunEntry(RunEvent.Summary, $"{skipped} skipped"));
+      if (noData > 0)
+        _entries.Add(new RunEntry(RunEvent.Summary, $"{noData} no data"));
 
       if (_outliersDetected > 0)
         _entries.Add(new RunEntry(RunEvent.Summary, $"{_outliersDetected} outliers"));
 
-      _entries.Add(new RunEntry(RunEvent.Summary, $"{_totalListingGil:N0} gil on market"));
+      _entries.Add(new RunEntry(RunEvent.Summary, _isHawkRun
+        ? $"{_totalListingGil:N0} gil put on market"
+        : $"{_totalListingGil:N0} gil on market"));
 
       // Stop timer and mark run complete
       _runComplete = true;

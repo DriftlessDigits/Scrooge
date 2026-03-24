@@ -21,6 +21,8 @@ using System.Speech.Synthesis;
 using System.Text.RegularExpressions;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using Scrooge.Windows;
 
 namespace Scrooge
 {
@@ -42,6 +44,7 @@ namespace Scrooge
     private readonly TaskManager _taskManager;
     private Dictionary<string, int?> _cachedPrices = []; // avoids re-querying MB for duplicate items
     private readonly Random _random = new Random();
+    private bool _isHawkRun = false;                    // true during a hawk run
 
     public AutoPinch()
       : base("Scrooge", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
@@ -95,6 +98,7 @@ namespace Scrooge
       {
         DrawForRetainerList();
         DrawForRetainerSellList();
+        DrawInventoryOverlays();
       }
       catch (Exception ex)
       {
@@ -103,6 +107,8 @@ namespace Scrooge
         if (Plugin.Configuration.ShowErrorsInChat)
           Svc.Chat.PrintError($"Error while auto pinching: {ex.Message}");
 
+        _isHawkRun = false;
+        _hawkQueue = null;
         RemoveTalkAddonListeners();
       }
     }
@@ -123,9 +129,33 @@ namespace Scrooge
           if (node == null)
             return;
 
+          // Auto Pinch button — anchored to node, stays in original position
           var oldSize = ImGuiSetup(node);
           DrawAutoPinchButton(PinchAllRetainers);
           ImGuiPostSetup(oldSize);
+
+          // Hawk Wares button — separate overlay, positioned to the left
+          var position = GetNodePosition(node);
+          var scale = GetNodeScale(node);
+          ImGuiHelpers.ForceNextWindowMainViewport();
+          ImGuiHelpers.SetNextWindowPosRelativeMainViewport(new Vector2(position.X - 90f * scale.X, position.Y));
+          ImGui.PushStyleColor(ImGuiCol.WindowBg, 0);
+          var hawkOldSize = ImGui.GetFont().Scale;
+          ImGui.GetFont().Scale *= scale.X;
+          ImGui.PushFont(ImGui.GetFont());
+          ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f.Scale());
+          ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(3f.Scale(), 3f.Scale()));
+          ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(0f.Scale(), 0f.Scale()));
+          ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f.Scale());
+          ImGui.PushStyleVar(ImGuiStyleVar.WindowMinSize, new Vector2(1, 1));
+          ImGui.Begin("###HawkWares", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoNavFocus
+              | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoSavedSettings);
+          DrawHawkButton();
+          ImGui.End();
+          ImGui.PopStyleVar(5);
+          ImGui.GetFont().Scale = hawkOldSize;
+          ImGui.PopFont();
+          ImGui.PopStyleColor();
         }
       }
     }
@@ -148,6 +178,85 @@ namespace Scrooge
           var oldSize = ImGuiSetup(node);
           DrawAutoPinchButton(PinchAllRetainerItems);
           ImGuiPostSetup(oldSize);
+        }
+      }
+    }
+
+    /// <summary>Draws inventory overlays when the Hawk Window is open.</summary>
+    private unsafe void DrawInventoryOverlays()
+    {
+      if (Plugin.HawkWindow == null || !Plugin.HawkWindow.IsOpen)
+        return;
+
+      // Don't draw overlays while a context menu is open (z-order conflict)
+      unsafe
+      {
+        if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var cm) && GenericHelpers.IsAddonReady(cm))
+          return;
+      }
+
+      // Selected items — green veil
+      var selectedIcons = Plugin.HawkWindow.GetSelectedIconIds();
+      if (selectedIcons.Count > 0)
+        DrawIconOverlays(selectedIcons, new System.Numerics.Vector4(0.2f, 1f, 0.2f, 0.35f));
+
+      // Banned items — red veil (both NQ and HQ variants)
+      if (Plugin.Configuration.BannedItemIds.Count > 0)
+      {
+        var itemSheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+        var bannedIcons = new HashSet<int>();
+        foreach (var itemId in Plugin.Configuration.BannedItemIds)
+        {
+          var baseIcon = (int)itemSheet.GetRow(itemId).Icon;
+          bannedIcons.Add(baseIcon);           // NQ
+          bannedIcons.Add(baseIcon + 1000000);  // HQ
+        }
+
+        if (bannedIcons.Count > 0)
+          DrawIconOverlays(bannedIcons, new System.Numerics.Vector4(1f, 0.2f, 0.2f, 0.35f));
+      }
+    }
+
+    /// <summary>
+    /// Draws colored overlays on inventory grid slots matching the given icon IDs.
+    /// Scans InventoryGrid0E–3E using AddonInventoryGrid.Slots to read each
+    /// slot's displayed icon directly.
+    /// </summary>
+    /// <param name="iconIds">Set of Lumina icon IDs to highlight.</param>
+    /// <param name="color">Overlay color (RGBA).</param>
+    private static unsafe void DrawIconOverlays(HashSet<int> iconIds, System.Numerics.Vector4 color)
+    {
+      var gridNames = new[] { "InventoryGrid0E", "InventoryGrid1E", "InventoryGrid2E", "InventoryGrid3E" };
+      var drawList = ImGui.GetBackgroundDrawList();
+      var colorU32 = ImGui.GetColorU32(color);
+
+      foreach (var gridName in gridNames)
+      {
+        if (!GenericHelpers.TryGetAddonByName<AddonInventoryGrid>(gridName, out var grid) || !GenericHelpers.IsAddonReady(&grid->AtkUnitBase))
+          continue;
+
+        for (int i = 0; i < 35; i++)
+        {
+          var dragDrop = grid->Slots[i];
+          if (dragDrop.Value == null) continue;
+
+          var icon = dragDrop.Value->AtkComponentIcon;
+          if (icon == null) continue;
+          var iconId = (int)icon->IconId;
+          if (iconId == 0 || !iconIds.Contains(iconId)) continue;
+
+          var ownerNode = dragDrop.Value->AtkComponentBase.OwnerNode;
+          if (ownerNode == null || !ownerNode->AtkResNode.IsVisible()) continue;
+
+          var node = &ownerNode->AtkResNode;
+          var position = GetNodePosition(node);
+          var scale = GetNodeScale(node);
+          var size = new System.Numerics.Vector2(node->Width * scale.X, node->Height * scale.Y);
+
+          drawList.AddRectFilled(
+            new System.Numerics.Vector2(position.X, position.Y),
+            new System.Numerics.Vector2(position.X + size.X, position.Y + size.Y),
+            colorU32);
         }
       }
     }
@@ -224,6 +333,73 @@ namespace Scrooge
           ImGui.EndTooltip();
         }
       }
+    }
+
+    /// <summary>Draws the Hawk Run button. Disabled when task manager is busy.</summary>
+    private unsafe void DrawHawkButton()
+    {
+      ImGui.BeginDisabled(_taskManager.IsBusy);
+      if (ImGui.Button("Hawk Wares"))
+        OpenHawkView();
+      ImGui.EndDisabled();
+      if (ImGui.IsItemHovered())
+        ImGui.SetTooltip("List new items from your inventory");
+    }
+
+    /// <summary>
+    /// Finds the first retainer with open sell slots, navigates to their
+    /// "Sell items in your inventory on the market" view, then opens the HawkWindow.
+    /// </summary>
+    private unsafe void OpenHawkView()
+    {
+      if (_taskManager.IsBusy)
+        return;
+
+      if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
+        return;
+
+      var retainerList = new AddonMaster.RetainerList(addon);
+      var retainers = retainerList.Retainers;
+
+      // Count total available slots across all retainers, find first with space
+      int targetIndex = -1;
+      int totalAvailableSlots = 0;
+      for (int i = 0; i < retainers.Length; i++)
+      {
+        var atkIdx = 3 + (i * 10) + 6;
+        var sellingText = addon->AtkValues[atkIdx].GetValueAsString();
+        var match = Regex.Match(sellingText, @"\d+");
+        if (match.Success)
+        {
+          var count = int.Parse(match.Value);
+          totalAvailableSlots += (20 - count);
+          if (targetIndex < 0 && count < 20)
+            targetIndex = i;
+        }
+      }
+
+      if (targetIndex < 0)
+      {
+        Svc.Chat.PrintError("[Scrooge] All retainers have full sell lists (20/20).");
+        return;
+      }
+
+      // Auto-dismiss retainer greeting dialog
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
+
+      // Navigate: click retainer → sell view → open HawkWindow
+      _taskManager.Enqueue(() => ClickRetainer(targetIndex), "HawkClickRetainer");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(ClickSellItems, "HawkClickSellItems");
+      _taskManager.DelayNext(500);
+      _taskManager.Enqueue(() => {
+        RemoveTalkAddonListeners();
+        Plugin.HawkWindow.SetAvailableSlots(totalAvailableSlots);
+        Plugin.HawkWindow.RefreshInventory();
+        Plugin.HawkWindow.IsOpen = true;
+        return true;
+      }, "HawkOpenWindow");
     }
 
     /// <summary>
@@ -490,6 +666,200 @@ namespace Scrooge
 
     }
 
+    /// <summary>
+    /// Entry point for hawk runs. Called by HawkWindow when user clicks Go.
+    /// Assumes we're already in the retainer's sell view (OpenHawkView navigated there).
+    /// Processes items one at a time, swapping retainers when full.
+    /// </summary>
+    private Queue<HawkWindow.HawkItem>? _hawkQueue;
+    private int _hawkRetainerSlotsUsed;
+    internal unsafe void StartHawkRun(List<HawkWindow.HawkItem> items)
+    {
+      if (_taskManager.IsBusy || items.Count == 0)
+        return;
+
+      if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
+      {
+        Svc.Chat.PrintError("[Scrooge] Not in retainer sell view. Click Hawk Wares first.");
+        return;
+      }
+
+      ClearState();
+      _isHawkRun = true;
+      _hawkQueue = new Queue<HawkWindow.HawkItem>(items);
+      _hawkRetainerSlotsUsed = 0;
+
+      Plugin.PinchRunLog.StartNewRun(isHawkRun: true);
+      Plugin.PinchRunLog.SetTotalItems(items.Count);
+
+      // Read current retainer's listing count from RetainerSellList
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var sellList) && GenericHelpers.IsAddonReady(sellList))
+      {
+        var listNode = (AtkComponentNode*)sellList->UldManager.NodeList[10];
+        var listComponent = (AtkComponentList*)listNode->Component;
+        _hawkRetainerSlotsUsed = listComponent->ListLength;
+      }
+
+      // Auto-dismiss retainer greeting dialogs (needed for retainer swaps)
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
+
+      // Start processing
+      _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
+    }
+
+    /// <summary>
+    /// Processes the next item in the hawk queue. If the current retainer is full,
+    /// swaps to the next retainer with space before continuing.
+    /// </summary>
+    private unsafe bool? HawkProcessNext()
+    {
+      if (_hawkQueue == null || _hawkQueue.Count == 0)
+      {
+        // All done — cleanup
+        _taskManager.Enqueue(CloseRetainerSellList, "HawkCloseSellList");
+        _taskManager.DelayNext(100);
+        _taskManager.Enqueue(CloseRetainer, "HawkCloseRetainer");
+        _taskManager.Enqueue(RemoveTalkAddonListeners);
+        _taskManager.Enqueue(() => {
+          Plugin.PinchRunLog.EndRun();
+          _isHawkRun = false;
+          _hawkQueue = null;
+          Util.FlashWindow();
+          return true;
+        }, "HawkRunEnd");
+        return true;
+      }
+
+      // Check if current retainer is full
+      if (_hawkRetainerSlotsUsed >= 20)
+      {
+        // Swap to next retainer
+        _taskManager.Enqueue(CloseRetainerSellList, "HawkSwapCloseSellList");
+        _taskManager.DelayNext(100);
+        _taskManager.Enqueue(CloseRetainer, "HawkSwapCloseRetainer");
+        _taskManager.DelayNext(100);
+        _taskManager.Enqueue(HawkFindNextRetainer, "HawkFindNextRetainer");
+        return true;
+      }
+
+      // Process next item
+      var item = _hawkQueue.Dequeue();
+      _taskManager.Enqueue(() => ClickInventoryItem(item), $"HawkClickItem_{item.Name}");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(ClickPutUpForSale, $"HawkPutUpForSale_{item.Name}");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(DelayMarketBoard, $"HawkDelayMB_{item.Name}");
+      _taskManager.Enqueue(ClickComparePrice, $"HawkComparePrice_{item.Name}");
+      _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+      _taskManager.Enqueue(SetNewPrice, $"HawkSetPrice_{item.Name}");
+      _taskManager.Enqueue(() => { _hawkRetainerSlotsUsed++; return true; }, "HawkIncrementSlots");
+      _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
+
+      return true;
+    }
+
+    /// <summary>
+    /// Finds the next retainer with available sell slots and navigates to their sell view.
+    /// Called when the current retainer hits 20/20 mid-run.
+    /// </summary>
+    private unsafe bool? HawkFindNextRetainer()
+    {
+      if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
+        return false;
+
+      var retainerList = new AddonMaster.RetainerList(addon);
+      var retainers = retainerList.Retainers;
+
+      for (int i = 0; i < retainers.Length; i++)
+      {
+        var atkIdx = 3 + (i * 10) + 6;
+        var sellingText = addon->AtkValues[atkIdx].GetValueAsString();
+        var match = Regex.Match(sellingText, @"\d+");
+        if (match.Success && int.Parse(match.Value) < 20)
+        {
+          _hawkRetainerSlotsUsed = int.Parse(match.Value);
+
+          _taskManager.Enqueue(() => ClickRetainer(i), "HawkSwapClickRetainer");
+          _taskManager.DelayNext(100);
+          _taskManager.Enqueue(ClickSellItems, "HawkSwapClickSellItems");
+          _taskManager.DelayNext(500);
+          _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
+          return true;
+        }
+      }
+
+      // No retainers with space — abort remaining items
+      Svc.Chat.PrintError($"[Scrooge] All retainers full. {_hawkQueue?.Count ?? 0} items could not be listed.");
+      _taskManager.Enqueue(RemoveTalkAddonListeners);
+      _taskManager.Enqueue(() => {
+        Plugin.PinchRunLog.EndRun();
+        _isHawkRun = false;
+        _hawkQueue = null;
+        Util.FlashWindow();
+        return true;
+      }, "HawkRunEnd");
+      return true;
+    }
+
+    /// <summary>
+    /// Right-clicks an item in the player's inventory to open the context menu.
+    /// Uses AgentInventoryContext to open the context menu for a specific slot.
+    /// </summary>
+    private unsafe bool? ClickInventoryItem(HawkWindow.HawkItem hawkItem)
+    {
+      // Safety check: verify the item is still in the expected slot
+      var im = InventoryManager.Instance();
+      var container = im->GetInventoryContainer(hawkItem.Container);
+      if (container == null) return true;
+
+      var slot = container->GetInventorySlot(hawkItem.SlotIndex);
+      if (slot == null || slot->ItemId != hawkItem.ItemId)
+      {
+        Svc.Log.Warning($"[HawkRun] {hawkItem.Name} no longer at expected slot — skipping");
+        _skipCurrentItem = true;
+        return true;
+      }
+
+      var agent = AgentInventoryContext.Instance();
+      var addonId = AgentInventory.Instance()->OpenAddonId;
+      agent->OpenForItemSlot(hawkItem.Container, hawkItem.SlotIndex, 0, addonId);
+
+      return true;
+    }
+
+    /// <summary>
+    /// Clicks "Put Up for Sale" in the inventory context menu (first entry).
+    /// If the option is missing, the sell list may be full or the item is bound.
+    /// </summary>
+    private unsafe bool? ClickPutUpForSale()
+    {
+      if (_skipCurrentItem)
+        return true;
+
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        var reader = new ReaderContextMenu(addon);
+
+        for (int i = 0; i < reader.Entries.Count; i++)
+        {
+          var name = reader.Entries[i].Name;
+          if (name.Equals("Put Up for Sale", StringComparison.OrdinalIgnoreCase))
+          {
+            ECommons.Automation.Callback.Fire(addon, true, 0, i, 0, 0, 0);
+            return true;
+          }
+        }
+
+        // "Put Up for Sale" not found — sell list full or item is bound
+        Svc.Log.Warning("[HawkRun] 'Put Up for Sale' not in context menu — sell list may be full or item is bound");
+        _skipCurrentItem = true;
+        addon->Close(true);
+        return true;
+      }
+      return false;
+    }
+
     /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
     /// <param name="enqueueFunc">Function to queue each item (EnqueueSingleItem or InsertSingleItem).</param>
     /// <param name="reverseOrder">If true, process items bottom-to-top (needed for Insert-based queuing).</param>
@@ -690,25 +1060,35 @@ namespace Scrooge
 
           if (_newPrice.HasValue && _newPrice > 0)
           {
-            var cutPercentage = ((float)_newPrice.Value - _oldPrice.Value) / _oldPrice.Value * 100f;
-            if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
+            if (_isHawkRun)
             {
-              // Check if the price increase exceeds the cap
-              if (_isPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
-              {
-                Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
-              }
-              // Price normally
-              else
-              {
-                Svc.Log.Debug($"Setting new price");
-                _cachedPrices.TryAdd(itemName, _newPrice);
-                retainerSell->AskingPrice->SetValue(_newPrice.Value);
-                Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
-              }
+              // New listings: no meaningful _oldPrice to compare against — skip percentage guards
+              Svc.Log.Debug($"Setting new listing price");
+              retainerSell->AskingPrice->SetValue(_newPrice.Value);
+              Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, 0f);
             }
             else
-              Communicator.PrintAboveMaxCutError(itemName);
+            {
+              var cutPercentage = ((float)_newPrice.Value - _oldPrice.Value) / _oldPrice.Value * 100f;
+              if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
+              {
+                // Check if the price increase exceeds the cap
+                if (_isPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
+                {
+                  Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
+                }
+                // Price normally
+                else
+                {
+                  Svc.Log.Debug($"Setting new price");
+                  _cachedPrices.TryAdd(itemName, _newPrice);
+                  retainerSell->AskingPrice->SetValue(_newPrice.Value);
+                  Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
+                }
+              }
+              else
+                Communicator.PrintAboveMaxCutError(itemName);
+            }
 
             ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0); // confirm
             ui->Close(true);
@@ -753,7 +1133,9 @@ namespace Scrooge
           if (listingValue > 0)
           {
             Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
-            if (Plugin.Configuration.EnableGilTracking && itemPayload != null)
+            // RecordFinalPrice updates existing listing rows — skip during hawk runs
+            // (new listings aren't in the DB yet; they'll appear in the next pinch snapshot)
+            if (!_isHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
               GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
           }
         }
@@ -869,6 +1251,8 @@ namespace Scrooge
       _newPrice = null;
       _cachedPrices = [];
       _skipCurrentItem = false;
+      _isPinchRun = false;
+      _isHawkRun = false;
     }
 
     private int ApplyJitter(int baseMS)

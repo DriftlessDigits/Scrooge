@@ -433,6 +433,36 @@ internal static class GilStorage
     return Convert.ToInt32(cmd.ExecuteScalar());
   }
 
+  /// <summary>
+  /// Gets the last sale price and timestamp for each item ever sold via retainer.
+  /// Reads from the last_sale_prices table (survives transaction pruning).
+  /// </summary>
+  internal static Dictionary<uint, (int Price, long Timestamp)> GetLastSalePrices()
+  {
+    var prices = new Dictionary<uint, (int, long)>();
+    using var cmd = new SqliteCommand(
+      "SELECT item_id, unit_price, timestamp FROM last_sale_prices",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      prices[(uint)reader.GetInt64(0)] = (reader.GetInt32(1), reader.GetInt64(2));
+    return prices;
+  }
+
+  /// <summary>Upserts the last sale price for an item. Called on every retainer sale.</summary>
+  internal static void UpsertLastSalePrice(uint itemId, int unitPrice, long timestamp)
+  {
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO last_sale_prices (item_id, unit_price, timestamp)
+        VALUES (@iid, @price, @ts)
+        ON CONFLICT(item_id) DO UPDATE SET unit_price = @price, timestamp = @ts",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@price", unitPrice);
+    cmd.Parameters.AddWithValue("@ts", timestamp);
+    cmd.ExecuteNonQuery();
+  }
+
   /// <summary>Gets listings older than the cutoff timestamp (slow movers).</summary>
   internal static List<ListingRecord> GetSlowMovers(long olderThan)
   {
