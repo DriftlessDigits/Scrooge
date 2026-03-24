@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 3;
+  private const int CurrentSchemaVersion = 4;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -42,6 +42,12 @@ internal class GilStorageBootstrap
     {
       MigrateV3(connection);
       SetSchemaVersion(connection, 3);
+    }
+
+    if (version < 4)
+    {
+      MigrateV4(connection);
+      SetSchemaVersion(connection, 4);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -121,6 +127,11 @@ internal class GilStorageBootstrap
             @"CREATE TABLE IF NOT EXISTS category_groups (
                 ui_category TEXT PRIMARY KEY,
                 display_group TEXT NOT NULL
+            )",
+            @"CREATE TABLE IF NOT EXISTS last_sale_prices (
+                item_id INTEGER PRIMARY KEY,
+                unit_price INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL
             )",
             @"CREATE TABLE IF NOT EXISTS quotes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -545,6 +556,27 @@ internal class GilStorageBootstrap
         "ALTER TABLE market_snapshots ADD COLUMN source TEXT NOT NULL DEFAULT 'full'",
         connection);
     cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>V4: Add last_sale_prices table and populate from existing transactions.</summary>
+  private static void MigrateV4(SqliteConnection connection)
+  {
+    using var create = new SqliteCommand(
+        @"CREATE TABLE IF NOT EXISTS last_sale_prices (
+            item_id INTEGER PRIMARY KEY,
+            unit_price INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL
+        )", connection);
+    create.ExecuteNonQuery();
+
+    // Backfill from existing transaction history
+    using var backfill = new SqliteCommand(
+        @"INSERT OR REPLACE INTO last_sale_prices (item_id, unit_price, timestamp)
+          SELECT item_id, unit_price, MAX(timestamp)
+          FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0
+          GROUP BY item_id", connection);
+    backfill.ExecuteNonQuery();
   }
 
   // =========================================================================

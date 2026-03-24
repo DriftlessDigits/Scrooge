@@ -4,8 +4,10 @@ using System.Linq;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Interface.Windowing;
+using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using Lumina.Excel.Sheets;
 using static ECommons.GenericHelpers;
 
 namespace Scrooge.Windows;
@@ -99,6 +101,12 @@ public sealed class ConfigWindow : Window
       if (ImGui.BeginTabItem("Hotkeys"))
       {
         DrawHotkeysTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Ban List"))
+      {
+        DrawBanListTab();
         ImGui.EndTabItem();
       }
 
@@ -687,6 +695,27 @@ public sealed class ConfigWindow : Window
       ImGui.EndTooltip();
     }
 
+    ImGui.Spacing();
+
+    ImGui.BeginGroup();
+    ImGui.Text("Stale Price Threshold:");
+    ImGui.SameLine();
+    int staleDays = Plugin.Configuration.StalePriceDays;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderInt("##stalePriceDays", ref staleDays, 0, 100))
+    {
+      Plugin.Configuration.StalePriceDays = staleDays;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.Text("days");
+    ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("Last sale prices older than this are dimmed in the Hawk Window.\n\n" +
+                       "Set to 0 to never mark prices as stale.");
+
     #if DEBUG
     if (ImGui.SmallButton("Reset DB"))
     {
@@ -985,6 +1014,38 @@ public sealed class ConfigWindow : Window
         ImGui.SetTooltip("Volume level for text-to-speech notifications.");
         ImGui.EndTooltip();
       }
+    }
+  }
+
+  /// <summary>Draws the ban list management tab for the Hawk Run feature.</summary>
+  private void DrawBanListTab()
+  {
+    var bannedIds = Plugin.Configuration.BannedItemIds;
+
+    if (bannedIds.Count == 0)
+    {
+      ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window to add items you never want to list.");
+      return;
+    }
+
+    ImGui.Text($"{bannedIds.Count} banned item{(bannedIds.Count == 1 ? "" : "s")}");
+    ImGui.Separator();
+
+    uint? toRemove = null;
+
+    foreach (var itemId in bannedIds)
+    {
+      var item = Svc.Data.GetExcelSheet<Item>().GetRow(itemId);
+      ImGui.Text(item.Name.ToString());
+      ImGui.SameLine();
+      if (ImGui.SmallButton($"Unban##{itemId}"))
+        toRemove = itemId;
+    }
+
+    if (toRemove.HasValue)
+    {
+      bannedIds.Remove(toRemove.Value);
+      Plugin.Configuration.Save();
     }
   }
 }

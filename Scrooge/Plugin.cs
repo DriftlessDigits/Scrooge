@@ -3,6 +3,8 @@ using Dalamud.Game.Command;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
+using Dalamud.Game.Gui.ContextMenu;
+using Dalamud.Game.Inventory;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using ECommons;
@@ -24,6 +26,7 @@ public sealed class Plugin : IDalamudPlugin
   [PluginService] public static IKeyState KeyState { get; private set; } = null!;
   [PluginService] public static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
   [PluginService] public static IChatGui ChatGui { get; private set; } = null!;
+  [PluginService] public static IContextMenu ContextMenu { get; private set; } = null!;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
   public static Configuration Configuration { get; private set; } // will never be null
@@ -35,6 +38,8 @@ public sealed class Plugin : IDalamudPlugin
   internal static PinchRunLogWindow PinchRunLog { get; private set; } = null!;
 
   internal static GilWindow GilDashboard { get; private set; } = null!;
+
+  internal static HawkWindow HawkWindow { get; private set; } = null!;
 
   private RetainerHistoryHook? _retainerHistoryHook;
 
@@ -88,6 +93,11 @@ public sealed class Plugin : IDalamudPlugin
     GilDashboard = new GilWindow();
     WindowSystem.AddWindow(GilDashboard);
 
+    HawkWindow = new HawkWindow();
+    WindowSystem.AddWindow(HawkWindow);
+
+    ContextMenu.OnMenuOpened += OnContextMenuOpened;
+
     CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
     {
       HelpMessage = "Opens the Scrooge gil dashboard"
@@ -96,6 +106,7 @@ public sealed class Plugin : IDalamudPlugin
 
   public void Dispose()
   {
+    ContextMenu.OnMenuOpened -= OnContextMenuOpened;
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
@@ -112,6 +123,85 @@ public sealed class Plugin : IDalamudPlugin
   }
 
   private void OnGilTrackCommand(string command, string args) => GilDashboard.Toggle();
+
+  /// <summary>
+  /// Adds Hawk Run context menu options to inventory items when the HawkWindow is open.
+  /// </summary>
+  private void OnContextMenuOpened(IMenuOpenedArgs args)
+  {
+    if (!HawkWindow.IsOpen)
+      return;
+
+    if (args.MenuType != ContextMenuType.Inventory)
+      return;
+
+    if (args.Target is not MenuTargetInventory target || target.TargetItem == null)
+      return;
+
+    var item = target.TargetItem.Value;
+    // GameInventoryItem.ItemId includes HQ (+1M) / Collectible (+500K) offsets;
+    // strip to base ID to match HawkItem.ItemId and BannedItemIds
+    var itemId = item.ItemId;
+    if (item.IsHq && itemId >= 1_000_000)
+      itemId -= 1_000_000;
+    if (itemId == 0)
+      return;
+
+    var isBanned = Configuration.BannedItemIds.Contains(itemId);
+    var isSelected = HawkWindow.IsItemSelected(itemId, item.IsHq);
+
+    if (isBanned)
+    {
+      args.AddMenuItem(new MenuItem
+      {
+        Name = "Remove Hawk Ban",
+        PrefixChar = 'S',
+        PrefixColor = 539,
+        OnClicked = _ =>
+        {
+          Configuration.BannedItemIds.Remove(itemId);
+          Configuration.Save();
+          HawkWindow.RefreshInventory();
+        },
+      });
+    }
+    else
+    {
+      args.AddMenuItem(new MenuItem
+      {
+        Name = "Ban from Hawk",
+        PrefixChar = 'S',
+        PrefixColor = 17, // red
+        OnClicked = _ =>
+        {
+          Configuration.BannedItemIds.Add(itemId);
+          Configuration.Save();
+          HawkWindow.RefreshInventory();
+        },
+      });
+    }
+
+    if (isSelected)
+    {
+      args.AddMenuItem(new MenuItem
+      {
+        Name = "Remove from Sale",
+        PrefixChar = 'S',
+        PrefixColor = 539,
+        OnClicked = _ => HawkWindow.SetItemSelected(itemId, item.IsHq, false),
+      });
+    }
+    else if (!isBanned)
+    {
+      args.AddMenuItem(new MenuItem
+      {
+        Name = "Select for Sale",
+        PrefixChar = 'S',
+        PrefixColor = 45, // green
+        OnClicked = _ => HawkWindow.SetItemSelected(itemId, item.IsHq, true),
+      });
+    }
+  }
 
   private void DrawUI()
   {

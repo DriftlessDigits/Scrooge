@@ -223,8 +223,10 @@ internal static class GilTracker
         (int)entry.Quantity,
         (int)entry.UnitPrice,
         entry.IsHQ,
-        retainerName, 
+        retainerName,
         entry.BuyerName);
+
+      GilStorage.UpsertLastSalePrice(entry.ItemID, (int)entry.UnitPrice, (long)entry.UnixTimeSeconds);
 
       newCount++;
     }

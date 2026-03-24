@@ -182,6 +182,12 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public bool EnableGilTracking { get; set; } = true;
 
+  /// <summary>
+  /// Number of days before a last sale price is considered stale.
+  /// Used in the Hawk Window to dim old price data. Range: 0–100, default 30.
+  /// </summary>
+  public int StalePriceDays { get; set; } = 30;
+
   // --- Text-to-speech ---
 
   public bool TTSWhenAllDone { get; set; } = false;
@@ -211,6 +217,12 @@ public sealed class Configuration : IPluginConfiguration
   /// Used to display retainer selection even when the retainer list is not open.
   /// </summary>
   public List<string> LastKnownRetainerNames { get; set; } = [];
+
+  /// <summary>
+  /// Items permanently excluded from the Hawk Window.
+  /// Keyed by Lumina item ID. Managed from the Hawk Window and ConfigWindow.
+  /// </summary>
+  public HashSet<uint> BannedItemIds { get; set; } = [];
 
   public void Save()
   {
