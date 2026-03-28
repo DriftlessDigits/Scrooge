@@ -104,9 +104,9 @@ public sealed class ConfigWindow : Window
         ImGui.EndTabItem();
       }
 
-      if (ImGui.BeginTabItem("Ban List"))
+      if (ImGui.BeginTabItem("Hawk Settings"))
       {
-        DrawBanListTab();
+        DrawHawkSettingsTab();
         ImGui.EndTabItem();
       }
 
@@ -336,6 +336,11 @@ public sealed class ConfigWindow : Window
     if (ImGui.Combo("##priceFloorModeCombo", ref floorIndex, floorDisplayNames, floorDisplayNames.Length))
     {
       Plugin.Configuration.PriceFloorMode = Enum.Parse<PriceFloorMode>(floorEnumValues[floorIndex]);
+      // When switching to DomanEnclave, disable auto vendor sell
+      if (Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave)
+      {
+        Plugin.Configuration.AutoVendorSellOnPriceCheckFail = false;
+      }
       Plugin.Configuration.Save();
       Plugin.AutoPinch.ClearCachedPrices();
     }
@@ -373,6 +378,34 @@ public sealed class ConfigWindow : Window
       ImGui.SetTooltip("Items priced below this amount are skipped during auto-pinch.\n" +
                        "Each retainer slot is valuable — don't waste them on low-value items.\n\n" +
                        "Set to 0 to disable.");
+      ImGui.EndTooltip();
+    }
+
+    // --- Auto Vendor Sell toggle ---
+    var isDomanEnclave = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave;
+    if (isDomanEnclave) ImGui.BeginDisabled();
+
+    var autoVendor = Plugin.Configuration.AutoVendorSellOnPriceCheckFail;
+    if (ImGui.Checkbox("Auto vendor-sell items that fail price checks", ref autoVendor))
+    {
+      Plugin.Configuration.AutoVendorSellOnPriceCheckFail = autoVendor;
+      Plugin.Configuration.Save();
+    }
+
+    if (isDomanEnclave) ImGui.EndDisabled();
+
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip(
+        "During hawk runs, items that fail price floor or minimum listing price checks\n" +
+        "are vendor-sold via the retainer instead of skipped.\n\n" +
+        "Not available with Doman Enclave price floor mode — those items are\n" +
+        "saved for manual Enclave donation.\n\n" +
+        "Note: Items on the Always Vendor list are always vendor-sold regardless\n" +
+        "of this toggle or price floor mode.");
       ImGui.EndTooltip();
     }
 
@@ -1017,35 +1050,78 @@ public sealed class ConfigWindow : Window
     }
   }
 
-  /// <summary>Draws the ban list management tab for the Hawk Run feature.</summary>
-  private void DrawBanListTab()
+  /// <summary>Draws the Hawk Settings tab with Always Vendor and Ban lists.</summary>
+  private void DrawHawkSettingsTab()
   {
+    var vendorIds = Plugin.Configuration.AlwaysVendorItemIds;
     var bannedIds = Plugin.Configuration.BannedItemIds;
+    var itemSheet = Svc.Data.GetExcelSheet<Item>();
+
+    // --- Always Vendor list ---
+    ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+    ImGui.Text("Always Vendor");
+    ImGui.PopStyleColor();
+    ImGui.Separator();
+
+    if (vendorIds.Count == 0)
+    {
+      ImGui.TextWrapped("No items set to always vendor. Right-click items in the Hawk Window to add them.");
+    }
+    else
+    {
+      ImGui.Text($"{vendorIds.Count} item{(vendorIds.Count == 1 ? "" : "s")}");
+
+      uint? vendorToRemove = null;
+
+      foreach (var itemId in vendorIds)
+      {
+        var item = itemSheet.GetRow(itemId);
+        ImGui.Text(item.Name.ToString());
+        ImGui.SameLine();
+        if (ImGui.SmallButton($"Remove##{itemId}"))
+          vendorToRemove = itemId;
+      }
+
+      if (vendorToRemove.HasValue)
+      {
+        vendorIds.Remove(vendorToRemove.Value);
+        Plugin.Configuration.Save();
+      }
+    }
+
+    ImGui.Spacing();
+    ImGui.Spacing();
+
+    // --- Ban list ---
+    ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.2f, 0.2f, 1f));
+    ImGui.Text("Banned");
+    ImGui.PopStyleColor();
+    ImGui.Separator();
 
     if (bannedIds.Count == 0)
     {
       ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window to add items you never want to list.");
-      return;
     }
-
-    ImGui.Text($"{bannedIds.Count} banned item{(bannedIds.Count == 1 ? "" : "s")}");
-    ImGui.Separator();
-
-    uint? toRemove = null;
-
-    foreach (var itemId in bannedIds)
+    else
     {
-      var item = Svc.Data.GetExcelSheet<Item>().GetRow(itemId);
-      ImGui.Text(item.Name.ToString());
-      ImGui.SameLine();
-      if (ImGui.SmallButton($"Unban##{itemId}"))
-        toRemove = itemId;
-    }
+      ImGui.Text($"{bannedIds.Count} item{(bannedIds.Count == 1 ? "" : "s")}");
 
-    if (toRemove.HasValue)
-    {
-      bannedIds.Remove(toRemove.Value);
-      Plugin.Configuration.Save();
+      uint? banToRemove = null;
+
+      foreach (var itemId in bannedIds)
+      {
+        var item = itemSheet.GetRow(itemId);
+        ImGui.Text(item.Name.ToString());
+        ImGui.SameLine();
+        if (ImGui.SmallButton($"Unban##{itemId}"))
+          banToRemove = itemId;
+      }
+
+      if (banToRemove.HasValue)
+      {
+        bannedIds.Remove(banToRemove.Value);
+        Plugin.Configuration.Save();
+      }
     }
   }
 }

@@ -51,6 +51,8 @@ namespace Scrooge.Windows
     private int _itemsAdjusted = 0;
     private int _outliersDetected = 0;
     private long _totalListingGil = 0;
+    private int _vendorSoldCount = 0;
+    private long _vendorSoldGil = 0;
     private readonly Stopwatch _runStopwatch = new Stopwatch();
     private readonly Stopwatch _etaStopwatch = new Stopwatch();
     private bool _runComplete = false;
@@ -73,6 +75,8 @@ namespace Scrooge.Windows
       _itemsAdjusted = 0;
       _outliersDetected = 0;
       _totalListingGil = 0;
+      _vendorSoldCount = 0;
+      _vendorSoldGil = 0;
       _runComplete = false;
       _isHawkRun = isHawkRun;
       _totalItems = 0;
@@ -166,6 +170,16 @@ namespace Scrooge.Windows
       _totalListingGil += gil;
     }
 
+    /// <summary>Tracks a vendor sale for the run summary.</summary>
+    public void AddVendorSale(long gil)
+    {
+      if (!Plugin.Configuration.EnablePinchRunLog)
+        return;
+
+      _vendorSoldCount++;
+      _vendorSoldGil += gil;
+    }
+
     /// <summary>
     /// Adds end marker and summary lines to the log. Called from AutoPinch when all tasks finish.
     /// </summary>
@@ -186,6 +200,9 @@ namespace Scrooge.Windows
 
       if (_outliersDetected > 0)
         _entries.Add(new RunEntry(RunEvent.Summary, $"{_outliersDetected} outliers"));
+
+      if (_vendorSoldCount > 0)
+        _entries.Add(new RunEntry(RunEvent.Summary, $"{_vendorSoldCount} vendor-sold for {_vendorSoldGil:N0} gil"));
 
       _entries.Add(new RunEntry(RunEvent.Summary, _isHawkRun
         ? $"{_totalListingGil:N0} gil put on market"
@@ -368,6 +385,8 @@ namespace Scrooge.Windows
         _itemsAdjusted = 0;
         _outliersDetected = 0;
         _totalListingGil = 0;
+        _vendorSoldCount = 0;
+        _vendorSoldGil = 0;
         _runComplete = false;
         _runStopwatch.Reset();
         _etaStopwatch.Reset();

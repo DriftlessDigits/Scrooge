@@ -31,6 +31,7 @@ internal sealed class HawkWindow : Window
     public int SlotIndex { get; init; }
     public int LastSalePrice { get; init; }
     public bool LastSaleStale { get; init; }
+    public bool IsAlwaysVendor { get; init; }
   }
 
   public HawkWindow()
@@ -77,6 +78,19 @@ internal sealed class HawkWindow : Window
     return icons;
   }
 
+  /// <summary>Returns icon IDs for all Always Vendor items.</summary>
+  public HashSet<int> GetAlwaysVendorIconIds()
+  {
+    var icons = new HashSet<int>();
+    foreach (var item in _inventory)
+      if (item.IsAlwaysVendor)
+      {
+        var baseIcon = (int)_items.GetRow(item.ItemId).Icon;
+        icons.Add(item.IsHq ? baseIcon + 1000000 : baseIcon);
+      }
+    return icons;
+  }
+
   public void RefreshInventory()
   {
     _inventory.Clear();
@@ -115,8 +129,12 @@ internal sealed class HawkWindow : Window
           // Must not be inherently untradeable
           if (item.IsUntradable) continue;
 
+          // HQ-aware ID for ban/vendor list checks
+          var isHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
+          var fullId = isHq ? itemId + 1_000_000u : itemId;
+
           // Must not be on the ban list
-          if (Plugin.Configuration.BannedItemIds.Contains(itemId)) continue;
+          if (Plugin.Configuration.BannedItemIds.Contains(fullId)) continue;
 
           var hasLastSale = lastSales.TryGetValue(itemId, out var lastSale);
 
@@ -125,8 +143,9 @@ internal sealed class HawkWindow : Window
             ItemId = itemId,
             Name = item.Name.ToString(),
             Quantity = (int)slot->Quantity,
-            IsHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0,
+            IsHq = isHq,
             Selected = false,
+            IsAlwaysVendor = Plugin.Configuration.AlwaysVendorItemIds.Contains(fullId),
             Container = containerType,
             SlotIndex = i,
             LastSalePrice = hasLastSale ? lastSale.Price : 0,
@@ -150,9 +169,17 @@ internal sealed class HawkWindow : Window
 
     // --- Controls row ---
     var checkedCount = _inventory.Count(i => i.Selected);
+    var vendorCount = _inventory.Count(i => i.IsAlwaysVendor);
     var overCapacity = checkedCount > _availableSlots;
 
     ImGui.Text($"{checkedCount} selected");
+    if (vendorCount > 0)
+    {
+      ImGui.SameLine();
+      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+      ImGui.Text($"+ {vendorCount} vendor");
+      ImGui.PopStyleColor();
+    }
     ImGui.SameLine();
     if (overCapacity)
     {
@@ -164,18 +191,21 @@ internal sealed class HawkWindow : Window
       ImGui.Text($"({_availableSlots} slots available)");
 
     if (ImGui.Button("Select All"))
-      foreach (var item in _inventory) item.Selected = true;
+      foreach (var item in _inventory)
+        if (!item.IsAlwaysVendor) item.Selected = true;
     ImGui.SameLine();
 
     if (ImGui.Button("Deselect All"))
       foreach (var item in _inventory) item.Selected = false;
     ImGui.SameLine();
 
-    ImGui.BeginDisabled(checkedCount == 0);
+    ImGui.BeginDisabled(checkedCount == 0 && vendorCount == 0);
     if (ImGui.Button(overCapacity ? $"Go (first {_availableSlots})" : "Go"))
     {
       var selected = _inventory.Where(i => i.Selected).Take(_availableSlots).ToList();
-      Plugin.AutoPinch.StartHawkRun(selected);
+      var alwaysVendor = _inventory.Where(i => i.IsAlwaysVendor).ToList();
+      var combined = selected.Concat(alwaysVendor).ToList();
+      Plugin.AutoPinch.StartHawkRun(combined);
       IsOpen = false;
     }
     ImGui.EndDisabled();
@@ -187,7 +217,7 @@ internal sealed class HawkWindow : Window
         ImGuiTableFlags.ScrollY | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
     {
       ImGui.TableSetupScrollFreeze(0, 1);
-      ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 30);      // checkbox
+      ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 38);      // checkbox / sell
       ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
       ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 40);
       ImGui.TableSetupColumn("Last Sale", ImGuiTableColumnFlags.WidthFixed, 90);
@@ -199,13 +229,28 @@ internal sealed class HawkWindow : Window
         var item = _inventory[i];
         ImGui.TableNextRow();
 
+        // Checkbox column — vendor indicator for Always Vendor, checkbox for normal
         ImGui.TableNextColumn();
-        var selected = item.Selected;
-        if (ImGui.Checkbox($"##check{i}", ref selected))
-          item.Selected = selected;
+        if (item.IsAlwaysVendor)
+        {
+          ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+          ImGui.Text("Sell");
+          ImGui.PopStyleColor();
+        }
+        else
+        {
+          var selected = item.Selected;
+          if (ImGui.Checkbox($"##check{i}", ref selected))
+            item.Selected = selected;
+        }
 
+        // Item name column — orange for Always Vendor
         ImGui.TableNextColumn();
+        if (item.IsAlwaysVendor)
+          ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
         ImGui.Text(item.IsHq ? $"{item.Name} \uE03C" : item.Name);
+        if (item.IsAlwaysVendor)
+          ImGui.PopStyleColor();
 
         ImGui.TableNextColumn();
         ImGui.Text(item.Quantity.ToString());
@@ -222,13 +267,18 @@ internal sealed class HawkWindow : Window
         else
           ImGui.TextDisabled("—");
 
+        // Ban button — skip for Always Vendor items (managed via context menu)
         ImGui.TableNextColumn();
-        if (ImGui.SmallButton($"Ban##{i}"))
+        if (!item.IsAlwaysVendor)
         {
-          Plugin.Configuration.BannedItemIds.Add(item.ItemId);
-          Plugin.Configuration.Save();
-          _inventory.RemoveAt(i);
-          i--;
+          if (ImGui.SmallButton($"Ban##{i}"))
+          {
+            var banId = item.IsHq ? item.ItemId + 1_000_000u : item.ItemId;
+            Plugin.Configuration.BannedItemIds.Add(banId);
+            Plugin.Configuration.Save();
+            _inventory.RemoveAt(i);
+            i--;
+          }
         }
       }
 

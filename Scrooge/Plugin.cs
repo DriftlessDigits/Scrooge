@@ -139,17 +139,20 @@ public sealed class Plugin : IDalamudPlugin
       return;
 
     var item = target.TargetItem.Value;
-    // GameInventoryItem.ItemId includes HQ (+1M) / Collectible (+500K) offsets;
-    // strip to base ID to match HawkItem.ItemId and BannedItemIds
     var itemId = item.ItemId;
-    if (item.IsHq && itemId >= 1_000_000)
-      itemId -= 1_000_000;
+    // NOTE: Do NOT strip HQ offset. itemId includes +1M for HQ items,
+    // allowing HQ and NQ to be banned/always-vendored independently.
     if (itemId == 0)
       return;
 
-    var isBanned = Configuration.BannedItemIds.Contains(itemId);
-    var isSelected = HawkWindow.IsItemSelected(itemId, item.IsHq);
+    // Base ID for Lumina lookups (vendor price, etc.) and HawkWindow selection
+    var baseItemId = item.IsHq && itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
 
+    var isBanned = Configuration.BannedItemIds.Contains(itemId);
+    var isAlwaysVendor = Configuration.AlwaysVendorItemIds.Contains(itemId);
+    var isSelected = HawkWindow.IsItemSelected(baseItemId, item.IsHq);
+
+    // --- State: Banned ---
     if (isBanned)
     {
       args.AddMenuItem(new MenuItem
@@ -164,23 +167,30 @@ public sealed class Plugin : IDalamudPlugin
           HawkWindow.RefreshInventory();
         },
       });
+      return;
     }
-    else
+
+    // --- State: Always Vendor ---
+    if (isAlwaysVendor)
     {
       args.AddMenuItem(new MenuItem
       {
-        Name = "Ban from Hawk",
+        Name = "Remove Always Vendor",
         PrefixChar = 'S',
-        PrefixColor = 17, // red
+        PrefixColor = 539,
         OnClicked = _ =>
         {
-          Configuration.BannedItemIds.Add(itemId);
+          Configuration.AlwaysVendorItemIds.Remove(itemId);
           Configuration.Save();
           HawkWindow.RefreshInventory();
         },
       });
+      return;
     }
 
+    // --- State: Normal (not banned, not always-vendor) ---
+
+    // Select / Deselect
     if (isSelected)
     {
       args.AddMenuItem(new MenuItem
@@ -188,19 +198,53 @@ public sealed class Plugin : IDalamudPlugin
         Name = "Remove from Sale",
         PrefixChar = 'S',
         PrefixColor = 539,
-        OnClicked = _ => HawkWindow.SetItemSelected(itemId, item.IsHq, false),
+        OnClicked = _ => HawkWindow.SetItemSelected(baseItemId, item.IsHq, false),
       });
     }
-    else if (!isBanned)
+    else
     {
       args.AddMenuItem(new MenuItem
       {
         Name = "Select for Sale",
         PrefixChar = 'S',
         PrefixColor = 45, // green
-        OnClicked = _ => HawkWindow.SetItemSelected(itemId, item.IsHq, true),
+        OnClicked = _ => HawkWindow.SetItemSelected(baseItemId, item.IsHq, true),
       });
     }
+
+    // Always Vendor — only show for vendorable items
+    var vendorPrice = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(baseItemId).PriceLow;
+    if (vendorPrice > 0)
+    {
+      args.AddMenuItem(new MenuItem
+      {
+        Name = "Always Vendor",
+        PrefixChar = 'S',
+        PrefixColor = 520, // orange/yellow — verified in-game
+        OnClicked = _ =>
+        {
+          Configuration.AlwaysVendorItemIds.Add(itemId);
+          Configuration.BannedItemIds.Remove(itemId); // mutual exclusivity
+          Configuration.Save();
+          HawkWindow.RefreshInventory();
+        },
+      });
+    }
+
+    // Ban from Hawk (red)
+    args.AddMenuItem(new MenuItem
+    {
+      Name = "Ban from Hawk",
+      PrefixChar = 'S',
+      PrefixColor = 17, // red
+      OnClicked = _ =>
+      {
+        Configuration.BannedItemIds.Add(itemId);
+        Configuration.AlwaysVendorItemIds.Remove(itemId); // mutual exclusivity
+        Configuration.Save();
+        HawkWindow.RefreshInventory();
+      },
+    });
   }
 
   private void DrawUI()
