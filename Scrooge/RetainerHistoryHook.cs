@@ -56,7 +56,7 @@ internal sealed class RetainerHistoryHook : IDisposable
     {
       var entries = new List<RetainerHistoryData>();
 
-      for (var i =0; i < 20; i++)
+      for (var i = 0; i < 20; i++)
       {
         // Calculate where this record lives in memory
         var offset = 8 + sizeof(RetainerHistoryData) * i;

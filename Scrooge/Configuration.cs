@@ -224,6 +224,20 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public HashSet<uint> BannedItemIds { get; set; } = [];
 
+  /// <summary>
+  /// Items always vendor-sold during hawk runs via "Have Retainer Sell Items".
+  /// Keyed by item ID — HQ items stored with +1M offset (e.g., HQ item 4856 = 1004856).
+  /// Mutually exclusive with BannedItemIds (per HQ/NQ variant).
+  /// </summary>
+  public HashSet<uint> AlwaysVendorItemIds { get; set; } = [];
+
+  /// <summary>
+  /// When true, items that fail price floor or minimum listing price checks
+  /// during hawk runs are vendor-sold instead of skipped.
+  /// Only effective when PriceFloorMode is not DomanEnclave.
+  /// </summary>
+  public bool AutoVendorSellOnPriceCheckFail { get; set; } = false;
+
   public void Save()
   {
     Plugin.PluginInterface.SavePluginConfig(this);

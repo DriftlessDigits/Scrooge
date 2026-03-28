@@ -131,100 +131,50 @@ public static class Communicator
     return null;
   }
 
-  /// <summary>Error: undercut exceeds the max undercut percentage safety cap.</summary>
-  /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintAboveMaxCutError(string itemName)
   {
-    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _), $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
-
-    if (!Plugin.Configuration.ShowErrorsInChat)
-      return;
-
-    var itemPayload = RawItemNameToItemPayload(itemName);
-
-    if (itemPayload != null)
-    {
-      var seString = new SeStringBuilder()
-          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%")
-          .Build();
-
-      Svc.Chat.PrintError(seString);
-    }
-    else
-      Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price by more than {Plugin.Configuration.MaxUndercutPercentage}%");
+    var pct = Plugin.Configuration.MaxUndercutPercentage;
+    PrintItemError(itemName, $"Undercut exceeds max ({pct}%)",
+      $"Item ignored because it would cut the price by more than {pct}%");
   }
 
-  /// <summary>Error: Price increase exceeds the max price increase cap.</summary>
-  /// <param name="itemName">Raw item name from the game addon.</param>
-  /// <param name="increasePercentage">The actual increase percentage that was attempted, which exceeded the cap.</param>
   public static void PrintAboveMaxIncreaseError(string itemName, float increasePercentage)
   {
-    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _),
-      $"Price increase exceeds max ({Plugin.Configuration.MaxPriceIncreasePercentage}%) — would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}%");
-
-    if (!Plugin.Configuration.ShowErrorsInChat)
-      return;
-
-    var itemPayload = RawItemNameToItemPayload(itemName);
-
-    if (itemPayload != null)
-    {
-      var seString = new SeStringBuilder()
-          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": Item ignored because the price would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}% (max {Plugin.Configuration.MaxPriceIncreasePercentage}%)")
-          .Build();
-      Svc.Chat.PrintError(seString);
-    }
-    else
-      Svc.Chat.PrintError($"{itemName}: Item ignored because the price would increase by {MathF.Abs(MathF.Round(increasePercentage, 1))}% (max {Plugin.Configuration.MaxPriceIncreasePercentage}%)");
+    var actual = MathF.Abs(MathF.Round(increasePercentage, 1));
+    var max = Plugin.Configuration.MaxPriceIncreasePercentage;
+    PrintItemError(itemName, $"Price increase exceeds max ({max}%) — would increase by {actual}%",
+      $"Item ignored because the price would increase by {actual}% (max {max}%)");
   }
 
-  /// <summary>Error: undercut price would be less than the configured price floor.</summary>
-  /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintBelowPriceFloorError(string itemName)
   {
     var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
-    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _), $"Below {floorLabel}");
-
-    if (!Plugin.Configuration.ShowErrorsInChat)
-      return;
-
-    var itemPayload = RawItemNameToItemPayload(itemName);
-
-    if (itemPayload != null)
-    {
-      var seString = new SeStringBuilder()
-          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": Item ignored because it would cut the price below {floorLabel}")
-          .Build();
-
-      Svc.Chat.PrintError(seString);
-    }
-    else
-      Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price below {floorLabel}");
+    PrintItemError(itemName, $"Below {floorLabel}",
+      $"Item ignored because it would cut the price below {floorLabel}");
   }
 
   public static void PrintBelowMinimumListingPriceError(string itemName)
   {
     var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
-    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, CleanItemName(itemName, out _), $"Below minimum listing price ({minPrice} gil)");
+    PrintItemError(itemName, $"Below minimum listing price ({minPrice} gil)",
+      $"Item ignored because it would cut the price below the minimum listing price of {minPrice} gil");
+  }
 
-    if (!Plugin.Configuration.ShowErrorsInChat)
-      return;
-
+  /// <summary>Prints a chat message when an item is vendor-sold through the retainer.</summary>
+  public static void PrintVendorSold(string itemName, int vendorPrice, int quantity)
+  {
+    var total = vendorPrice * quantity;
     var itemPayload = RawItemNameToItemPayload(itemName);
-
     if (itemPayload != null)
     {
       var seString = new SeStringBuilder()
           .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": Item ignored because it would cut the price below the minimum listing price of {minPrice} gil")
+          .AddText($": Vendor-sold for {total:N0} gil")
           .Build();
-      Svc.Chat.PrintError(seString);
+      Svc.Chat.Print(seString);
     }
     else
-      Svc.Chat.PrintError($"{itemName}: Item ignored because it would cut the price below the minimum listing price of {minPrice} gil");
+      Svc.Chat.Print($"{itemName}: Vendor-sold for {total:N0} gil");
   }
 
   /// <summary>Informs the user that an outlier listing was detected and skipped.</summary>
@@ -273,27 +223,10 @@ public static class Communicator
     Svc.Chat.Print(seString);
   }
 
-  /// <summary>Error: no valid price was found (no MB listings, or stale data).</summary>
-  /// <param name="itemName">Raw item name from the game addon.</param>
   public static void PrintNoPriceToSetError(string itemName)
   {
-    Plugin.PinchRunLog?.AddEntry(ItemOutcome.NoData, CleanItemName(itemName, out _), "No market board data");
-
-    if (!Plugin.Configuration.ShowErrorsInChat)
-      return;
-
-    var itemPayload = RawItemNameToItemPayload(itemName);
-    if (itemPayload != null)
-    {
-      var seString = new SeStringBuilder()
-          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": No price to set, please set price manually")
-          .Build();
-
-      Svc.Chat.PrintError(seString);
-    }
-    else
-      Svc.Chat.PrintError($"{itemName}: No price to set, please set price manually");
+    PrintItemError(itemName, "No market board data",
+      "No price to set, please set price manually", ItemOutcome.NoData);
   }
 
   /// <summary>Error: user tried to auto-pinch but all retainers are disabled in config.</summary>
@@ -304,7 +237,28 @@ public static class Communicator
         .Add(Plugin.ConfigLinkPayload)
         .AddUiForeground("/scrooge", 31) // Bright yellow color for better visibility
         .Build();
-        
+
     Svc.Chat.PrintError(seString);
+  }
+
+  /// <summary>Shared helper for item error messages: logs to PinchRunLog and optionally prints to chat with item link.</summary>
+  private static void PrintItemError(string itemName, string logMessage, string chatMessage, ItemOutcome outcome = ItemOutcome.Skipped)
+  {
+    Plugin.PinchRunLog?.AddEntry(outcome, CleanItemName(itemName, out _), logMessage);
+
+    if (!Plugin.Configuration.ShowErrorsInChat)
+      return;
+
+    var itemPayload = RawItemNameToItemPayload(itemName);
+    if (itemPayload != null)
+    {
+      var seString = new SeStringBuilder()
+          .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
+          .AddText($": {chatMessage}")
+          .Build();
+      Svc.Chat.PrintError(seString);
+    }
+    else
+      Svc.Chat.PrintError($"{itemName}: {chatMessage}");
   }
 }

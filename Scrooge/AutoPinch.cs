@@ -1,5 +1,4 @@
 ﻿using Dalamud.Game.Addon.Lifecycle;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Interface.Utility;
 using Dalamud.Utility;
@@ -9,1268 +8,568 @@ using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.ImGuiMethods;
 using ECommons.UIHelpers.AddonMasterImplementations;
-using ECommons.UIHelpers.AtkReaderImplementations;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Common.Math;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Dalamud.Bindings.ImGui;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Speech.Synthesis;
 using System.Text.RegularExpressions;
-using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
-using FFXIVClientStructs.FFXIV.Client.Game;
-using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using Scrooge.Windows;
 
-namespace Scrooge
+namespace Scrooge;
+
+/// <summary>
+/// Core automation engine. Extends Window to overlay an "Auto Pinch" button
+/// on the retainer list and sell list UIs. Uses ECommons TaskManager to queue
+/// sequential actions (open menu → click adjust → compare prices → set price).
+///
+/// Flow: PinchAllRetainers/PinchAllRetainerItems → enqueue tasks per item →
+/// each item goes through: OpenContextMenu → AdjustPrice → ComparePrice → SetNewPrice
+/// </summary>
+internal sealed class AutoPinch : Window, IDisposable
 {
-  /// <summary>
-  /// Core automation engine. Extends Window to overlay an "Auto Pinch" button
-  /// on the retainer list and sell list UIs. Uses ECommons TaskManager to queue
-  /// sequential actions (open menu → click adjust → compare prices → set price).
-  ///
-  /// Flow: PinchAllRetainers/PinchAllRetainerItems → enqueue tasks per item →
-  /// each item goes through: OpenContextMenu → AdjustPrice → ComparePrice → SetNewPrice
-  /// </summary>
-  internal sealed class AutoPinch : Window, IDisposable
+  private readonly TaskManager _taskManager;
+  private readonly Random _random = new Random();
+  private readonly ItemPricingPipeline _pricing;
+  private readonly HawkRunOrchestrator _hawkOrchestrator;
+
+  public AutoPinch()
+    : base("Scrooge", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
   {
-    private readonly MarketBoardHandler _mbHandler;
-    private int? _oldPrice;                              // current listing price (read from addon)
-    private int? _newPrice;                              // target price (from MB handler or cache)
-    private bool _skipCurrentItem = false;               // skip mannequin items
-    private bool _isPinchRun = false;                    // true during an auto-pinch run
-    private readonly TaskManager _taskManager;
-    private Dictionary<string, int?> _cachedPrices = []; // avoids re-querying MB for duplicate items
-    private readonly Random _random = new Random();
-    private bool _isHawkRun = false;                    // true during a hawk run
 
-    public AutoPinch()
-      : base("Scrooge", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
+    // window
+    Position = new System.Numerics.Vector2(0, 0);
+    IsOpen = true;
+    ShowCloseButton = false;
+    RespectCloseHotkey = false;
+    DisableWindowSounds = true;
+    SizeConstraints = new WindowSizeConstraints()
     {
-      _mbHandler = new MarketBoardHandler();
-      _mbHandler.NewPriceReceived += MBHandler_NewPriceReceived;
+      MaximumSize = new System.Numerics.Vector2(0, 0),
+    };
 
-      // window
-      Position = new System.Numerics.Vector2(0, 0);
-      IsOpen = true;
-      ShowCloseButton = false;
-      RespectCloseHotkey = false;
-      DisableWindowSounds = true;
-      SizeConstraints = new WindowSizeConstraints()
-      {
-        MaximumSize = new System.Numerics.Vector2(0, 0),
-      };
-
-      _taskManager = new TaskManager
-      {
-        TimeLimitMS = 10000,   // per-task timeout (individual steps, not the whole run)
-        AbortOnTimeout = true
-      };
-      // TTS is Windows-only; detect at startup and disable gracefully on other platforms
-      try
-      {
-        var tts = new SpeechSynthesizer();
-        tts.SelectVoice(tts.Voice.Name);
-        Plugin.Configuration.DontUseTTS = false;
-        Plugin.Configuration.Save();
-      }
-      catch
-      {
-        Plugin.Configuration.DontUseTTS = true;
-        Plugin.Configuration.Save();
-      }
-
-      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, RetainerSellPostSetup);
+    _taskManager = new TaskManager
+    {
+      TimeLimitMS = 10000,   // per-task timeout (individual steps, not the whole run)
+      AbortOnTimeout = true
+    };
+    _pricing = new ItemPricingPipeline(_taskManager, ApplyJitter);
+    _hawkOrchestrator = new HawkRunOrchestrator(
+      _taskManager, _pricing, ApplyJitter, SkipRetainerDialog, RemoveTalkAddonListeners);
+    // TTS is Windows-only; detect at startup and disable gracefully on other platforms
+    try
+    {
+      var tts = new SpeechSynthesizer();
+      tts.SelectVoice(tts.Voice.Name);
+      Plugin.Configuration.DontUseTTS = false;
+      Plugin.Configuration.Save();
+    }
+    catch
+    {
+      Plugin.Configuration.DontUseTTS = true;
+      Plugin.Configuration.Save();
     }
 
-    public void Dispose()
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, RetainerSellPostSetup);
+  }
+
+  public void Dispose()
+  {
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, RetainerSellPostSetup);
+    _pricing.Dispose();
+  }
+
+  public override void Draw()
+  {
+    try
     {
-      Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, RetainerSellPostSetup);
-      _mbHandler.NewPriceReceived -= MBHandler_NewPriceReceived;
-      _mbHandler.Dispose();
+      DrawForRetainerList();
+      DrawForRetainerSellList();
+      DrawInventoryOverlays();
+    }
+    catch (Exception ex)
+    {
+      _taskManager.Abort();
+      Svc.Log.Error(ex, "Error while auto pinching");
+      if (Plugin.Configuration.ShowErrorsInChat)
+        Svc.Chat.PrintError($"Error while auto pinching: {ex.Message}");
+
+      _hawkOrchestrator.Abort();
+      RemoveTalkAddonListeners();
+    }
+  }
+
+  /// <summary>Draws the Auto Pinch button on the retainer list (all retainers view).</summary>
+  private void DrawForRetainerList()
+  {
+    unsafe
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        // Hotkey support: start pinching if the configured key is held
+        if (Plugin.Configuration.EnablePinchKey && Plugin.KeyState[Plugin.Configuration.PinchKey])
+          PinchAllRetainers();
+
+        var node = addon->UldManager.NodeList[27]; // anchor node for button positioning
+
+        if (node == null)
+          return;
+
+        // Auto Pinch button — anchored to node, stays in original position
+        var oldSize = AutoPinchOverlay.ImGuiSetup(node);
+        DrawAutoPinchButton(PinchAllRetainers);
+        AutoPinchOverlay.ImGuiPostSetup(oldSize);
+
+        // Hawk Wares button — separate overlay, positioned to the left
+        var position = AutoPinchOverlay.GetNodePosition(node);
+        var scale = AutoPinchOverlay.GetNodeScale(node);
+        var hawkPos = new Vector2(position.X - 90f * scale.X, position.Y);
+        var hawkOldSize = AutoPinchOverlay.ImGuiSetup(node, "###HawkWares", hawkPos);
+        DrawHawkButton();
+        AutoPinchOverlay.ImGuiPostSetup(hawkOldSize);
+      }
+    }
+  }
+
+  /// <summary>Draws the Auto Pinch button on a single retainer's sell list.</summary>
+  private void DrawForRetainerSellList()
+  {
+    unsafe
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
+      {
+        if (Plugin.Configuration.EnablePinchKey && Plugin.KeyState[Plugin.Configuration.PinchKey])
+          PinchAllRetainerItems();
+
+        var node = addon->UldManager.NodeList[17]; // anchor node for button positioning
+
+        if (node == null)
+          return;
+
+        var oldSize = AutoPinchOverlay.ImGuiSetup(node);
+        DrawAutoPinchButton(PinchAllRetainerItems);
+        AutoPinchOverlay.ImGuiPostSetup(oldSize);
+      }
+    }
+  }
+
+  /// <summary>Draws inventory overlays when the Hawk Window is open.</summary>
+  private unsafe void DrawInventoryOverlays()
+  {
+    if (Plugin.HawkWindow == null || !Plugin.HawkWindow.IsOpen)
+      return;
+
+    // Don't draw overlays while a context menu is open (z-order conflict)
+    unsafe
+    {
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var cm) && GenericHelpers.IsAddonReady(cm))
+        return;
     }
 
-    public override void Draw()
+    // Always Vendor items — orange/yellow veil
+    var vendorIcons = Plugin.HawkWindow.GetAlwaysVendorIconIds();
+    if (vendorIcons.Count > 0)
+      AutoPinchOverlay.DrawIconOverlays(vendorIcons, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 0.35f));
+
+    // Selected items — green veil
+    var selectedIcons = Plugin.HawkWindow.GetSelectedIconIds();
+    if (selectedIcons.Count > 0)
+      AutoPinchOverlay.DrawIconOverlays(selectedIcons, new System.Numerics.Vector4(0.2f, 1f, 0.2f, 0.35f));
+
+    // Banned items — red veil (both NQ and HQ variants)
+    if (Plugin.Configuration.BannedItemIds.Count > 0)
     {
-      try
+      var itemSheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+      var bannedIcons = new HashSet<int>();
+      foreach (var itemId in Plugin.Configuration.BannedItemIds)
       {
-        DrawForRetainerList();
-        DrawForRetainerSellList();
-        DrawInventoryOverlays();
+        var baseIcon = (int)itemSheet.GetRow(itemId).Icon;
+        bannedIcons.Add(baseIcon);           // NQ
+        bannedIcons.Add(baseIcon + 1000000);  // HQ
       }
-      catch (Exception ex)
+
+      if (bannedIcons.Count > 0)
+        AutoPinchOverlay.DrawIconOverlays(bannedIcons, new System.Numerics.Vector4(1f, 0.2f, 0.2f, 0.35f));
+    }
+  }
+
+  /// <summary>Draws Auto Pinch / Cancel button. Shows Cancel when busy.</summary>
+  /// <param name="specificPinchFunction">The pinch function to call (all retainers or single retainer's items).</param>
+  private void DrawAutoPinchButton(Action specificPinchFunction)
+  {
+    if (_taskManager.IsBusy)
+    {
+      if (ImGui.Button("Cancel"))
       {
         _taskManager.Abort();
-        Svc.Log.Error(ex, "Error while auto pinching");
-        if (Plugin.Configuration.ShowErrorsInChat)
-          Svc.Chat.PrintError($"Error while auto pinching: {ex.Message}");
-
-        _isHawkRun = false;
-        _hawkQueue = null;
         RemoveTalkAddonListeners();
+        Plugin.PinchRunLog.CancelRun();
       }
-    }
-
-    /// <summary>Draws the Auto Pinch button on the retainer list (all retainers view).</summary>
-    private void DrawForRetainerList()
-    {
-      unsafe
-      {
-        if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
-        {
-          // Hotkey support: start pinching if the configured key is held
-          if (Plugin.Configuration.EnablePinchKey && Plugin.KeyState[Plugin.Configuration.PinchKey])
-            PinchAllRetainers();
-
-          var node = addon->UldManager.NodeList[27]; // anchor node for button positioning
-
-          if (node == null)
-            return;
-
-          // Auto Pinch button — anchored to node, stays in original position
-          var oldSize = ImGuiSetup(node);
-          DrawAutoPinchButton(PinchAllRetainers);
-          ImGuiPostSetup(oldSize);
-
-          // Hawk Wares button — separate overlay, positioned to the left
-          var position = GetNodePosition(node);
-          var scale = GetNodeScale(node);
-          ImGuiHelpers.ForceNextWindowMainViewport();
-          ImGuiHelpers.SetNextWindowPosRelativeMainViewport(new Vector2(position.X - 90f * scale.X, position.Y));
-          ImGui.PushStyleColor(ImGuiCol.WindowBg, 0);
-          var hawkOldSize = ImGui.GetFont().Scale;
-          ImGui.GetFont().Scale *= scale.X;
-          ImGui.PushFont(ImGui.GetFont());
-          ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f.Scale());
-          ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(3f.Scale(), 3f.Scale()));
-          ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(0f.Scale(), 0f.Scale()));
-          ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f.Scale());
-          ImGui.PushStyleVar(ImGuiStyleVar.WindowMinSize, new Vector2(1, 1));
-          ImGui.Begin("###HawkWares", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoNavFocus
-              | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoSavedSettings);
-          DrawHawkButton();
-          ImGui.End();
-          ImGui.PopStyleVar(5);
-          ImGui.GetFont().Scale = hawkOldSize;
-          ImGui.PopFont();
-          ImGui.PopStyleColor();
-        }
-      }
-    }
-
-    /// <summary>Draws the Auto Pinch button on a single retainer's sell list.</summary>
-    private void DrawForRetainerSellList()
-    {
-      unsafe
-      {
-        if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
-        {
-          if (Plugin.Configuration.EnablePinchKey && Plugin.KeyState[Plugin.Configuration.PinchKey])
-            PinchAllRetainerItems();
-
-          var node = addon->UldManager.NodeList[17]; // anchor node for button positioning
-
-          if (node == null)
-            return;
-
-          var oldSize = ImGuiSetup(node);
-          DrawAutoPinchButton(PinchAllRetainerItems);
-          ImGuiPostSetup(oldSize);
-        }
-      }
-    }
-
-    /// <summary>Draws inventory overlays when the Hawk Window is open.</summary>
-    private unsafe void DrawInventoryOverlays()
-    {
-      if (Plugin.HawkWindow == null || !Plugin.HawkWindow.IsOpen)
-        return;
-
-      // Don't draw overlays while a context menu is open (z-order conflict)
-      unsafe
-      {
-        if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var cm) && GenericHelpers.IsAddonReady(cm))
-          return;
-      }
-
-      // Selected items — green veil
-      var selectedIcons = Plugin.HawkWindow.GetSelectedIconIds();
-      if (selectedIcons.Count > 0)
-        DrawIconOverlays(selectedIcons, new System.Numerics.Vector4(0.2f, 1f, 0.2f, 0.35f));
-
-      // Banned items — red veil (both NQ and HQ variants)
-      if (Plugin.Configuration.BannedItemIds.Count > 0)
-      {
-        var itemSheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
-        var bannedIcons = new HashSet<int>();
-        foreach (var itemId in Plugin.Configuration.BannedItemIds)
-        {
-          var baseIcon = (int)itemSheet.GetRow(itemId).Icon;
-          bannedIcons.Add(baseIcon);           // NQ
-          bannedIcons.Add(baseIcon + 1000000);  // HQ
-        }
-
-        if (bannedIcons.Count > 0)
-          DrawIconOverlays(bannedIcons, new System.Numerics.Vector4(1f, 0.2f, 0.2f, 0.35f));
-      }
-    }
-
-    /// <summary>
-    /// Draws colored overlays on inventory grid slots matching the given icon IDs.
-    /// Scans InventoryGrid0E–3E using AddonInventoryGrid.Slots to read each
-    /// slot's displayed icon directly.
-    /// </summary>
-    /// <param name="iconIds">Set of Lumina icon IDs to highlight.</param>
-    /// <param name="color">Overlay color (RGBA).</param>
-    private static unsafe void DrawIconOverlays(HashSet<int> iconIds, System.Numerics.Vector4 color)
-    {
-      var gridNames = new[] { "InventoryGrid0E", "InventoryGrid1E", "InventoryGrid2E", "InventoryGrid3E" };
-      var drawList = ImGui.GetBackgroundDrawList();
-      var colorU32 = ImGui.GetColorU32(color);
-
-      foreach (var gridName in gridNames)
-      {
-        if (!GenericHelpers.TryGetAddonByName<AddonInventoryGrid>(gridName, out var grid) || !GenericHelpers.IsAddonReady(&grid->AtkUnitBase))
-          continue;
-
-        for (int i = 0; i < 35; i++)
-        {
-          var dragDrop = grid->Slots[i];
-          if (dragDrop.Value == null) continue;
-
-          var icon = dragDrop.Value->AtkComponentIcon;
-          if (icon == null) continue;
-          var iconId = (int)icon->IconId;
-          if (iconId == 0 || !iconIds.Contains(iconId)) continue;
-
-          var ownerNode = dragDrop.Value->AtkComponentBase.OwnerNode;
-          if (ownerNode == null || !ownerNode->AtkResNode.IsVisible()) continue;
-
-          var node = &ownerNode->AtkResNode;
-          var position = GetNodePosition(node);
-          var scale = GetNodeScale(node);
-          var size = new System.Numerics.Vector2(node->Width * scale.X, node->Height * scale.Y);
-
-          drawList.AddRectFilled(
-            new System.Numerics.Vector2(position.X, position.Y),
-            new System.Numerics.Vector2(position.X + size.X, position.Y + size.Y),
-            colorU32);
-        }
-      }
-    }
-
-    /// <summary>
-    /// Positions and styles an invisible ImGui window to overlay a game UI node.
-    /// Returns the previous font scale so it can be restored in ImGuiPostSetup.
-    /// </summary>
-    /// <param name="node">The game UI node to anchor the overlay to.</param>
-    /// <returns>The previous font scale, to be passed to ImGuiPostSetup for cleanup.</returns>
-    private unsafe float ImGuiSetup(AtkResNode* node)
-    {
-      var position = GetNodePosition(node);
-      var scale = GetNodeScale(node);
-      var size = new Vector2(node->Width, node->Height) * scale;
-
-      ImGuiHelpers.ForceNextWindowMainViewport();
-      ImGuiHelpers.SetNextWindowPosRelativeMainViewport(position);
-
-      ImGui.PushStyleColor(ImGuiCol.WindowBg, 0);
-      var oldSize = ImGui.GetFont().Scale;
-      ImGui.GetFont().Scale *= scale.X;
-      ImGui.PushFont(ImGui.GetFont());
-      ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0f.Scale());
-      ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(3f.Scale(), 3f.Scale()));
-      ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(0f.Scale(), 0f.Scale()));
-      ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f.Scale());
-      ImGui.PushStyleVar(ImGuiStyleVar.WindowMinSize, size);
-      ImGui.Begin($"###AutoPinch{node->NodeId}", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoNavFocus
-          | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoSavedSettings);
-
-      return oldSize;
-    }
-
-    /// <summary>Restores ImGui state after drawing the overlay.</summary>
-    /// <param name="oldSize">The font scale returned by ImGuiSetup.</param>
-    private static void ImGuiPostSetup(float oldSize)
-    {
-      ImGui.End();
-      ImGui.PopStyleVar(5);
-      ImGui.GetFont().Scale = oldSize;
-      ImGui.PopFont();
-      ImGui.PopStyleColor();
-    }
-
-    /// <summary>Draws Auto Pinch / Cancel button. Shows Cancel when busy.</summary>
-    /// <param name="specificPinchFunction">The pinch function to call (all retainers or single retainer's items).</param>
-    private void DrawAutoPinchButton(Action specificPinchFunction)
-    {
-      if (_taskManager.IsBusy)
-      {
-        if (ImGui.Button("Cancel"))
-        {
-          _taskManager.Abort();
-          RemoveTalkAddonListeners();
-          Plugin.PinchRunLog.CancelRun();
-        }
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("Cancels the auto pinching process");
-          ImGui.EndTooltip();
-        }
-      }
-      else
-      {
-        if (ImGui.Button("Auto Pinch"))
-          specificPinchFunction();
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("Starts auto pinching\r\n" +
-                           "Please do not interact with the game while this process is running");
-          ImGui.EndTooltip();
-        }
-      }
-    }
-
-    /// <summary>Draws the Hawk Run button. Disabled when task manager is busy.</summary>
-    private unsafe void DrawHawkButton()
-    {
-      ImGui.BeginDisabled(_taskManager.IsBusy);
-      if (ImGui.Button("Hawk Wares"))
-        OpenHawkView();
-      ImGui.EndDisabled();
       if (ImGui.IsItemHovered())
-        ImGui.SetTooltip("List new items from your inventory");
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Cancels the auto pinching process");
+        ImGui.EndTooltip();
+      }
     }
-
-    /// <summary>
-    /// Finds the first retainer with open sell slots, navigates to their
-    /// "Sell items in your inventory on the market" view, then opens the HawkWindow.
-    /// </summary>
-    private unsafe void OpenHawkView()
+    else
     {
-      if (_taskManager.IsBusy)
-        return;
-
-      if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
-        return;
-
-      var retainerList = new AddonMaster.RetainerList(addon);
-      var retainers = retainerList.Retainers;
-
-      // Count total available slots across all retainers, find first with space
-      int targetIndex = -1;
-      int totalAvailableSlots = 0;
-      for (int i = 0; i < retainers.Length; i++)
+      if (ImGui.Button("Auto Pinch"))
+        specificPinchFunction();
+      if (ImGui.IsItemHovered())
       {
-        var atkIdx = 3 + (i * 10) + 6;
-        var sellingText = addon->AtkValues[atkIdx].GetValueAsString();
-        var match = Regex.Match(sellingText, @"\d+");
-        if (match.Success)
-        {
-          var count = int.Parse(match.Value);
-          totalAvailableSlots += (20 - count);
-          if (targetIndex < 0 && count < 20)
-            targetIndex = i;
-        }
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Starts auto pinching\r\n" +
+                         "Please do not interact with the game while this process is running");
+        ImGui.EndTooltip();
       }
+    }
+  }
 
-      if (targetIndex < 0)
-      {
-        Svc.Chat.PrintError("[Scrooge] All retainers have full sell lists (20/20).");
-        return;
-      }
+  /// <summary>Draws the Hawk Run button. Disabled when task manager is busy.</summary>
+  private unsafe void DrawHawkButton()
+  {
+    ImGui.BeginDisabled(_taskManager.IsBusy);
+    if (ImGui.Button("Hawk Wares"))
+      _hawkOrchestrator.OpenHawkView();
+    ImGui.EndDisabled();
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("List new items from your inventory");
+  }
 
-      // Auto-dismiss retainer greeting dialog
+  /// <summary>
+  /// Entry point for "pinch all retainers": iterates every enabled retainer,
+  /// opens their sell list, and queues price adjustments for all their items.
+  /// Registers Talk dialog listeners to auto-dismiss retainer greeting dialogs.
+  /// </summary>
+  private unsafe void PinchAllRetainers()
+  {
+    if (_taskManager.IsBusy)
+      return;
+
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
+    {
+      // Auto-dismiss the "Talk" dialog that appears when opening each retainer
       Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
       Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
 
-      // Navigate: click retainer → sell view → open HawkWindow
-      _taskManager.Enqueue(() => ClickRetainer(targetIndex), "HawkClickRetainer");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(ClickSellItems, "HawkClickSellItems");
-      _taskManager.DelayNext(500);
-      _taskManager.Enqueue(() => {
-        RemoveTalkAddonListeners();
-        Plugin.HawkWindow.SetAvailableSlots(totalAvailableSlots);
-        Plugin.HawkWindow.RefreshInventory();
-        Plugin.HawkWindow.IsOpen = true;
-        return true;
-      }, "HawkOpenWindow");
-    }
-
-    /// <summary>
-    /// Entry point for "pinch all retainers": iterates every enabled retainer,
-    /// opens their sell list, and queues price adjustments for all their items.
-    /// Registers Talk dialog listeners to auto-dismiss retainer greeting dialogs.
-    /// </summary>
-    private unsafe void PinchAllRetainers()
-    {
-      if (_taskManager.IsBusy)
+      // we cache the number of retainers because AddonMaster will be disposed once the RetainerList addon is closed.
+      var retainerList = new AddonMaster.RetainerList(addon);
+      var retainers = retainerList.Retainers;
+      var num = retainers.Length;
+      
+      // Check if all are disabled (sentinel present)
+      bool allDisabled = Plugin.Configuration.EnabledRetainerNames.Contains(Configuration.ALL_DISABLED_SENTINEL);
+      
+      // If all are disabled, skip all retainers and notify user
+      if (allDisabled)
+      {
+        Communicator.PrintAllRetainersDisabled();
         return;
-
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        // Auto-dismiss the "Talk" dialog that appears when opening each retainer
-        Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
-        Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
-
-        // we cache the number of retainers because AddonMaster will be disposed once the RetainerList addon is closed.
-        var retainerList = new AddonMaster.RetainerList(addon);
-        var retainers = retainerList.Retainers;
-        var num = retainers.Length;
-        
-        // Check if all are disabled (sentinel present)
-        bool allDisabled = Plugin.Configuration.EnabledRetainerNames.Contains(Configuration.ALL_DISABLED_SENTINEL);
-        
-        // If all are disabled, skip all retainers and notify user
-        if (allDisabled)
-        {
-          Communicator.PrintAllRetainersDisabled();
-          return;
-        }
-
-        ClearState();
-        _isPinchRun = true;
-        Plugin.PinchRunLog.StartNewRun();
-        if (Plugin.Configuration.EnableGilTracking)
-          GilTracker.StartRun();
-
-        // If no retainers are explicitly enabled, enable all by default
-        bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
-
-        // Pre-calculate total items from RetainerList addon AtkValues
-        // Layout: base offset 3, 10 values per retainer, offset 6 = "Selling X items" text
-        // See: RetainerList Addon - AtkValue Map.md
-        int preRunTotal = 0;
-        for (int i = 0; i < num; i++)
-        {
-          var retainerName = retainers[i].Name;
-          if (!allEnabled && !Plugin.Configuration.EnabledRetainerNames.Contains(retainerName))
-            continue;
-
-          var atkIdx = 3 + (i * 10) + 6;
-          var sellingText = addon->AtkValues[atkIdx].GetValueAsString();
-          var match = Regex.Match(sellingText, @"\d+");
-          if (match.Success)
-            preRunTotal += int.Parse(match.Value);
-        }
-        Plugin.PinchRunLog.SetTotalItems(preRunTotal);
-
-        for (int i = 0; i < num; i++)
-        {
-          var retainerName = retainers[i].Name;
-          
-          // Skip retainers that are excluded in configuration
-          if (!allEnabled && !Plugin.Configuration.EnabledRetainerNames.Contains(retainerName))
-          {
-            Svc.Log.Debug($"Skipping retainer '{retainerName}' (excluded by user configuration)");
-            continue;
-          }
-          EnqueueSingleRetainer(i);
-        }
-
-        _taskManager.Enqueue(RemoveTalkAddonListeners);
-        if (Plugin.Configuration.TTSWhenAllDone)
-          _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
-
-        _taskManager.Enqueue(() => { 
-          _isPinchRun = false;
-          Plugin.PinchRunLog.EndRun();
-          if (Plugin.Configuration.EnableGilTracking)
-            GilTracker.FinalizeRun();
-          Util.FlashWindow();
-          return true;
-        }, "EndRunLog");
       }
-    }
-
-    /// <summary>
-    /// Queues the full sequence for one retainer: click retainer → open sell list →
-    /// process all items → close sell list → close retainer.
-    /// </summary>
-    /// <param name="index">Retainer index in the RetainerList addon (0-based).</param>
-    private void EnqueueSingleRetainer(int index)
-    {
-      _taskManager.Enqueue(() => ClickRetainer(index), $"ClickRetainer{index}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(ClickSellItems, $"ClickSellItems{index}");
-      _taskManager.DelayNext(500);
-
-      // Gil tracking: set retainer context and snapshot all listings from the sell list
-      if (Plugin.Configuration.EnableGilTracking)
-      {
-        _taskManager.Enqueue(() => { unsafe {
-            var rm = RetainerManager.Instance();
-            GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
-        } GilTracker.SnapshotListings(); return true;
-        }, $"SnapshotListings{index}");
-      }
-
-      _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
-      _taskManager.DelayNext(500);
-      _taskManager.Enqueue(CloseRetainerSellList, $"CloseRetainerSellList{index}");
-      _taskManager.DelayNext(100);
-
-      // Gil tracking: view sale history to capture sales via hook
-      if (Plugin.Configuration.EnableGilTracking)
-      {
-        _taskManager.Enqueue(ClickSaleHistory, $"ClickSaleHistory{index}");
-        _taskManager.DelayNext(1500); // wait for server response + hook to fire
-        _taskManager.Enqueue(CloseSaleHistory, $"CloseSaleHistory{index}");
-        _taskManager.DelayNext(100);
-      }
-
-      _taskManager.Enqueue(CloseRetainer, $"CloseRetainer{index}");
-      _taskManager.DelayNext(100);
-    }
-
-    /// <param name="index">Retainer index in the RetainerList addon.</param>
-    private static unsafe bool? ClickRetainer(int index)
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        var retainerName = new AddonMaster.RetainerList(addon).Retainers[index].Name;
-
-        Communicator.PrintRetainerName(retainerName);
-        if (Plugin.Configuration.EnableGilTracking)
-          GilTracker.SetRetainer(retainerName);
-
-        ECommons.Automation.Callback.Fire(addon, true, 2, index);
-
-        return true;
-      }
-      else
-        return false;
-    }
-
-    private static unsafe bool? ClickSellItems()
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        new AddonMaster.SelectString(addon).Entries[2].Select();
-        return true;
-      }
-      else
-        return false;
-    }
-
-    private static unsafe bool? CloseRetainerSellList()
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        addon->Close(true);
-        return true;
-      }
-      else
-        return false;
-    }
-
-    private static unsafe bool? CloseRetainer()
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        addon->Close(true);
-        return true;
-      }
-      else
-        return false;
-    }
-
-    /// <summary>
-    /// Clicks "Sale History" in the retainer SelectString menu.
-    /// Index may vary — validate text before clicking in production.
-    /// </summary>
-    private static unsafe bool? ClickSaleHistory()
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        var selectString = new AddonMaster.SelectString(addon);
-        var entries = selectString.Entries;
-        // Validate entry text before clicking (guard against menu changes in patches)
-        if (entries.Length > 4 && entries[4].Text.Contains("sale history", StringComparison.OrdinalIgnoreCase))
-        {
-          entries[4].Select();
-          return true;
-        }
-        Svc.Log.Warning("[GilTrack] SelectString[4] is not Sale History — skipping");
-        return true; // skip silently, don't block the run
-      }
-      return false;
-    }
-
-    /// <summary>Close the RetainerHistory (Sale History) addon.</summary>
-    private static unsafe bool? CloseSaleHistory()
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerHistory", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        addon->Close(true);
-        return true;
-      }
-      return true; // might not be open yet — don't block
-    }
-
-    private unsafe void PinchAllRetainerItems()
-    {
-      if (_taskManager.IsBusy)
-        return;
 
       ClearState();
-      _isPinchRun = true;
+      _pricing.IsPinchRun = true;
       Plugin.PinchRunLog.StartNewRun();
-
-      // Get total items from the sell list
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
-        var listComponent = (AtkComponentList*)listNode->Component;
-        Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
-      }
-
-      // Gil tracking: start run, set retainer, snapshot
       if (Plugin.Configuration.EnableGilTracking)
+        GilTracker.StartRun();
+
+      // If no retainers are explicitly enabled, enable all by default
+      bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
+
+      // Pre-calculate total items from RetainerList addon AtkValues
+      // Layout: base offset 3, 10 values per retainer, offset 6 = "Selling X items" text
+      // See: RetainerList Addon - AtkValue Map.md
+      int preRunTotal = 0;
+      for (int i = 0; i < num; i++)
       {
-        var rm = RetainerManager.Instance();
-        var retainerName = rm->GetActiveRetainer()->NameString;
-        GilTracker.StartRun(retainerName);
-        GilTracker.SetRetainer(retainerName);
-        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+        var retainerName = retainers[i].Name;
+        if (!allEnabled && !Plugin.Configuration.EnabledRetainerNames.Contains(retainerName))
+          continue;
+
+        preRunTotal += GameNavigation.GetRetainerListingCount(addon, i);
       }
+      Plugin.PinchRunLog.SetTotalItems(preRunTotal);
+
+      for (int i = 0; i < num; i++)
+      {
+        var retainerName = retainers[i].Name;
         
-      EnqueueAllRetainerItems(EnqueueSingleItem, false);
-
-      // Gil tracking: close sell list → view sale history → reopen sell list
-      if (Plugin.Configuration.EnableGilTracking)
-      {
-        _taskManager.Enqueue(CloseRetainerSellList, "GilTrack_CloseSellList");
-        _taskManager.DelayNext(100);
-        _taskManager.Enqueue(ClickSaleHistory, "GilTrack_ClickSaleHistory");
-        _taskManager.DelayNext(1500);
-        _taskManager.Enqueue(CloseSaleHistory, "GilTrack_CloseSaleHistory");
-        _taskManager.DelayNext(100);
-        _taskManager.Enqueue(ClickSellItems, "GilTrack_ReopenSellList");
-        _taskManager.DelayNext(100);
+        // Skip retainers that are excluded in configuration
+        if (!allEnabled && !Plugin.Configuration.EnabledRetainerNames.Contains(retainerName))
+        {
+          Svc.Log.Debug($"Skipping retainer '{retainerName}' (excluded by user configuration)");
+          continue;
+        }
+        EnqueueSingleRetainer(i);
       }
+
+      _taskManager.Enqueue(RemoveTalkAddonListeners);
+      if (Plugin.Configuration.TTSWhenAllDone)
+        _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
       _taskManager.Enqueue(() => { 
-        _isPinchRun = false; 
+        _pricing.IsPinchRun = false;
         Plugin.PinchRunLog.EndRun();
         if (Plugin.Configuration.EnableGilTracking)
           GilTracker.FinalizeRun();
-        Util.FlashWindow(); 
-        return true; 
-      }, "EndRunLog");
-
-    }
-
-    /// <summary>
-    /// Entry point for hawk runs. Called by HawkWindow when user clicks Go.
-    /// Assumes we're already in the retainer's sell view (OpenHawkView navigated there).
-    /// Processes items one at a time, swapping retainers when full.
-    /// </summary>
-    private Queue<HawkWindow.HawkItem>? _hawkQueue;
-    private int _hawkRetainerSlotsUsed;
-    internal unsafe void StartHawkRun(List<HawkWindow.HawkItem> items)
-    {
-      if (_taskManager.IsBusy || items.Count == 0)
-        return;
-
-      if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
-      {
-        Svc.Chat.PrintError("[Scrooge] Not in retainer sell view. Click Hawk Wares first.");
-        return;
-      }
-
-      ClearState();
-      _isHawkRun = true;
-      _hawkQueue = new Queue<HawkWindow.HawkItem>(items);
-      _hawkRetainerSlotsUsed = 0;
-
-      Plugin.PinchRunLog.StartNewRun(isHawkRun: true);
-      Plugin.PinchRunLog.SetTotalItems(items.Count);
-
-      // Read current retainer's listing count from RetainerSellList
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var sellList) && GenericHelpers.IsAddonReady(sellList))
-      {
-        var listNode = (AtkComponentNode*)sellList->UldManager.NodeList[10];
-        var listComponent = (AtkComponentList*)listNode->Component;
-        _hawkRetainerSlotsUsed = listComponent->ListLength;
-      }
-
-      // Auto-dismiss retainer greeting dialogs (needed for retainer swaps)
-      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
-      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
-
-      // Start processing
-      _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
-    }
-
-    /// <summary>
-    /// Processes the next item in the hawk queue. If the current retainer is full,
-    /// swaps to the next retainer with space before continuing.
-    /// </summary>
-    private unsafe bool? HawkProcessNext()
-    {
-      if (_hawkQueue == null || _hawkQueue.Count == 0)
-      {
-        // All done — cleanup
-        _taskManager.Enqueue(CloseRetainerSellList, "HawkCloseSellList");
-        _taskManager.DelayNext(100);
-        _taskManager.Enqueue(CloseRetainer, "HawkCloseRetainer");
-        _taskManager.Enqueue(RemoveTalkAddonListeners);
-        _taskManager.Enqueue(() => {
-          Plugin.PinchRunLog.EndRun();
-          _isHawkRun = false;
-          _hawkQueue = null;
-          Util.FlashWindow();
-          return true;
-        }, "HawkRunEnd");
-        return true;
-      }
-
-      // Check if current retainer is full
-      if (_hawkRetainerSlotsUsed >= 20)
-      {
-        // Swap to next retainer
-        _taskManager.Enqueue(CloseRetainerSellList, "HawkSwapCloseSellList");
-        _taskManager.DelayNext(100);
-        _taskManager.Enqueue(CloseRetainer, "HawkSwapCloseRetainer");
-        _taskManager.DelayNext(100);
-        _taskManager.Enqueue(HawkFindNextRetainer, "HawkFindNextRetainer");
-        return true;
-      }
-
-      // Process next item
-      var item = _hawkQueue.Dequeue();
-      _taskManager.Enqueue(() => ClickInventoryItem(item), $"HawkClickItem_{item.Name}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(ClickPutUpForSale, $"HawkPutUpForSale_{item.Name}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(DelayMarketBoard, $"HawkDelayMB_{item.Name}");
-      _taskManager.Enqueue(ClickComparePrice, $"HawkComparePrice_{item.Name}");
-      _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
-      _taskManager.Enqueue(SetNewPrice, $"HawkSetPrice_{item.Name}");
-      _taskManager.Enqueue(() => { _hawkRetainerSlotsUsed++; return true; }, "HawkIncrementSlots");
-      _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
-
-      return true;
-    }
-
-    /// <summary>
-    /// Finds the next retainer with available sell slots and navigates to their sell view.
-    /// Called when the current retainer hits 20/20 mid-run.
-    /// </summary>
-    private unsafe bool? HawkFindNextRetainer()
-    {
-      if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
-        return false;
-
-      var retainerList = new AddonMaster.RetainerList(addon);
-      var retainers = retainerList.Retainers;
-
-      for (int i = 0; i < retainers.Length; i++)
-      {
-        var atkIdx = 3 + (i * 10) + 6;
-        var sellingText = addon->AtkValues[atkIdx].GetValueAsString();
-        var match = Regex.Match(sellingText, @"\d+");
-        if (match.Success && int.Parse(match.Value) < 20)
-        {
-          _hawkRetainerSlotsUsed = int.Parse(match.Value);
-
-          _taskManager.Enqueue(() => ClickRetainer(i), "HawkSwapClickRetainer");
-          _taskManager.DelayNext(100);
-          _taskManager.Enqueue(ClickSellItems, "HawkSwapClickSellItems");
-          _taskManager.DelayNext(500);
-          _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
-          return true;
-        }
-      }
-
-      // No retainers with space — abort remaining items
-      Svc.Chat.PrintError($"[Scrooge] All retainers full. {_hawkQueue?.Count ?? 0} items could not be listed.");
-      _taskManager.Enqueue(RemoveTalkAddonListeners);
-      _taskManager.Enqueue(() => {
-        Plugin.PinchRunLog.EndRun();
-        _isHawkRun = false;
-        _hawkQueue = null;
         Util.FlashWindow();
         return true;
-      }, "HawkRunEnd");
-      return true;
-    }
-
-    /// <summary>
-    /// Right-clicks an item in the player's inventory to open the context menu.
-    /// Uses AgentInventoryContext to open the context menu for a specific slot.
-    /// </summary>
-    private unsafe bool? ClickInventoryItem(HawkWindow.HawkItem hawkItem)
-    {
-      // Safety check: verify the item is still in the expected slot
-      var im = InventoryManager.Instance();
-      var container = im->GetInventoryContainer(hawkItem.Container);
-      if (container == null) return true;
-
-      var slot = container->GetInventorySlot(hawkItem.SlotIndex);
-      if (slot == null || slot->ItemId != hawkItem.ItemId)
-      {
-        Svc.Log.Warning($"[HawkRun] {hawkItem.Name} no longer at expected slot — skipping");
-        _skipCurrentItem = true;
-        return true;
-      }
-
-      var agent = AgentInventoryContext.Instance();
-      var addonId = AgentInventory.Instance()->OpenAddonId;
-      agent->OpenForItemSlot(hawkItem.Container, hawkItem.SlotIndex, 0, addonId);
-
-      return true;
-    }
-
-    /// <summary>
-    /// Clicks "Put Up for Sale" in the inventory context menu (first entry).
-    /// If the option is missing, the sell list may be full or the item is bound.
-    /// </summary>
-    private unsafe bool? ClickPutUpForSale()
-    {
-      if (_skipCurrentItem)
-        return true;
-
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        var reader = new ReaderContextMenu(addon);
-
-        for (int i = 0; i < reader.Entries.Count; i++)
-        {
-          var name = reader.Entries[i].Name;
-          if (name.Equals("Put Up for Sale", StringComparison.OrdinalIgnoreCase))
-          {
-            ECommons.Automation.Callback.Fire(addon, true, 0, i, 0, 0, 0);
-            return true;
-          }
-        }
-
-        // "Put Up for Sale" not found — sell list full or item is bound
-        Svc.Log.Warning("[HawkRun] 'Put Up for Sale' not in context menu — sell list may be full or item is bound");
-        _skipCurrentItem = true;
-        addon->Close(true);
-        return true;
-      }
-      return false;
-    }
-
-    /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
-    /// <param name="enqueueFunc">Function to queue each item (EnqueueSingleItem or InsertSingleItem).</param>
-    /// <param name="reverseOrder">If true, process items bottom-to-top (needed for Insert-based queuing).</param>
-    private unsafe bool? EnqueueAllRetainerItems(Action<int> enqueueFunc, bool reverseOrder)
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
-        var listComponent = (AtkComponentList*)listNode->Component;
-        int num = listComponent->ListLength;
-
-        if (reverseOrder)
-        {
-          for (int i = num - 1; i >= 0; i--)
-          {
-            enqueueFunc(i);
-          }
-        }
-        else
-        {
-          for (int i = 0; i < num; i++)
-          {
-            enqueueFunc(i);
-          }
-        }
-        if (Plugin.Configuration.TTSWhenEachDone)
-          _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenEachDoneMsg), "SpeakTTSEach");
-
-        return true;
-      }
-      else
-        return false;
-    }
-
-    /// <summary>Queues the price adjustment steps for a single item (forward order).</summary>
-    /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
-    private void EnqueueSingleItem(int index)
-    {
-      _taskManager.Enqueue(() => OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(ClickAdjustPrice, $"ClickAdjustPrice{index}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(DelayMarketBoard, $"DelayMB{index}");
-      _taskManager.Enqueue(ClickComparePrice, $"ClickComparePrice{index}");
-      _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
-      _taskManager.Enqueue(SetNewPrice, $"SetNewPrice{index}");
-    }
-
-    /// <summary>
-    /// Same as EnqueueSingleItem but uses Insert (prepend) instead of Enqueue (append).
-    /// Steps are added in reverse order because Insert pushes to the front of the queue.
-    /// Used when processing items within the PinchAllRetainers flow.
-    /// </summary>
-    /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
-    private void InsertSingleItem(int index)
-    {
-      _taskManager.Insert(SetNewPrice, $"SetNewPrice{index}");
-      _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
-      _taskManager.Insert(ClickComparePrice, $"ClickComparePrice{index}");
-      _taskManager.Insert(DelayMarketBoard, $"DelayMB{index}");
-      _taskManager.InsertDelayNext(100);
-      _taskManager.Insert(ClickAdjustPrice, $"ClickAdjustPrice{index}");
-      _taskManager.InsertDelayNext(100);
-      _taskManager.Insert(() => OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
-    }
-
-    /// <param name="itemIndex">Item index in the RetainerSellList addon.</param>
-    private static unsafe bool? OpenItemContextMenu(int itemIndex)
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        Svc.Log.Debug($"Clicking item {itemIndex}");
-        ECommons.Automation.Callback.Fire(addon, true, 0, itemIndex, 1); // click item
-        return true;
-      }
-
-      return false;
-    }
-
-    private unsafe bool? ClickAdjustPrice()
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon) && GenericHelpers.IsAddonReady(addon))
-      {
-        var reader = new ReaderContextMenu(addon);
-        if (!IsItemMannequin(reader.Entries))
-        {
-          Svc.Log.Debug($"Clicking adjust price");
-          ECommons.Automation.Callback.Fire(addon, true, 0, 0, 0, 0, 0); // click adjust price
-        }
-        else
-        {
-          Svc.Log.Debug("Current item is a mannequin item and will be skipped");
-          _skipCurrentItem = true;
-          addon->Close(true);
-        }
-
-        return true;
-      }
-
-      return false;
-    }
-
-    /// <summary>
-    /// Checks if an item is a mannequin item, by checking if there is
-    /// the "adjust price" entry in the given <paramref name="contextMenuEntries"/>.
-    /// </summary>
-    /// <param name="contextMenuEntries">Context menu entries to check.</param>
-    /// <returns>True if item is a mannequin item, false otherwise.</returns>
-    private static bool IsItemMannequin(List<ContextMenuEntry> contextMenuEntries)
-    {
-      return !contextMenuEntries.Any((e) => e.Name.Equals("adjust price", StringComparison.CurrentCultureIgnoreCase)
-                                        || e.Name.Equals("preis ändern", StringComparison.CurrentCultureIgnoreCase)
-                                        || e.Name.Equals("価格を変更する", StringComparison.CurrentCultureIgnoreCase)
-                                        || e.Name.Equals("changer le prix", StringComparison.CurrentCultureIgnoreCase));
-    }
-
-    /// <summary>
-    /// Conditionally adds a delay before opening the MB. If we already have a
-    /// cached price for this item, skip the delay (and the MB query entirely).
-    /// </summary>
-    private unsafe bool? DelayMarketBoard()
-    {
-      if (_skipCurrentItem)
-        return true;
-
-      if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var addon) && GenericHelpers.IsAddonReady(&addon->AtkUnitBase))
-      {
-        var itemName = addon->ItemName->NodeText.ToString();
-        if (!_cachedPrices.TryGetValue(itemName, out int? value) || value <= 0)
-        {
-          Svc.Log.Debug($"{itemName} has no cached price (or that price was <= 0), delaying next mb open");
-          _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.GetMBPricesDelayMS));
-        }
-
-        return true;
-      }
-
-      return false;
-    }
-
-    /// <summary>
-    /// Opens the "Compare Prices" MB window — unless we have a cached price,
-    /// in which case we skip the MB entirely and use the cache.
-    /// </summary>
-    private unsafe bool? ClickComparePrice()
-    {
-      if (_skipCurrentItem)
-        return true;
-
-      if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var addon) && GenericHelpers.IsAddonReady(&addon->AtkUnitBase))
-      {
-        var itemName = addon->ItemName->NodeText.ToString();
-        if (_cachedPrices.TryGetValue(itemName, out int? value) && value > 0)
-        {
-          Svc.Log.Debug($"{itemName}: using cached price");
-          _newPrice = value;
-          return true;
-        }
-        else
-        {
-          Svc.Log.Debug($"Clicking compare prices");
-          ECommons.Automation.Callback.Fire(&addon->AtkUnitBase, true, 4);
-          return true;
-        }
-      }
-
-      return false;
-    }
-
-    /// <summary>
-    /// Final step: applies the calculated price to the listing.
-    /// Handles the happy path (valid price) and all error sentinels
-    /// (vendor floor, no listings, etc). Confirms or cancels the addon accordingly.
-    /// </summary>
-    private unsafe bool? SetNewPrice()
-    {
-      var listingQuantity = 1;  // captured for finally block
-      ItemPayload? itemPayload = null;
-
-      try
-      {
-        if (_skipCurrentItem)
-          return true;
-
-        // close compare price window
-        if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var addon))
-          addon->Close(true);
-
-        if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell) && GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
-        {
-          var ui = &retainerSell->AtkUnitBase;
-          var itemName = retainerSell->ItemName->NodeText.ToString();
-          itemPayload = Communicator.RawItemNameToItemPayload(itemName);
-          if (itemPayload != null)
-            GilTracker.GetItemCategory(itemPayload.ItemId);
-          _oldPrice = retainerSell->AskingPrice->Value;
-          listingQuantity = retainerSell->AtkValues[8].Int;  // listing stack size
-
-          if (_newPrice.HasValue && _newPrice > 0)
-          {
-            if (_isHawkRun)
-            {
-              // New listings: no meaningful _oldPrice to compare against — skip percentage guards
-              Svc.Log.Debug($"Setting new listing price");
-              retainerSell->AskingPrice->SetValue(_newPrice.Value);
-              Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, 0f);
-            }
-            else
-            {
-              var cutPercentage = ((float)_newPrice.Value - _oldPrice.Value) / _oldPrice.Value * 100f;
-              if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
-              {
-                // Check if the price increase exceeds the cap
-                if (_isPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
-                {
-                  Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
-                }
-                // Price normally
-                else
-                {
-                  Svc.Log.Debug($"Setting new price");
-                  _cachedPrices.TryAdd(itemName, _newPrice);
-                  retainerSell->AskingPrice->SetValue(_newPrice.Value);
-                  Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
-                }
-              }
-              else
-                Communicator.PrintAboveMaxCutError(itemName);
-            }
-
-            ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0); // confirm
-            ui->Close(true);
-
-            return true;
-          }
-          else
-          {
-            switch (_newPrice)
-            {
-              case -3: // below minimum listing price
-                Communicator.PrintBelowMinimumListingPriceError(itemName);
-                break;
-
-              case -2:
-                Communicator.PrintBelowPriceFloorError(itemName);
-                break;
-
-              case -1: //no MB listings found
-              case null:
-              default:
-                Svc.Log.Warning("SetNewPrice: No price to set");
-                Communicator.PrintNoPriceToSetError(itemName);
-                break;
-            }
-            
-            ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 1); // cancel
-            ui->Close(true);
-            return true;
-          }
-        }
-        else
-          return false;
-      }
-      finally
-      {
-
-        // Track listing value for run summary (before clearing state)
-        if (!_skipCurrentItem)
-        {
-          var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
-          if (listingValue > 0)
-          {
-            Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
-            // RecordFinalPrice updates existing listing rows — skip during hawk runs
-            // (new listings aren't in the DB yet; they'll appear in the next pinch snapshot)
-            if (!_isHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
-              GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
-          }
-        }
-
-        _oldPrice = null;
-        _newPrice = null;
-        _skipCurrentItem = false;
-        Plugin.PinchRunLog.IncrementProcessed();
-      }
-    }
-
-    private void MBHandler_NewPriceReceived(object? sender, NewPriceEventArgs e)
-    {
-      Svc.Log.Debug($"New price received: {e.NewPrice}");
-      _newPrice = e.NewPrice;
-    }
-
-    private unsafe void SkipRetainerDialog(AddonEvent type, AddonArgs args)
-    {
-      // fallback for when something was improperly cleaned up
-      if (!_taskManager.IsBusy)
-        RemoveTalkAddonListeners();
-      else
-      {
-        if (((AtkUnitBase*)args.Addon.Address)->IsVisible)
-          new AddonMaster.Talk(args.Addon).Click();
-      }
-    }
-
-    /// <summary>
-    /// Triggered when posting a new item to the MB. If the post-pinch hotkey
-    /// is held, automatically fetches the lowest price and undercuts it.
-    /// </summary>
-    private void RetainerSellPostSetup(AddonEvent type, AddonArgs args)
-    {
-      if (_taskManager.IsBusy)
-        return;
-
-      if (Plugin.Configuration.EnablePostPinchkey && Plugin.KeyState[Plugin.Configuration.PostPinchKey])
-      {
-        _taskManager.Enqueue(ClickComparePrice, $"ClickComparePricePosted");
-        _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
-        _taskManager.Enqueue(SetNewPrice, $"SetNewPricePosted");
-      }
-    }
-    private void RemoveTalkAddonListeners()
-    {
-      Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
-      Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
-    }
-
-    /// <summary>Walks the node tree to calculate absolute screen position.</summary>
-    /// <param name="node">Starting node to calculate position for.</param>
-    /// <returns>Absolute screen position accounting for all parent transforms.</returns>
-    private static unsafe Vector2 GetNodePosition(AtkResNode* node)
-    {
-      var pos = new Vector2(node->X, node->Y);
-      var par = node->ParentNode;
-      while (par != null)
-      {
-        pos *= new Vector2(par->ScaleX, par->ScaleY);
-        pos += new Vector2(par->X, par->Y);
-        par = par->ParentNode;
-      }
-
-      return pos;
-    }
-
-    /// <summary>Walks the node tree to calculate cumulative scale factor.</summary>
-    /// <param name="node">Starting node to calculate scale for.</param>
-    /// <returns>Cumulative scale factor from all parent nodes. Returns (1,1) if node is null.</returns>
-    private static unsafe Vector2 GetNodeScale(AtkResNode* node)
-    {
-      if (node == null) return new Vector2(1, 1);
-      var scale = new Vector2(node->ScaleX, node->ScaleY);
-      while (node->ParentNode != null)
-      {
-        node = node->ParentNode;
-        scale *= new Vector2(node->ScaleX, node->ScaleY);
-      }
-
-      return scale;
-    }
-
-    /// <summary>Speaks a message using Windows TTS. Disposes the synthesizer after playback.</summary>
-    /// <param name="msg">The text to speak.</param>
-    private static bool? SpeakTTS(string msg)
-    {
-      if (!Plugin.Configuration.DontUseTTS)
-      {
-        SpeechSynthesizer tts = new()
-        {
-          Volume = Plugin.Configuration.TTSVolume
-        };
-        tts.SpeakAsync(msg);
-        tts.SpeakCompleted += (o, e) =>
-        {
-          tts.Dispose();
-          Svc.Log.Verbose($"Finished message: {msg} - tts disposed");
-        };
-      }
-      return true;
-    }
-
-    /// <summary>
-    /// Clears the cached price lookup table. Called when price floor settings
-    /// change so that affected items are re-queried from the market board.
-    /// </summary>
-    public void ClearCachedPrices() => _cachedPrices = [];
-
-    private void ClearState()
-    {
-      _newPrice = null;
-      _cachedPrices = [];
-      _skipCurrentItem = false;
-      _isPinchRun = false;
-      _isHawkRun = false;
-    }
-
-    private int ApplyJitter(int baseMS)
-    {
-      // Check if jitter is enabled
-      if (!Plugin.Configuration.EnableJitter)
-        return baseMS;
-
-      var jitterMS = Plugin.Configuration.JitterMS;
-
-      // Guard against weird
-      if (jitterMS <= 0) 
-        return baseMS;
-
-      // Calculate offset
-      var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * jitterMS);
-
-      return Math.Max(1000, baseMS + offset);
+      }, "EndRunLog");
     }
   }
+
+  /// <summary>
+  /// Queues the full sequence for one retainer: click retainer → open sell list →
+  /// process all items → close sell list → close retainer.
+  /// </summary>
+  /// <param name="index">Retainer index in the RetainerList addon (0-based).</param>
+  private void EnqueueSingleRetainer(int index)
+  {
+    _taskManager.Enqueue(() => GameNavigation.ClickRetainer(index), $"ClickRetainer{index}");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(GameNavigation.ClickSellItems, $"ClickSellItems{index}");
+    _taskManager.DelayNext(500);
+
+    // Gil tracking: set retainer context and snapshot all listings from the sell list
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      _taskManager.Enqueue(() => {
+        unsafe {
+          var rm = RetainerManager.Instance();
+          GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+        }
+        GilTracker.SnapshotListings();
+        return true;
+      }, $"SnapshotListings{index}");
+    }
+
+    _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
+    _taskManager.DelayNext(500);
+    _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, $"CloseRetainerSellList{index}");
+    _taskManager.DelayNext(100);
+
+    // Gil tracking: view sale history to capture sales via hook
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      _taskManager.Enqueue(GameNavigation.ClickSaleHistory, $"ClickSaleHistory{index}");
+      _taskManager.DelayNext(1500); // wait for server response + hook to fire
+      _taskManager.Enqueue(GameNavigation.CloseSaleHistory, $"CloseSaleHistory{index}");
+      _taskManager.DelayNext(100);
+    }
+
+    _taskManager.Enqueue(GameNavigation.CloseRetainer, $"CloseRetainer{index}");
+    _taskManager.DelayNext(100);
+  }
+
+  private unsafe void PinchAllRetainerItems()
+  {
+    if (_taskManager.IsBusy)
+      return;
+
+    ClearState();
+    _pricing.IsPinchRun = true;
+    Plugin.PinchRunLog.StartNewRun();
+
+    // Get total items from the sell list
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
+    {
+      var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
+      var listComponent = (AtkComponentList*)listNode->Component;
+      Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
+    }
+
+    // Gil tracking: start run, set retainer, snapshot
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      var rm = RetainerManager.Instance();
+      var retainerName = rm->GetActiveRetainer()->NameString;
+      GilTracker.StartRun(retainerName);
+      GilTracker.SetRetainer(retainerName);
+      _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+    }
+      
+    EnqueueAllRetainerItems(EnqueueSingleItem, false);
+
+    // Gil tracking: close sell list → view sale history → reopen sell list
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "GilTrack_CloseSellList");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(GameNavigation.ClickSaleHistory, "GilTrack_ClickSaleHistory");
+      _taskManager.DelayNext(1500);
+      _taskManager.Enqueue(GameNavigation.CloseSaleHistory, "GilTrack_CloseSaleHistory");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "GilTrack_ReopenSellList");
+      _taskManager.DelayNext(100);
+    }
+
+    _taskManager.Enqueue(() => { 
+      _pricing.IsPinchRun = false; 
+      Plugin.PinchRunLog.EndRun();
+      if (Plugin.Configuration.EnableGilTracking)
+        GilTracker.FinalizeRun();
+      Util.FlashWindow(); 
+      return true; 
+    }, "EndRunLog");
+
+  }
+
+  internal void StartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.StartHawkRun(items);
+
+  /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
+  /// <param name="enqueueFunc">Function to queue each item (EnqueueSingleItem or InsertSingleItem).</param>
+  /// <param name="reverseOrder">If true, process items bottom-to-top (needed for Insert-based queuing).</param>
+  private unsafe bool? EnqueueAllRetainerItems(Action<int> enqueueFunc, bool reverseOrder)
+  {
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
+    {
+      var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
+      var listComponent = (AtkComponentList*)listNode->Component;
+      int num = listComponent->ListLength;
+
+      if (reverseOrder)
+      {
+        for (int i = num - 1; i >= 0; i--)
+        {
+          enqueueFunc(i);
+        }
+      }
+      else
+      {
+        for (int i = 0; i < num; i++)
+        {
+          enqueueFunc(i);
+        }
+      }
+      if (Plugin.Configuration.TTSWhenEachDone)
+        _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenEachDoneMsg), "SpeakTTSEach");
+
+      return true;
+    }
+    else
+      return false;
+  }
+
+  /// <summary>Queues the price adjustment steps for a single item (forward order).</summary>
+  /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
+  private void EnqueueSingleItem(int index)
+  {
+    _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(_pricing.ClickAdjustPrice, $"ClickAdjustPrice{index}");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(_pricing.DelayMarketBoard, $"DelayMB{index}");
+    _taskManager.Enqueue(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
+    _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+    _taskManager.Enqueue(_pricing.SetNewPrice, $"SetNewPrice{index}");
+  }
+
+  /// <summary>
+  /// Same as EnqueueSingleItem but uses Insert (prepend) instead of Enqueue (append).
+  /// Steps are added in reverse order because Insert pushes to the front of the queue.
+  /// Used when processing items within the PinchAllRetainers flow.
+  /// </summary>
+  /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
+  private void InsertSingleItem(int index)
+  {
+    _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPrice{index}");
+    _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+    _taskManager.Insert(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
+    _taskManager.Insert(_pricing.DelayMarketBoard, $"DelayMB{index}");
+    _taskManager.InsertDelayNext(100);
+    _taskManager.Insert(_pricing.ClickAdjustPrice, $"ClickAdjustPrice{index}");
+    _taskManager.InsertDelayNext(100);
+    _taskManager.Insert(() => GameNavigation.OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
+  }
+
+
+  private unsafe void SkipRetainerDialog(AddonEvent type, AddonArgs args)
+  {
+    // fallback for when something was improperly cleaned up
+    if (!_taskManager.IsBusy)
+      RemoveTalkAddonListeners();
+    else
+    {
+      if (((AtkUnitBase*)args.Addon.Address)->IsVisible)
+        new AddonMaster.Talk(args.Addon).Click();
+    }
+  }
+
+  /// <summary>
+  /// Triggered when posting a new item to the MB. If the post-pinch hotkey
+  /// is held, automatically fetches the lowest price and undercuts it.
+  /// </summary>
+  private void RetainerSellPostSetup(AddonEvent type, AddonArgs args)
+  {
+    if (_taskManager.IsBusy)
+      return;
+
+    if (Plugin.Configuration.EnablePostPinchkey && Plugin.KeyState[Plugin.Configuration.PostPinchKey])
+    {
+      _taskManager.Enqueue(_pricing.ClickComparePrice, $"ClickComparePricePosted");
+      _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+      _taskManager.Enqueue(_pricing.SetNewPrice, $"SetNewPricePosted");
+    }
+  }
+  private void RemoveTalkAddonListeners()
+  {
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
+  }
+
+
+
+  /// <summary>Speaks a message using Windows TTS. Disposes the synthesizer after playback.</summary>
+  /// <param name="msg">The text to speak.</param>
+  private static bool? SpeakTTS(string msg)
+  {
+    if (!Plugin.Configuration.DontUseTTS)
+    {
+      SpeechSynthesizer tts = new()
+      {
+        Volume = Plugin.Configuration.TTSVolume
+      };
+      tts.SpeakAsync(msg);
+      tts.SpeakCompleted += (o, e) =>
+      {
+        tts.Dispose();
+        Svc.Log.Verbose($"Finished message: {msg} - tts disposed");
+      };
+    }
+    return true;
+  }
+
+  /// <summary>
+  /// Clears the cached price lookup table. Called when price floor settings
+  /// change so that affected items are re-queried from the market board.
+  /// </summary>
+  public void ClearCachedPrices() => _pricing.ClearCachedPrices();
+
+  private void ClearState()
+  {
+    _pricing.ClearState();
+  }
+
+  private int ApplyJitter(int baseMS)
+  {
+    // Check if jitter is enabled
+    if (!Plugin.Configuration.EnableJitter)
+      return baseMS;
+
+    var jitterMS = Plugin.Configuration.JitterMS;
+
+    // Guard against weird
+    if (jitterMS <= 0) 
+      return baseMS;
+
+    // Calculate offset
+    var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * jitterMS);
+
+    return Math.Max(1000, baseMS + offset);
+  }
 }
+
