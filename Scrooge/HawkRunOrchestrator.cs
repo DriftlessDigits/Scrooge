@@ -54,6 +54,7 @@ internal sealed class HawkRunOrchestrator
     IsRunning = false;
     _hawkQueue = null;
     _pricing.IsHawkRun = false;
+    Plugin.CurrentRun = null;
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
   }
 
@@ -126,6 +127,7 @@ internal sealed class HawkRunOrchestrator
     _pricing.ClearState();
     IsRunning = true;
     _pricing.IsHawkRun = true;
+    Plugin.CurrentRun = new RunData { Mode = RunMode.Hawk };
     _hawkQueue = new Queue<HawkWindow.HawkItem>(items);
     _hawkRetainerSlotsUsed = 0;
     _vendorSoldCount = 0;
@@ -169,6 +171,7 @@ internal sealed class HawkRunOrchestrator
       _taskManager.Enqueue(() => {
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
         Plugin.PinchRunLog.EndRun();
+        Plugin.CurrentRun = null;
         IsRunning = false;
         _pricing.IsHawkRun = false;
         _hawkQueue = null;
@@ -320,6 +323,7 @@ internal sealed class HawkRunOrchestrator
     _taskManager.Enqueue(() => {
       Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
       Plugin.PinchRunLog.EndRun();
+      Plugin.CurrentRun = null;
       IsRunning = false;
       _pricing.IsHawkRun = false;
       _hawkQueue = null;

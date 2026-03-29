@@ -207,6 +207,7 @@ internal sealed class AutoPinch : Window, IDisposable
         _taskManager.Abort();
         RemoveTalkAddonListeners();
         Plugin.PinchRunLog.CancelRun();
+        Plugin.CurrentRun = null;
       }
       if (ImGui.IsItemHovered())
       {
@@ -272,6 +273,7 @@ internal sealed class AutoPinch : Window, IDisposable
       }
 
       ClearState();
+      Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
       _pricing.IsPinchRun = true;
       Plugin.PinchRunLog.StartNewRun();
       if (Plugin.Configuration.EnableGilTracking)
@@ -311,9 +313,10 @@ internal sealed class AutoPinch : Window, IDisposable
       if (Plugin.Configuration.TTSWhenAllDone)
         _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
-      _taskManager.Enqueue(() => { 
+      _taskManager.Enqueue(() => {
         _pricing.IsPinchRun = false;
         Plugin.PinchRunLog.EndRun();
+        Plugin.CurrentRun = null;
         if (Plugin.Configuration.EnableGilTracking)
           GilTracker.FinalizeRun();
         Util.FlashWindow();
@@ -371,6 +374,7 @@ internal sealed class AutoPinch : Window, IDisposable
       return;
 
     ClearState();
+    Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
     _pricing.IsPinchRun = true;
     Plugin.PinchRunLog.StartNewRun();
 
@@ -407,13 +411,14 @@ internal sealed class AutoPinch : Window, IDisposable
       _taskManager.DelayNext(100);
     }
 
-    _taskManager.Enqueue(() => { 
-      _pricing.IsPinchRun = false; 
+    _taskManager.Enqueue(() => {
+      _pricing.IsPinchRun = false;
       Plugin.PinchRunLog.EndRun();
+      Plugin.CurrentRun = null;
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.FinalizeRun();
-      Util.FlashWindow(); 
-      return true; 
+      Util.FlashWindow();
+      return true;
     }, "EndRunLog");
 
   }
