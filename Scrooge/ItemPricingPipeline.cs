@@ -39,8 +39,9 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// Read by HawkRunOrchestrator.HandlePostPrice. NOT reset in finally block.</summary>
   internal bool ItemWasListed { get; set; }
 
-  // Per-run cache (survives across items, cleared between runs)
-  private Dictionary<string, int?> _cachedPrices = [];
+  // Per-run cache lives on RunData — accessor for convenience
+  private Dictionary<string, int?> _cachedPrices => Plugin.CurrentRun?.CachedPrices ?? _emptyCacheStub;
+  private static readonly Dictionary<string, int?> _emptyCacheStub = [];
 
   /// <summary>Set by orchestrators at run start/end.</summary>
   internal bool IsPinchRun { get; set; }
@@ -70,13 +71,13 @@ internal sealed class ItemPricingPipeline : IDisposable
     _skipCurrentItem = false;
     VendorSellPending = false;
     ItemWasListed = false;
-    _cachedPrices = [];
+    // Cache is now owned by RunData — cleared by creating a new RunData per run
     IsPinchRun = false;
     IsHawkRun = false;
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>
-  internal void ClearCachedPrices() => _cachedPrices = [];
+  internal void ClearCachedPrices() => Plugin.CurrentRun?.CachedPrices.Clear();
 
   // --- Pinch run item interaction ---
 
@@ -283,6 +284,21 @@ internal sealed class ItemPricingPipeline : IDisposable
         _oldPrice = retainerSell->AskingPrice->Value;
         listingQuantity = retainerSell->AtkValues[8].Int;  // listing stack size
 
+        // Populate PricingItem with identity + prices from addon
+        var currentItem = Plugin.CurrentRun?.CurrentItem;
+        if (currentItem != null)
+        {
+          var cleanName = Communicator.CleanItemName(itemName, out var isHq);
+          currentItem.ItemName = cleanName;
+          currentItem.IsHq = isHq;
+          currentItem.ItemId = itemPayload?.ItemId ?? 0;
+          currentItem.Quantity = listingQuantity;
+          currentItem.CurrentListingPrice = _oldPrice;
+          currentItem.RetainerName = Plugin.CurrentRun?.CurrentRetainer ?? "";
+          if (itemPayload != null)
+            currentItem.VendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(itemPayload.ItemId).PriceLow;
+        }
+
         if (_newPrice.HasValue && _newPrice > 0)
         {
           if (IsHawkRun)
@@ -391,5 +407,10 @@ internal sealed class ItemPricingPipeline : IDisposable
   {
     Svc.Log.Debug($"New price received: {e.NewPrice}");
     _newPrice = e.NewPrice;
+
+    // Mirror onto PricingItem
+    var item = Plugin.CurrentRun?.CurrentItem;
+    if (item != null)
+      item.MbPrice = e.NewPrice > 0 ? e.NewPrice : null;
   }
 }

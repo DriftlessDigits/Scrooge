@@ -463,6 +463,7 @@ internal sealed class AutoPinch : Window, IDisposable
   /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
   private void EnqueueSingleItem(int index)
   {
+    _taskManager.Enqueue(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { SlotIndex = index }; return true; }, $"InitItem{index}");
     _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(_pricing.ClickAdjustPrice, $"ClickAdjustPrice{index}");
@@ -489,6 +490,7 @@ internal sealed class AutoPinch : Window, IDisposable
     _taskManager.Insert(_pricing.ClickAdjustPrice, $"ClickAdjustPrice{index}");
     _taskManager.InsertDelayNext(100);
     _taskManager.Insert(() => GameNavigation.OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
+    _taskManager.Insert(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { SlotIndex = index }; return true; }, $"InitItem{index}");
   }
 
 
