@@ -274,7 +274,6 @@ internal sealed class AutoPinch : Window, IDisposable
 
       ClearState();
       Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
-      _pricing.IsPinchRun = true;
       Plugin.PinchRunLog.StartNewRun();
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.StartRun();
@@ -314,7 +313,6 @@ internal sealed class AutoPinch : Window, IDisposable
         _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
       _taskManager.Enqueue(() => {
-        _pricing.IsPinchRun = false;
         Plugin.PinchRunLog.EndRun();
         Plugin.CurrentRun = null;
         if (Plugin.Configuration.EnableGilTracking)
@@ -375,7 +373,6 @@ internal sealed class AutoPinch : Window, IDisposable
 
     ClearState();
     Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
-    _pricing.IsPinchRun = true;
     Plugin.PinchRunLog.StartNewRun();
 
     // Get total items from the sell list
@@ -412,7 +409,6 @@ internal sealed class AutoPinch : Window, IDisposable
     }
 
     _taskManager.Enqueue(() => {
-      _pricing.IsPinchRun = false;
       Plugin.PinchRunLog.EndRun();
       Plugin.CurrentRun = null;
       if (Plugin.Configuration.EnableGilTracking)

@@ -43,11 +43,11 @@ internal sealed class ItemPricingPipeline : IDisposable
   private Dictionary<string, int?> _cachedPrices => Plugin.CurrentRun?.CachedPrices ?? _emptyCacheStub;
   private static readonly Dictionary<string, int?> _emptyCacheStub = [];
 
-  /// <summary>Set by orchestrators at run start/end.</summary>
-  internal bool IsPinchRun { get; set; }
+  /// <summary>Current run mode. Reads from Plugin.CurrentRun.</summary>
+  private bool IsPinchRun => Plugin.CurrentRun?.Mode == RunMode.Pinch;
 
-  /// <summary>Set by orchestrators at run start/end.</summary>
-  internal bool IsHawkRun { get; set; }
+  /// <summary>Current run mode. Reads from Plugin.CurrentRun.</summary>
+  private bool IsHawkRun => Plugin.CurrentRun?.Mode == RunMode.Hawk;
 
   internal ItemPricingPipeline(TaskManager taskManager, Func<int, int> applyJitter)
   {
@@ -72,8 +72,7 @@ internal sealed class ItemPricingPipeline : IDisposable
     VendorSellPending = false;
     ItemWasListed = false;
     // Cache is now owned by RunData — cleared by creating a new RunData per run
-    IsPinchRun = false;
-    IsHawkRun = false;
+    // IsPinchRun/IsHawkRun now derived from Plugin.CurrentRun.Mode — no reset needed
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>
