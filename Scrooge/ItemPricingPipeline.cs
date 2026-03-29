@@ -31,13 +31,8 @@ internal sealed class ItemPricingPipeline : IDisposable
   private int? _newPrice;
   internal bool _skipCurrentItem;
 
-  /// <summary>Set when a price check fails and the item should be vendor-sold.
-  /// Read by HawkRunOrchestrator.HandlePostPrice. NOT reset in finally block.</summary>
-  internal bool VendorSellPending { get; set; }
-
-  /// <summary>Set when a price is successfully applied and the item was listed.
-  /// Read by HawkRunOrchestrator.HandlePostPrice. NOT reset in finally block.</summary>
-  internal bool ItemWasListed { get; set; }
+  // VendorSellPending and ItemWasListed replaced by PricingItem.Result
+  // (PricingResult.VendorSell and PricingResult.Listed respectively)
 
   // Per-run cache lives on RunData — accessor for convenience
   private Dictionary<string, int?> _cachedPrices => Plugin.CurrentRun?.CachedPrices ?? _emptyCacheStub;
@@ -69,8 +64,7 @@ internal sealed class ItemPricingPipeline : IDisposable
     _oldPrice = null;
     _newPrice = null;
     _skipCurrentItem = false;
-    VendorSellPending = false;
-    ItemWasListed = false;
+    // VendorSellPending/ItemWasListed now on PricingItem.Result — no reset needed
     // Cache is now owned by RunData — cleared by creating a new RunData per run
     // IsPinchRun/IsHawkRun now derived from Plugin.CurrentRun.Mode — no reset needed
   }
@@ -306,6 +300,7 @@ internal sealed class ItemPricingPipeline : IDisposable
             Svc.Log.Debug($"Setting new listing price");
             retainerSell->AskingPrice->SetValue(_newPrice.Value);
             Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, 0f);
+            if (currentItem != null) { currentItem.Result = PricingResult.Listed; currentItem.FinalPrice = _newPrice.Value; }
           }
           else
           {
@@ -316,6 +311,7 @@ internal sealed class ItemPricingPipeline : IDisposable
               if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
               {
                 Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
+                if (currentItem != null) { currentItem.Result = PricingResult.CapBlocked; currentItem.PriceChangePercent = cutPercentage; }
               }
               // Price normally
               else
@@ -324,13 +320,16 @@ internal sealed class ItemPricingPipeline : IDisposable
                 _cachedPrices.TryAdd(itemName, _newPrice);
                 retainerSell->AskingPrice->SetValue(_newPrice.Value);
                 Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
+                if (currentItem != null) { currentItem.Result = PricingResult.Applied; currentItem.FinalPrice = _newPrice.Value; }
               }
             }
             else
+            {
               Communicator.PrintAboveMaxCutError(itemName);
+              if (currentItem != null) { currentItem.Result = PricingResult.UndercutTooDeep; currentItem.PriceChangePercent = cutPercentage; }
+            }
           }
 
-          ItemWasListed = true;
           ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0); // confirm
           ui->Close(true);
 
@@ -344,15 +343,21 @@ internal sealed class ItemPricingPipeline : IDisposable
             case -2: // below price floor
               if (IsHawkRun && Plugin.Configuration.AutoVendorSellOnPriceCheckFail)
               {
-                VendorSellPending = true;
+                if (currentItem != null) currentItem.Result = PricingResult.VendorSell;
                 Svc.Log.Debug($"[HawkRun] Price check failed — will vendor-sell");
               }
               else
               {
                 if (_newPrice == -3)
+                {
                   Communicator.PrintBelowMinimumListingPriceError(itemName);
+                  if (currentItem != null) currentItem.Result = PricingResult.BelowMinimum;
+                }
                 else
+                {
                   Communicator.PrintBelowPriceFloorError(itemName);
+                  if (currentItem != null) currentItem.Result = PricingResult.BelowFloor;
+                }
               }
               break;
 
@@ -361,6 +366,7 @@ internal sealed class ItemPricingPipeline : IDisposable
             default:
               Svc.Log.Warning("SetNewPrice: No price to set");
               Communicator.PrintNoPriceToSetError(itemName);
+              if (currentItem != null) currentItem.Result = PricingResult.NoData;
               break;
           }
 
@@ -374,10 +380,11 @@ internal sealed class ItemPricingPipeline : IDisposable
     }
     finally
     {
+      var result = Plugin.CurrentRun?.CurrentItem?.Result ?? PricingResult.Pending;
 
       // Track listing value for run summary (before clearing state)
       // Don't track vendor-pending items as listings
-      if (!_skipCurrentItem && !VendorSellPending)
+      if (!_skipCurrentItem && result != PricingResult.VendorSell)
       {
         var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
         if (listingValue > 0)
@@ -393,11 +400,9 @@ internal sealed class ItemPricingPipeline : IDisposable
       _oldPrice = null;
       _newPrice = null;
       _skipCurrentItem = false;
-      // NOTE: VendorSellPending and ItemWasListed intentionally NOT reset here —
-      // they must survive for HandlePostPrice to read.
 
       // Don't increment for vendor-pending items — TrackVendorSale owns that
-      if (!VendorSellPending)
+      if (result != PricingResult.VendorSell)
         Plugin.PinchRunLog.IncrementProcessed();
     }
   }

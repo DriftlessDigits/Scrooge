@@ -230,9 +230,10 @@ internal sealed class HawkRunOrchestrator
   /// </summary>
   private unsafe bool? HandlePostPrice(HawkWindow.HawkItem item)
   {
-    if (_pricing.VendorSellPending)
+    var result = Plugin.CurrentRun?.CurrentItem?.Result ?? PricingResult.Pending;
+
+    if (result == PricingResult.VendorSell)
     {
-      _pricing.VendorSellPending = false;
       // Path B: price check failed → vendor sell instead
       _taskManager.Enqueue(() => _pricing.ClickInventoryItem(item), $"HawkReClickItem_{item.Name}");
       _taskManager.DelayNext(100);
@@ -243,9 +244,8 @@ internal sealed class HawkRunOrchestrator
       return true;
     }
 
-    if (_pricing.ItemWasListed)
+    if (result == PricingResult.Listed)
     {
-      _pricing.ItemWasListed = false;
       _hawkRetainerSlotsUsed++;
     }
 
