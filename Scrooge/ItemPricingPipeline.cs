@@ -301,6 +301,7 @@ internal sealed class ItemPricingPipeline : IDisposable
             Svc.Log.Debug($"Setting new listing price");
             retainerSell->AskingPrice->SetValue(_newPrice.Value);
             Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, 0f);
+            Plugin.PinchRunLog?.IncrementAdjusted();
             if (currentItem != null) { currentItem.Result = PricingResult.Listed; currentItem.FinalPrice = _newPrice.Value; }
           }
           else
@@ -312,6 +313,7 @@ internal sealed class ItemPricingPipeline : IDisposable
               if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
               {
                 Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
+                Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Price increase exceeds cap ({Plugin.Configuration.MaxPriceIncreasePercentage}%)");
                 if (currentItem != null) { currentItem.Result = PricingResult.CapBlocked; currentItem.PriceChangePercent = cutPercentage; }
               }
               // Price normally
@@ -321,12 +323,14 @@ internal sealed class ItemPricingPipeline : IDisposable
                 _cachedPrices.TryAdd(itemName, _newPrice);
                 retainerSell->AskingPrice->SetValue(_newPrice.Value);
                 Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
+                Plugin.PinchRunLog?.IncrementAdjusted();
                 if (currentItem != null) { currentItem.Result = PricingResult.Applied; currentItem.FinalPrice = _newPrice.Value; }
               }
             }
             else
             {
               Communicator.PrintAboveMaxCutError(itemName);
+              Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
               if (currentItem != null) { currentItem.Result = PricingResult.UndercutTooDeep; currentItem.PriceChangePercent = cutPercentage; }
             }
           }
@@ -352,11 +356,14 @@ internal sealed class ItemPricingPipeline : IDisposable
                 if (_newPrice == -3)
                 {
                   Communicator.PrintBelowMinimumListingPriceError(itemName);
+                  Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below minimum listing price ({Plugin.Configuration.MinimumListingPrice:N0} gil)");
                   if (currentItem != null) currentItem.Result = PricingResult.BelowMinimum;
                 }
                 else
                 {
                   Communicator.PrintBelowPriceFloorError(itemName);
+                  { var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Doman Enclave price (2x vendor)";
+                    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below {floorLabel}"); }
                   if (currentItem != null) currentItem.Result = PricingResult.BelowFloor;
                 }
               }
@@ -367,6 +374,7 @@ internal sealed class ItemPricingPipeline : IDisposable
             default:
               Svc.Log.Warning("SetNewPrice: No price to set");
               Communicator.PrintNoPriceToSetError(itemName);
+              Plugin.PinchRunLog?.AddEntry(ItemOutcome.NoData, cleanName, "No market board data");
               if (currentItem != null) currentItem.Result = PricingResult.NoData;
               break;
           }

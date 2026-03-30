@@ -115,6 +115,9 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
         // If the price gap exceeds the threshold, it's a cliff
         if (gapPercent > Plugin.Configuration.OutlierThresholdPercent)
         {
+          var outlierItemName = _items.GetRow(currentOfferings.ItemListings[0].ItemId).Name.ToString();
+          Plugin.PinchRunLog?.AddOutlierEntry(outlierItemName, (int)currentPrice, (int)nextPrice);
+          Plugin.PinchRunLog?.IncrementOutliers();
           Communicator.PrintOutlierDetected(currentOfferings.ItemListings[0].ItemId, (int)currentPrice, (int)nextPrice);
           i = j + 1; // skip everything below the cliff
         }
