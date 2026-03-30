@@ -35,6 +35,9 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static AutoPinch AutoPinch { get; private set; } = null!;
 
+  /// <summary>Active run data. Null when no run is in progress.</summary>
+  internal static RunData? CurrentRun { get; set; }
+
   internal static PinchRunLogWindow PinchRunLog { get; private set; } = null!;
 
   internal static GilWindow GilDashboard { get; private set; } = null!;

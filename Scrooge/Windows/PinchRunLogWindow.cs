@@ -44,22 +44,12 @@ namespace Scrooge.Windows
   internal class PinchRunLogWindow : Window
   {
 
-    private readonly List<ILogItem> _entries = [];
-    private string _currentRetainer = string.Empty;
-    private string _lastRetainerHeader = string.Empty;
+    // UI-only state (not business data)
     private bool _autoScroll = true;
-    private int _itemsAdjusted = 0;
-    private int _outliersDetected = 0;
-    private long _totalListingGil = 0;
-    private int _vendorSoldCount = 0;
-    private long _vendorSoldGil = 0;
-    private readonly Stopwatch _runStopwatch = new Stopwatch();
-    private readonly Stopwatch _etaStopwatch = new Stopwatch();
-    private bool _runComplete = false;
-    private bool _isHawkRun = false;
-    private int _totalItems = 0;
-    private int _itemsProcessed = 0;
-    private float _etaCountdownMs = 0f;
+
+    // Convenience accessor — falls back to reading RunData, keeps UI working after run ends
+    private RunData? Run => Plugin.CurrentRun ?? _lastRun;
+    private RunData? _lastRun;
 
     /// <summary>
     /// Clears the log and opens the window. Called at the start of each pinch run.
@@ -69,24 +59,15 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      _entries.Clear();
-      _currentRetainer = string.Empty;
-      _lastRetainerHeader = string.Empty;
-      _itemsAdjusted = 0;
-      _outliersDetected = 0;
-      _totalListingGil = 0;
-      _vendorSoldCount = 0;
-      _vendorSoldGil = 0;
-      _runComplete = false;
-      _isHawkRun = isHawkRun;
-      _totalItems = 0;
-      _itemsProcessed = 0;
-      _etaCountdownMs = 0f;
-      _runStopwatch.Restart();
-      _etaStopwatch.Restart();
+      var run = Plugin.CurrentRun;
+      if (run == null) return;
+
+      _lastRun = run;
+      run.RunStopwatch.Restart();
+      run.EtaStopwatch.Restart();
       var label = isHawkRun ? "Hawk Run" : "Run";
       WindowName = isHawkRun ? "Scrooge - Hawk Run Log" : "Scrooge - Pinch Run Log";
-      _entries.Add(new RunEntry(RunEvent.Start, $"{label} Started — {DateTime.Now:h:mm tt}"));
+      run.AddRunEntry(RunEvent.Start, $"{label} Started — {DateTime.Now:h:mm tt}");
       IsOpen = true;
     }
 
@@ -95,7 +76,9 @@ namespace Scrooge.Windows
     /// </summary>
     public void SetCurrentRetainer(string retainerName)
     {
-      _currentRetainer = retainerName;
+      var run = Run;
+      if (run != null)
+        run.CurrentRetainer = retainerName;
     }
 
     /// <summary>
@@ -107,14 +90,7 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      // Insert retainer header on first entry for this retainer
-      if (_currentRetainer != _lastRetainerHeader && !string.IsNullOrEmpty(_currentRetainer))
-      {
-        _entries.Add(new RetainerHeader(_currentRetainer));
-        _lastRetainerHeader = _currentRetainer;
-      }
-
-      _entries.Add(new LogEntry(outcome, _currentRetainer, itemName, message));
+      Run?.AddLogEntry(outcome, itemName, message);
     }
 
     /// <summary>Adds an outlier entry with bait/used prices for colored rendering.</summary>
@@ -123,17 +99,7 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      if (_currentRetainer != _lastRetainerHeader && !string.IsNullOrEmpty(_currentRetainer))
-      {
-        _entries.Add(new RetainerHeader(_currentRetainer));
-        _lastRetainerHeader = _currentRetainer;
-      }
-
-      _entries.Add(new LogEntry(ItemOutcome.Outlier, _currentRetainer, itemName, "")
-      {
-        BaitPrice = baitPrice,
-        UsedPrice = usedPrice
-      });
+      Run?.AddOutlierEntry(itemName, baitPrice, usedPrice);
     }
 
     /// <summary>
@@ -144,7 +110,8 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      _itemsAdjusted++;
+      var run = Run;
+      if (run != null) run.ItemsAdjusted++;
     }
 
     /// <summary>
@@ -155,7 +122,8 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      _outliersDetected++;
+      var run = Run;
+      if (run != null) run.OutliersDetected++;
     }
 
     /// <summary>
@@ -167,7 +135,8 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      _totalListingGil += gil;
+      var run = Run;
+      if (run != null) run.TotalListingGil += gil;
     }
 
     /// <summary>Tracks a vendor sale for the run summary.</summary>
@@ -176,8 +145,12 @@ namespace Scrooge.Windows
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
 
-      _vendorSoldCount++;
-      _vendorSoldGil += gil;
+      var run = Run;
+      if (run != null)
+      {
+        run.VendorSoldCount++;
+        run.VendorSoldGil += gil;
+      }
     }
 
     /// <summary>
@@ -185,38 +158,40 @@ namespace Scrooge.Windows
     /// </summary>
     public void EndRun()
     {
-      var skipped = _entries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.Skipped);
-      var noData = _entries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.NoData);
-      var label = _isHawkRun ? "Hawk Run" : "Run";
+      var run = Run;
+      if (run == null) return;
 
-      _entries.Add(new RunEntry(RunEvent.End, $"{label} Complete — {DateTime.Now:h:mm tt}"));
-      _entries.Add(new RunEntry(RunEvent.Summary, _isHawkRun
-        ? $"{_itemsAdjusted} listed"
-        : $"{_itemsAdjusted} adjusted"));
-      if (skipped > 0)
-        _entries.Add(new RunEntry(RunEvent.Summary, $"{skipped} skipped"));
-      if (noData > 0)
-        _entries.Add(new RunEntry(RunEvent.Summary, $"{noData} no data"));
+      var isHawkRun = run.Mode == RunMode.Hawk;
+      var label = isHawkRun ? "Hawk Run" : "Run";
 
-      if (_outliersDetected > 0)
-        _entries.Add(new RunEntry(RunEvent.Summary, $"{_outliersDetected} outliers"));
+      run.AddRunEntry(RunEvent.End, $"{label} Complete — {DateTime.Now:h:mm tt}");
+      run.AddRunEntry(RunEvent.Summary, isHawkRun
+        ? $"{run.ItemsAdjusted} listed"
+        : $"{run.ItemsAdjusted} adjusted");
+      if (run.SkippedCount > 0)
+        run.AddRunEntry(RunEvent.Summary, $"{run.SkippedCount} skipped");
+      if (run.NoDataCount > 0)
+        run.AddRunEntry(RunEvent.Summary, $"{run.NoDataCount} no data");
 
-      if (_vendorSoldCount > 0)
-        _entries.Add(new RunEntry(RunEvent.Summary, $"{_vendorSoldCount} vendor-sold for {_vendorSoldGil:N0} gil"));
+      if (run.OutliersDetected > 0)
+        run.AddRunEntry(RunEvent.Summary, $"{run.OutliersDetected} outliers");
 
-      _entries.Add(new RunEntry(RunEvent.Summary, _isHawkRun
-        ? $"{_totalListingGil:N0} gil put on market"
-        : $"{_totalListingGil:N0} gil on market"));
+      if (run.VendorSoldCount > 0)
+        run.AddRunEntry(RunEvent.Summary, $"{run.VendorSoldCount} vendor-sold for {run.VendorSoldGil:N0} gil");
+
+      run.AddRunEntry(RunEvent.Summary, isHawkRun
+        ? $"{run.TotalListingGil:N0} gil put on market"
+        : $"{run.TotalListingGil:N0} gil on market");
 
       // Stop timer and mark run complete
-      _runComplete = true;
-      _runStopwatch.Stop();
-      _etaStopwatch.Stop();
+      run.IsComplete = true;
+      run.RunStopwatch.Stop();
+      run.EtaStopwatch.Stop();
 
       // Update the rolling per-item average
-      if (_itemsProcessed > 0)
+      if (run.ItemsProcessed > 0)
       {
-        var currentAvg = (float)_runStopwatch.ElapsedMilliseconds / _itemsProcessed;
+        var currentAvg = (float)run.RunStopwatch.ElapsedMilliseconds / run.ItemsProcessed;
         var stored = Plugin.Configuration.AvgMsPerItem;
 
         if (stored <= 0f)
@@ -235,13 +210,16 @@ namespace Scrooge.Windows
     /// </summary>
     public void SetTotalItems(int total)
     {
-      _totalItems = total;
+      var run = Run;
+      if (run == null) return;
+
+      run.TotalItems = total;
 
       var storedAvg = Plugin.Configuration.AvgMsPerItem;
       if (storedAvg > 0f)
       {
-        _etaCountdownMs = storedAvg * total;
-        _etaStopwatch.Restart();
+        run.EtaCountdownMs = storedAvg * total;
+        run.EtaStopwatch.Restart();
       }
     }
 
@@ -250,14 +228,17 @@ namespace Scrooge.Windows
     /// </summary>
     public void IncrementProcessed()
     {
-      _itemsProcessed++;
+      var run = Run;
+      if (run == null) return;
+
+      run.ItemsProcessed++;
 
       var storedAvg = Plugin.Configuration.AvgMsPerItem;
       if (storedAvg > 0f)
       {
-        var remaining = _totalItems - _itemsProcessed;
-        _etaCountdownMs = storedAvg * remaining;
-        _etaStopwatch.Restart();
+        var remaining = run.TotalItems - run.ItemsProcessed;
+        run.EtaCountdownMs = storedAvg * remaining;
+        run.EtaStopwatch.Restart();
       }
     }
 
@@ -266,9 +247,12 @@ namespace Scrooge.Windows
     /// </summary>
     public void CancelRun()
     {
-      _runComplete = true;
-      _runStopwatch.Stop(); 
-      _etaStopwatch.Stop();
+      var run = Run;
+      if (run == null) return;
+
+      run.IsComplete = true;
+      run.RunStopwatch.Stop();
+      run.EtaStopwatch.Stop();
     }
 
     public PinchRunLogWindow() : base("Scrooge - Pinch Run Log")
@@ -285,6 +269,8 @@ namespace Scrooge.Windows
 
     public override void Draw()
     {
+      var run = Run;
+      if (run == null) return;
 
       // Scrollable child region for log entries
       // Reserve space at the bottom for the status bar
@@ -293,27 +279,27 @@ namespace Scrooge.Windows
 
       bool treeOpen = false;
 
-      foreach (var item in _entries)
+      foreach (var item in run.LogEntries)
       {
         switch (item)
         {
-          case RunEntry run:
+          case RunEntry runEntry:
           {
             if (treeOpen) { ImGui.TreePop(); treeOpen = false; }
 
-            if (run.EventType == RunEvent.Start || run.EventType == RunEvent.End)
+            if (runEntry.EventType == RunEvent.Start || runEntry.EventType == RunEvent.End)
             {
               ImGui.Spacing();
               ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.5f, 0.5f, 0.5f, 1f));
-              ImGui.TextWrapped($"--- {run.Message} ---");
+              ImGui.TextWrapped($"--- {runEntry.Message} ---");
               ImGui.PopStyleColor();
               ImGui.Spacing();
             }
-            else if (run.EventType == RunEvent.Summary)
+            else if (runEntry.EventType == RunEvent.Summary)
             {
               ImGui.Indent(16);
               ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.8f, 1f, 1f));
-              ImGui.TextWrapped(run.Message);
+              ImGui.TextWrapped(runEntry.Message);
               ImGui.PopStyleColor();
               ImGui.Unindent(16);
             }
@@ -377,62 +363,51 @@ namespace Scrooge.Windows
 
       // Bottom bar: Clear button + entry count + progress + timer + copy all
       ImGui.Separator();
+      ImGui.BeginDisabled(Plugin.CurrentRun != null);
       if (ImGui.Button("Clear"))
       {
-        _entries.Clear();
-        _currentRetainer = string.Empty;
-        _lastRetainerHeader = string.Empty;
-        _itemsAdjusted = 0;
-        _outliersDetected = 0;
-        _totalListingGil = 0;
-        _vendorSoldCount = 0;
-        _vendorSoldGil = 0;
-        _runComplete = false;
-        _runStopwatch.Reset();
-        _etaStopwatch.Reset();
-        _totalItems = 0;
-        _itemsProcessed = 0;
-        _etaCountdownMs = 0;
+        _lastRun = null;
+        ImGui.EndDisabled();
+        return;
       }
+      ImGui.EndDisabled();
       ImGui.SameLine();
-      var logEntryCount = _entries.OfType<LogEntry>().Count();
+      var logEntryCount = run.LogEntries.OfType<LogEntry>().Count();
       ImGui.Text($"{logEntryCount} {(logEntryCount == 1 ? "entry" : "entries")}");
 
       // Progress + Timer display
-      if (_totalItems > 0)
+      if (run.TotalItems > 0)
       {
         ImGui.SameLine();
         ImGui.TextDisabled(" | ");
         ImGui.SameLine();
-        ImGui.Text($"{_itemsProcessed}/{_totalItems}");
+        ImGui.Text($"{run.ItemsProcessed}/{run.TotalItems}");
       }
 
       // ETA / final time display
-      if (_runComplete)
+      if (run.IsComplete)
       {
         // Run finished — show final elapsed time
         ImGui.SameLine();
         ImGui.TextDisabled(" | ");
         ImGui.SameLine();
 
-        var elapsed = _runStopwatch.Elapsed;
+        var elapsed = run.RunStopwatch.Elapsed;
         var elapsedStr = elapsed.TotalMinutes >= 1
           ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds:D2}s"
           : $"{elapsed.Seconds}s";
 
         ImGui.Text(elapsedStr);
       }
-      else if (_runStopwatch.IsRunning && _totalItems > 0)
+      else if (run.RunStopwatch.IsRunning && run.TotalItems > 0)
       {
         ImGui.SameLine();
         ImGui.TextDisabled("|");
         ImGui.SameLine();
 
-        if (_etaCountdownMs > 0f)
+        if (run.EtaCountdownMs > 0f)
         {
-          // Countdown: etaCountdownMs was set at last item completion (or initial SetTotalItems),
-          // etaStopwatch measures time elapsed since then
-          var remainingMs = _etaCountdownMs - (float)_etaStopwatch.ElapsedMilliseconds;
+          var remainingMs = run.EtaCountdownMs - (float)run.EtaStopwatch.ElapsedMilliseconds;
           if (remainingMs < 0f) remainingMs = 0f;
 
           var eta = TimeSpan.FromMilliseconds(remainingMs);
@@ -444,7 +419,6 @@ namespace Scrooge.Windows
         }
         else
         {
-          // First run ever — no stored average
           ImGui.TextDisabled("Gathering data...");
         }
       }
@@ -462,15 +436,15 @@ namespace Scrooge.Windows
       if (ImGui.Button("Copy All"))
       {
         var sb = new StringBuilder();
-        foreach (var item in _entries)
+        foreach (var item in run.LogEntries)
         {
           switch (item)
           {
-            case RunEntry run:
-              if (run.EventType == RunEvent.Start || run.EventType == RunEvent.End)
-                sb.AppendLine($"--- {run.Message} ---");
-              else if (run.EventType == RunEvent.Summary)
-                sb.Append("  ").AppendLine(run.Message);
+            case RunEntry runEntry:
+              if (runEntry.EventType == RunEvent.Start || runEntry.EventType == RunEvent.End)
+                sb.AppendLine($"--- {runEntry.Message} ---");
+              else if (runEntry.EventType == RunEvent.Summary)
+                sb.Append("  ").AppendLine(runEntry.Message);
               break;
 
             case RetainerHeader rh:

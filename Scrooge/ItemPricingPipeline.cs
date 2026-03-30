@@ -31,22 +31,19 @@ internal sealed class ItemPricingPipeline : IDisposable
   private int? _newPrice;
   internal bool _skipCurrentItem;
 
-  /// <summary>Set when a price check fails and the item should be vendor-sold.
-  /// Read by HawkRunOrchestrator.HandlePostPrice. NOT reset in finally block.</summary>
-  internal bool VendorSellPending { get; set; }
+  // VendorSellPending and ItemWasListed replaced by PricingItem.Result
+  // (PricingResult.VendorSell and PricingResult.Listed respectively)
 
-  /// <summary>Set when a price is successfully applied and the item was listed.
-  /// Read by HawkRunOrchestrator.HandlePostPrice. NOT reset in finally block.</summary>
-  internal bool ItemWasListed { get; set; }
+  // Per-run cache lives on RunData — accessor for convenience
+  // Outside a run (e.g., PostPinch hotkey), cache writes are silently discarded
+  private Dictionary<string, int?> _cachedPrices => Plugin.CurrentRun?.CachedPrices ?? _noRunCacheStub;
+  private readonly Dictionary<string, int?> _noRunCacheStub = [];
 
-  // Per-run cache (survives across items, cleared between runs)
-  private Dictionary<string, int?> _cachedPrices = [];
+  /// <summary>Current run mode. Reads from Plugin.CurrentRun.</summary>
+  private bool IsPinchRun => Plugin.CurrentRun?.Mode == RunMode.Pinch;
 
-  /// <summary>Set by orchestrators at run start/end.</summary>
-  internal bool IsPinchRun { get; set; }
-
-  /// <summary>Set by orchestrators at run start/end.</summary>
-  internal bool IsHawkRun { get; set; }
+  /// <summary>Current run mode. Reads from Plugin.CurrentRun.</summary>
+  private bool IsHawkRun => Plugin.CurrentRun?.Mode == RunMode.Hawk;
 
   internal ItemPricingPipeline(TaskManager taskManager, Func<int, int> applyJitter)
   {
@@ -68,15 +65,13 @@ internal sealed class ItemPricingPipeline : IDisposable
     _oldPrice = null;
     _newPrice = null;
     _skipCurrentItem = false;
-    VendorSellPending = false;
-    ItemWasListed = false;
-    _cachedPrices = [];
-    IsPinchRun = false;
-    IsHawkRun = false;
+    // VendorSellPending/ItemWasListed now on PricingItem.Result — no reset needed
+    // Cache is now owned by RunData — cleared by creating a new RunData per run
+    // IsPinchRun/IsHawkRun now derived from Plugin.CurrentRun.Mode — no reset needed
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>
-  internal void ClearCachedPrices() => _cachedPrices = [];
+  internal void ClearCachedPrices() => Plugin.CurrentRun?.CachedPrices.Clear();
 
   // --- Pinch run item interaction ---
 
@@ -277,11 +272,26 @@ internal sealed class ItemPricingPipeline : IDisposable
       {
         var ui = &retainerSell->AtkUnitBase;
         var itemName = retainerSell->ItemName->NodeText.ToString();
+        var cleanName = Communicator.CleanItemName(itemName, out var isHq);
         itemPayload = Communicator.RawItemNameToItemPayload(itemName);
         if (itemPayload != null)
           GilTracker.GetItemCategory(itemPayload.ItemId);
         _oldPrice = retainerSell->AskingPrice->Value;
         listingQuantity = retainerSell->AtkValues[8].Int;  // listing stack size
+
+        // Populate PricingItem with identity + prices from addon
+        var currentItem = Plugin.CurrentRun?.CurrentItem;
+        if (currentItem != null)
+        {
+          currentItem.ItemName = cleanName;
+          currentItem.IsHq = isHq;
+          currentItem.ItemId = itemPayload?.ItemId ?? 0;
+          currentItem.Quantity = listingQuantity;
+          currentItem.CurrentListingPrice = _oldPrice;
+          currentItem.RetainerName = Plugin.CurrentRun?.CurrentRetainer ?? "";
+          if (itemPayload != null)
+            currentItem.VendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(itemPayload.ItemId).PriceLow;
+        }
 
         if (_newPrice.HasValue && _newPrice > 0)
         {
@@ -291,6 +301,8 @@ internal sealed class ItemPricingPipeline : IDisposable
             Svc.Log.Debug($"Setting new listing price");
             retainerSell->AskingPrice->SetValue(_newPrice.Value);
             Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, 0f);
+            Plugin.PinchRunLog?.IncrementAdjusted();
+            if (currentItem != null) { currentItem.Result = PricingResult.Listed; currentItem.FinalPrice = _newPrice.Value; }
           }
           else
           {
@@ -301,6 +313,8 @@ internal sealed class ItemPricingPipeline : IDisposable
               if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
               {
                 Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
+                Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Price increase exceeds cap ({Plugin.Configuration.MaxPriceIncreasePercentage}%)");
+                if (currentItem != null) { currentItem.Result = PricingResult.CapBlocked; currentItem.PriceChangePercent = cutPercentage; }
               }
               // Price normally
               else
@@ -309,13 +323,18 @@ internal sealed class ItemPricingPipeline : IDisposable
                 _cachedPrices.TryAdd(itemName, _newPrice);
                 retainerSell->AskingPrice->SetValue(_newPrice.Value);
                 Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
+                Plugin.PinchRunLog?.IncrementAdjusted();
+                if (currentItem != null) { currentItem.Result = PricingResult.Applied; currentItem.FinalPrice = _newPrice.Value; }
               }
             }
             else
+            {
               Communicator.PrintAboveMaxCutError(itemName);
+              Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
+              if (currentItem != null) { currentItem.Result = PricingResult.UndercutTooDeep; currentItem.PriceChangePercent = cutPercentage; }
+            }
           }
 
-          ItemWasListed = true;
           ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0); // confirm
           ui->Close(true);
 
@@ -329,15 +348,24 @@ internal sealed class ItemPricingPipeline : IDisposable
             case -2: // below price floor
               if (IsHawkRun && Plugin.Configuration.AutoVendorSellOnPriceCheckFail)
               {
-                VendorSellPending = true;
+                if (currentItem != null) currentItem.Result = PricingResult.VendorSell;
                 Svc.Log.Debug($"[HawkRun] Price check failed — will vendor-sell");
               }
               else
               {
                 if (_newPrice == -3)
+                {
                   Communicator.PrintBelowMinimumListingPriceError(itemName);
+                  Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below minimum listing price ({Plugin.Configuration.MinimumListingPrice:N0} gil)");
+                  if (currentItem != null) currentItem.Result = PricingResult.BelowMinimum;
+                }
                 else
+                {
                   Communicator.PrintBelowPriceFloorError(itemName);
+                  { var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Doman Enclave price (2x vendor)";
+                    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below {floorLabel}"); }
+                  if (currentItem != null) currentItem.Result = PricingResult.BelowFloor;
+                }
               }
               break;
 
@@ -346,6 +374,8 @@ internal sealed class ItemPricingPipeline : IDisposable
             default:
               Svc.Log.Warning("SetNewPrice: No price to set");
               Communicator.PrintNoPriceToSetError(itemName);
+              Plugin.PinchRunLog?.AddEntry(ItemOutcome.NoData, cleanName, "No market board data");
+              if (currentItem != null) currentItem.Result = PricingResult.NoData;
               break;
           }
 
@@ -359,10 +389,11 @@ internal sealed class ItemPricingPipeline : IDisposable
     }
     finally
     {
+      var result = Plugin.CurrentRun?.CurrentItem?.Result ?? PricingResult.Pending;
 
       // Track listing value for run summary (before clearing state)
       // Don't track vendor-pending items as listings
-      if (!_skipCurrentItem && !VendorSellPending)
+      if (!_skipCurrentItem && result != PricingResult.VendorSell)
       {
         var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
         if (listingValue > 0)
@@ -378,11 +409,9 @@ internal sealed class ItemPricingPipeline : IDisposable
       _oldPrice = null;
       _newPrice = null;
       _skipCurrentItem = false;
-      // NOTE: VendorSellPending and ItemWasListed intentionally NOT reset here —
-      // they must survive for HandlePostPrice to read.
 
       // Don't increment for vendor-pending items — TrackVendorSale owns that
-      if (!VendorSellPending)
+      if (result != PricingResult.VendorSell)
         Plugin.PinchRunLog.IncrementProcessed();
     }
   }
@@ -391,5 +420,10 @@ internal sealed class ItemPricingPipeline : IDisposable
   {
     Svc.Log.Debug($"New price received: {e.NewPrice}");
     _newPrice = e.NewPrice;
+
+    // Mirror onto PricingItem
+    var item = Plugin.CurrentRun?.CurrentItem;
+    if (item != null)
+      item.MbPrice = e.NewPrice > 0 ? e.NewPrice : null;
   }
 }

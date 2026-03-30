@@ -26,8 +26,6 @@ public static class Communicator
   /// <param name="cutPercentage">Percentage change from old to new (negative = price cut).</param>
   public static void PrintPriceUpdate(string itemName, int? oldPrice, int? newPrice, float cutPercentage)
   {
-    Plugin.PinchRunLog?.IncrementAdjusted();
-
     if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
       return;
 
@@ -134,30 +132,26 @@ public static class Communicator
   public static void PrintAboveMaxCutError(string itemName)
   {
     var pct = Plugin.Configuration.MaxUndercutPercentage;
-    PrintItemError(itemName, $"Undercut exceeds max ({pct}%)",
-      $"Item ignored because it would cut the price by more than {pct}%");
+    PrintItemError(itemName, $"Item ignored because it would cut the price by more than {pct}%");
   }
 
   public static void PrintAboveMaxIncreaseError(string itemName, float increasePercentage)
   {
     var actual = MathF.Abs(MathF.Round(increasePercentage, 1));
     var max = Plugin.Configuration.MaxPriceIncreasePercentage;
-    PrintItemError(itemName, $"Price increase exceeds max ({max}%) — would increase by {actual}%",
-      $"Item ignored because the price would increase by {actual}% (max {max}%)");
+    PrintItemError(itemName, $"Item ignored because the price would increase by {actual}% (max {max}%)");
   }
 
   public static void PrintBelowPriceFloorError(string itemName)
   {
     var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
-    PrintItemError(itemName, $"Below {floorLabel}",
-      $"Item ignored because it would cut the price below {floorLabel}");
+    PrintItemError(itemName, $"Item ignored because it would cut the price below {floorLabel}");
   }
 
   public static void PrintBelowMinimumListingPriceError(string itemName)
   {
     var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
-    PrintItemError(itemName, $"Below minimum listing price ({minPrice} gil)",
-      $"Item ignored because it would cut the price below the minimum listing price of {minPrice} gil");
+    PrintItemError(itemName, $"Item ignored because it would cut the price below the minimum listing price of {minPrice} gil");
   }
 
   /// <summary>Prints a chat message when an item is vendor-sold through the retainer.</summary>
@@ -183,11 +177,6 @@ public static class Communicator
   /// <param name="nextPrice">The next valid price tier being used instead.</param>
   public static void PrintOutlierDetected(uint itemId, int outlierPrice, int nextPrice)
   {
-    var item = ItemSheet.GetRow(itemId);
-    var itemName = item.Name.ToString();
-    Plugin.PinchRunLog?.AddOutlierEntry(itemName, outlierPrice, nextPrice);
-    Plugin.PinchRunLog?.IncrementOutliers();
-
     if (!Plugin.Configuration.ShowOutlierDetectionMessages)
       return;
 
@@ -211,8 +200,6 @@ public static class Communicator
   /// <param name="name">The retainer's display name.</param>
   public static void PrintRetainerName(string name)
   {
-    Plugin.PinchRunLog?.SetCurrentRetainer(name);
-
     if (!Plugin.Configuration.ShowRetainerNames)
       return;
 
@@ -225,8 +212,7 @@ public static class Communicator
 
   public static void PrintNoPriceToSetError(string itemName)
   {
-    PrintItemError(itemName, "No market board data",
-      "No price to set, please set price manually", ItemOutcome.NoData);
+    PrintItemError(itemName, "No price to set, please set price manually");
   }
 
   /// <summary>Error: user tried to auto-pinch but all retainers are disabled in config.</summary>
@@ -241,11 +227,9 @@ public static class Communicator
     Svc.Chat.PrintError(seString);
   }
 
-  /// <summary>Shared helper for item error messages: logs to PinchRunLog and optionally prints to chat with item link.</summary>
-  private static void PrintItemError(string itemName, string logMessage, string chatMessage, ItemOutcome outcome = ItemOutcome.Skipped)
+  /// <summary>Shared helper for printing item error messages to chat with item link.</summary>
+  private static void PrintItemError(string itemName, string chatMessage)
   {
-    Plugin.PinchRunLog?.AddEntry(outcome, CleanItemName(itemName, out _), logMessage);
-
     if (!Plugin.Configuration.ShowErrorsInChat)
       return;
 

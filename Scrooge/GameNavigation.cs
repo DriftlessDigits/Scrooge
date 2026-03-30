@@ -25,6 +25,7 @@ internal static class GameNavigation
     {
       var retainerName = new AddonMaster.RetainerList(addon).Retainers[index].Name;
 
+      Plugin.PinchRunLog?.SetCurrentRetainer(retainerName);
       Communicator.PrintRetainerName(retainerName);
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.SetRetainer(retainerName);

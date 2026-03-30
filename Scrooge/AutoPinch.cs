@@ -97,6 +97,7 @@ internal sealed class AutoPinch : Window, IDisposable
       if (Plugin.Configuration.ShowErrorsInChat)
         Svc.Chat.PrintError($"Error while auto pinching: {ex.Message}");
 
+      Plugin.PinchRunLog.CancelRun();
       _hawkOrchestrator.Abort();
       RemoveTalkAddonListeners();
     }
@@ -207,6 +208,7 @@ internal sealed class AutoPinch : Window, IDisposable
         _taskManager.Abort();
         RemoveTalkAddonListeners();
         Plugin.PinchRunLog.CancelRun();
+        Plugin.CurrentRun = null;
       }
       if (ImGui.IsItemHovered())
       {
@@ -272,7 +274,7 @@ internal sealed class AutoPinch : Window, IDisposable
       }
 
       ClearState();
-      _pricing.IsPinchRun = true;
+      Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
       Plugin.PinchRunLog.StartNewRun();
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.StartRun();
@@ -311,9 +313,9 @@ internal sealed class AutoPinch : Window, IDisposable
       if (Plugin.Configuration.TTSWhenAllDone)
         _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
-      _taskManager.Enqueue(() => { 
-        _pricing.IsPinchRun = false;
+      _taskManager.Enqueue(() => {
         Plugin.PinchRunLog.EndRun();
+        Plugin.CurrentRun = null;
         if (Plugin.Configuration.EnableGilTracking)
           GilTracker.FinalizeRun();
         Util.FlashWindow();
@@ -371,7 +373,7 @@ internal sealed class AutoPinch : Window, IDisposable
       return;
 
     ClearState();
-    _pricing.IsPinchRun = true;
+    Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
     Plugin.PinchRunLog.StartNewRun();
 
     // Get total items from the sell list
@@ -407,13 +409,13 @@ internal sealed class AutoPinch : Window, IDisposable
       _taskManager.DelayNext(100);
     }
 
-    _taskManager.Enqueue(() => { 
-      _pricing.IsPinchRun = false; 
+    _taskManager.Enqueue(() => {
       Plugin.PinchRunLog.EndRun();
+      Plugin.CurrentRun = null;
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.FinalizeRun();
-      Util.FlashWindow(); 
-      return true; 
+      Util.FlashWindow();
+      return true;
     }, "EndRunLog");
 
   }
@@ -458,6 +460,7 @@ internal sealed class AutoPinch : Window, IDisposable
   /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
   private void EnqueueSingleItem(int index)
   {
+    _taskManager.Enqueue(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { SlotIndex = index }; return true; }, $"InitItem{index}");
     _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(_pricing.ClickAdjustPrice, $"ClickAdjustPrice{index}");
@@ -484,6 +487,7 @@ internal sealed class AutoPinch : Window, IDisposable
     _taskManager.Insert(_pricing.ClickAdjustPrice, $"ClickAdjustPrice{index}");
     _taskManager.InsertDelayNext(100);
     _taskManager.Insert(() => GameNavigation.OpenItemContextMenu(index), $"OpenItemContextMenu{index}");
+    _taskManager.Insert(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { SlotIndex = index }; return true; }, $"InitItem{index}");
   }
 
 
