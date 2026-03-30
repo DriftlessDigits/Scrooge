@@ -14,8 +14,10 @@ public enum PricingResult
   /// <summary>New listing placed successfully (hawk run).</summary>
   Listed,
   /// <summary>Outlier detected — need to fetch sale history before deciding.</summary>
+  // v2.4: not yet connected — outlier path currently bypasses PricingItem via _newPrice sentinels
   NeedsHistory,
   /// <summary>Item skipped (mannequin, or other non-priceable state).</summary>
+  // v2.4: not yet connected — skip tracking currently uses _skipCurrentItem flag + ItemOutcome.Skipped
   Skipped,
   /// <summary>MB price below vendor/doman enclave floor (was sentinel -2).</summary>
   BelowFloor,

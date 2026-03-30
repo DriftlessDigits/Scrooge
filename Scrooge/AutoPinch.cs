@@ -97,6 +97,7 @@ internal sealed class AutoPinch : Window, IDisposable
       if (Plugin.Configuration.ShowErrorsInChat)
         Svc.Chat.PrintError($"Error while auto pinching: {ex.Message}");
 
+      Plugin.PinchRunLog.CancelRun();
       _hawkOrchestrator.Abort();
       RemoveTalkAddonListeners();
     }

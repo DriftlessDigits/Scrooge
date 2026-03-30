@@ -83,19 +83,13 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     // Find the first listing that matches our HQ filter.
     // All listings in one response are for the same item, sorted by price ascending.
     var i = 0;
-    if (_useHq && _items.Single(j => j.RowId == currentOfferings.ItemListings[0].ItemId).CanBeHq)
+    if (_useHq && _items.GetRow(currentOfferings.ItemListings[0].ItemId).CanBeHq)
     {
       // Skip NQ listings to find the cheapest HQ one
       while (i < currentOfferings.ItemListings.Count && !currentOfferings.ItemListings[i].IsHq)
         i++;
     }
-    else
-    {
-      if (currentOfferings.ItemListings.Count > 0)
-        i = 0;
-      else
-        i = currentOfferings.ItemListings.Count; // no listings at all
-    }
+    // NQ path: i stays at 0 (first listing). Empty batches fall through to the guard at line 138.
 
     // --- Outlier detection: price-by-price gap comparison ---
     // Only applies to NQ item pricing. HQ items skip outlier detection.
@@ -149,16 +143,13 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
       if (!isOwnRetainer && effectiveMode == UndercutMode.Humanized)
       {
-        // 0 = Random Pinch, 1 = Gentleman's Match, 2 = Clean Numbers
+        // 1/3 Random Pinch (stays Humanized), 1/3 Gentleman's Match, 1/3 Clean Numbers
         var roll = _random.Next(3);
-        if (roll == 0)
-          effectiveMode = UndercutMode.Humanized;  // stays Humanized — handled by its own branch below
-        else if (roll == 1)
+        if (roll == 1)
           effectiveMode = UndercutMode.GentlemansMatch;
-        else
+        else if (roll == 2)
           effectiveMode = UndercutMode.CleanNumbers;
-
-
+        // roll == 0: stays Humanized → random pinch branch below
       }
 
       // Calculate price based on the selected undercut mode

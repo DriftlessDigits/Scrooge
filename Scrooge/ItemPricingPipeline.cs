@@ -35,8 +35,9 @@ internal sealed class ItemPricingPipeline : IDisposable
   // (PricingResult.VendorSell and PricingResult.Listed respectively)
 
   // Per-run cache lives on RunData — accessor for convenience
-  private Dictionary<string, int?> _cachedPrices => Plugin.CurrentRun?.CachedPrices ?? _emptyCacheStub;
-  private static readonly Dictionary<string, int?> _emptyCacheStub = [];
+  // Outside a run (e.g., PostPinch hotkey), cache writes are silently discarded
+  private Dictionary<string, int?> _cachedPrices => Plugin.CurrentRun?.CachedPrices ?? _noRunCacheStub;
+  private readonly Dictionary<string, int?> _noRunCacheStub = [];
 
   /// <summary>Current run mode. Reads from Plugin.CurrentRun.</summary>
   private bool IsPinchRun => Plugin.CurrentRun?.Mode == RunMode.Pinch;
@@ -271,6 +272,7 @@ internal sealed class ItemPricingPipeline : IDisposable
       {
         var ui = &retainerSell->AtkUnitBase;
         var itemName = retainerSell->ItemName->NodeText.ToString();
+        var cleanName = Communicator.CleanItemName(itemName, out var isHq);
         itemPayload = Communicator.RawItemNameToItemPayload(itemName);
         if (itemPayload != null)
           GilTracker.GetItemCategory(itemPayload.ItemId);
@@ -281,7 +283,6 @@ internal sealed class ItemPricingPipeline : IDisposable
         var currentItem = Plugin.CurrentRun?.CurrentItem;
         if (currentItem != null)
         {
-          var cleanName = Communicator.CleanItemName(itemName, out var isHq);
           currentItem.ItemName = cleanName;
           currentItem.IsHq = isHq;
           currentItem.ItemId = itemPayload?.ItemId ?? 0;

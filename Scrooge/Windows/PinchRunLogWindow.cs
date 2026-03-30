@@ -363,11 +363,14 @@ namespace Scrooge.Windows
 
       // Bottom bar: Clear button + entry count + progress + timer + copy all
       ImGui.Separator();
+      ImGui.BeginDisabled(Plugin.CurrentRun != null);
       if (ImGui.Button("Clear"))
       {
         _lastRun = null;
+        ImGui.EndDisabled();
         return;
       }
+      ImGui.EndDisabled();
       ImGui.SameLine();
       var logEntryCount = run.LogEntries.OfType<LogEntry>().Count();
       ImGui.Text($"{logEntryCount} {(logEntryCount == 1 ? "entry" : "entries")}");

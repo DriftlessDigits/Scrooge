@@ -28,8 +28,6 @@ internal sealed class HawkRunOrchestrator
 
   private Queue<HawkWindow.HawkItem>? _hawkQueue;
   private int _hawkRetainerSlotsUsed;
-  private int _vendorSoldCount;
-  private long _vendorSoldGil;
 
   /// <summary>True while a hawk run is in progress.</summary>
   internal bool IsRunning { get; private set; }
@@ -53,6 +51,7 @@ internal sealed class HawkRunOrchestrator
   {
     IsRunning = false;
     _hawkQueue = null;
+    Plugin.PinchRunLog.CancelRun();
     Plugin.CurrentRun = null;
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
   }
@@ -128,8 +127,6 @@ internal sealed class HawkRunOrchestrator
     Plugin.CurrentRun = new RunData { Mode = RunMode.Hawk };
     _hawkQueue = new Queue<HawkWindow.HawkItem>(items);
     _hawkRetainerSlotsUsed = 0;
-    _vendorSoldCount = 0;
-    _vendorSoldGil = 0;
 
     Plugin.PinchRunLog.StartNewRun(isHawkRun: true);
     Plugin.PinchRunLog.SetTotalItems(items.Count);
@@ -208,6 +205,7 @@ internal sealed class HawkRunOrchestrator
 
     // Path C: Normal MB flow — safe to dequeue now
     _hawkQueue.Dequeue();
+    _taskManager.Enqueue(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { ItemId = item.ItemId }; return true; }, $"HawkInitItem_{item.Name}");
     _taskManager.Enqueue(() => _pricing.ClickInventoryItem(item), $"HawkClickItem_{item.Name}");
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(_pricing.ClickPutUpForSale, $"HawkPutUpForSale_{item.Name}");
@@ -262,8 +260,6 @@ internal sealed class HawkRunOrchestrator
 
     var vendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(item.ItemId).PriceLow;
     var totalGil = vendorPrice * item.Quantity;
-    _vendorSoldCount++;
-    _vendorSoldGil += totalGil;
     Plugin.PinchRunLog.AddVendorSale(totalGil);
     Plugin.PinchRunLog.IncrementProcessed();
     Communicator.PrintVendorSold(item.Name, vendorPrice, item.Quantity);
