@@ -469,6 +469,16 @@ internal sealed class AutoPinch : Window, IDisposable
     _taskManager.Enqueue(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
     _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
     _taskManager.Enqueue(_pricing.SetNewPrice, $"SetNewPrice{index}");
+    // Conditional history fetch — only runs if outlier needs history
+    _taskManager.Enqueue(() => {
+      if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.NeedsHistory)
+      {
+        _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPriceRetry{index}");
+        _taskManager.InsertDelayNext(1500);
+        _taskManager.Insert(GameNavigation.ClickHistoryTab, $"ClickHistoryTab{index}");
+      }
+      return true;
+    }, $"CheckHistory{index}");
   }
 
   /// <summary>
@@ -479,6 +489,16 @@ internal sealed class AutoPinch : Window, IDisposable
   /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
   private void InsertSingleItem(int index)
   {
+    // Conditional history fetch — inserted before SetNewPrice because Insert is reverse order
+    _taskManager.Insert(() => {
+      if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.NeedsHistory)
+      {
+        _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPriceRetry{index}");
+        _taskManager.InsertDelayNext(1500);
+        _taskManager.Insert(GameNavigation.ClickHistoryTab, $"ClickHistoryTab{index}");
+      }
+      return true;
+    }, $"CheckHistory{index}");
     _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPrice{index}");
     _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
     _taskManager.Insert(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
