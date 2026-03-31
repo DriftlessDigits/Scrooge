@@ -17,8 +17,8 @@ namespace Scrooge;
 
 /// <summary>
 /// Handles per-item pricing: context menu interaction, MB price lookup,
-/// price validation, and price application. Owns per-item state
-/// (_oldPrice, _newPrice, _skipCurrentItem) and the price cache.
+/// price validation, and price application. Per-item state lives on
+/// PricingItem (sole source of truth). Price cache lives on RunData.
 /// </summary>
 internal sealed class ItemPricingPipeline : IDisposable
 {
@@ -26,12 +26,11 @@ internal sealed class ItemPricingPipeline : IDisposable
   private readonly MarketBoardHandler _mbHandler;
   private readonly Func<int, int> _applyJitter;
 
-  // Per-item state (reset after each item in SetNewPrice finally block)
-  private int? _oldPrice;
-  private int? _newPrice;
+  // Re-entry control for history fallback (reset at end of SetNewPrice)
+  private bool _historyFetched;
 
-  // VendorSellPending and ItemWasListed replaced by PricingItem.Result
-  // (PricingResult.VendorSell and PricingResult.Listed respectively)
+  // Fallback for PostPinch hotkey path (no CurrentRun/CurrentItem)
+  private int? _hotKeyPrice;
 
   // Per-run cache lives on RunData — accessor for convenience
   // Outside a run (e.g., PostPinch hotkey), cache writes are silently discarded
@@ -61,11 +60,8 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// <summary>Clears per-item and per-run state. Called at the start of each run.</summary>
   internal void ClearState()
   {
-    _oldPrice = null;
-    _newPrice = null;
-    // VendorSellPending/ItemWasListed now on PricingItem.Result — no reset needed
-    // Cache is now owned by RunData — cleared by creating a new RunData per run
-    // IsPinchRun/IsHawkRun now derived from Plugin.CurrentRun.Mode — no reset needed
+    _historyFetched = false;
+    _hotKeyPrice = null;
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>
@@ -237,7 +233,10 @@ internal sealed class ItemPricingPipeline : IDisposable
       if (_cachedPrices.TryGetValue(itemName, out int? value) && value > 0)
       {
         Svc.Log.Debug($"{itemName}: using cached price");
-        _newPrice = value;
+        // Cache hit skips the MB query entirely — MBHandler never fires, so no
+        // outlier detection, no NeedsHistory, no history fetch.
+        var currentItem = Plugin.CurrentRun?.CurrentItem;
+        if (currentItem != null) currentItem.FinalPrice = value;
         return true;
       }
       else
@@ -253,178 +252,256 @@ internal sealed class ItemPricingPipeline : IDisposable
 
   /// <summary>
   /// Final step: applies the calculated price to the listing.
-  /// Handles the happy path (valid price) and all error sentinels
-  /// (vendor floor, no listings, etc). Confirms or cancels the addon accordingly.
+  /// Orchestrates history interception, addon reading, price evaluation,
+  /// and confirm/cancel. Business logic lives in ApplyPriceDecision.
   /// </summary>
   internal unsafe bool? SetNewPrice()
   {
-    var listingQuantity = 1;  // captured for finally block
+    // History interception — before try/finally so PricingItem state is preserved.
+    // Hawk runs skip this — they have no CheckHistory step in their task queue,
+    // so the early return would silently drop the item.
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.NeedsHistory && !_historyFetched && !IsHawkRun)
+    {
+      _historyFetched = true;
+      return true; // AutoPinch injects history steps, re-calls SetNewPrice
+    }
+
+    var currentItem = Plugin.CurrentRun?.CurrentItem;
     ItemPayload? itemPayload = null;
+    var listingQuantity = 1;
 
     try
     {
-      if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
+      if (currentItem?.Result == PricingResult.Skipped)
         return true;
 
-      // close compare price window
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var addon))
-        addon->Close(true);
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var searchAddon))
+        searchAddon->Close(true);
 
-      if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell) && GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
-      {
-        var ui = &retainerSell->AtkUnitBase;
-        var itemName = retainerSell->ItemName->NodeText.ToString();
-        var cleanName = Communicator.CleanItemName(itemName, out var isHq);
-        itemPayload = Communicator.RawItemNameToItemPayload(itemName);
-        if (itemPayload != null)
-          GilTracker.GetItemCategory(itemPayload.ItemId);
-        _oldPrice = retainerSell->AskingPrice->Value;
-        listingQuantity = retainerSell->AtkValues[8].Int;  // listing stack size
+      ApplyHistoryPrice(currentItem);
 
-        // Populate PricingItem with identity + prices from addon
-        var currentItem = Plugin.CurrentRun?.CurrentItem;
-        if (currentItem != null)
-        {
-          currentItem.ItemName = cleanName;
-          currentItem.IsHq = isHq;
-          currentItem.ItemId = itemPayload?.ItemId ?? 0;
-          currentItem.Quantity = listingQuantity;
-          currentItem.CurrentListingPrice = _oldPrice;
-          currentItem.RetainerName = Plugin.CurrentRun?.CurrentRetainer ?? "";
-          if (itemPayload != null)
-            currentItem.VendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(itemPayload.ItemId).PriceLow;
-        }
-
-        if (_newPrice.HasValue && _newPrice > 0)
-        {
-          if (IsHawkRun)
-          {
-            // New listings: no meaningful _oldPrice to compare against — skip percentage guards
-            Svc.Log.Debug($"Setting new listing price");
-            retainerSell->AskingPrice->SetValue(_newPrice.Value);
-            Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, 0f);
-            Plugin.PinchRunLog?.IncrementAdjusted();
-            if (currentItem != null) { currentItem.Result = PricingResult.Listed; currentItem.FinalPrice = _newPrice.Value; }
-          }
-          else
-          {
-            var cutPercentage = ((float)_newPrice.Value - _oldPrice.Value) / _oldPrice.Value * 100f;
-            if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
-            {
-              // Check if the price increase exceeds the cap
-              if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
-              {
-                Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
-                Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Price increase exceeds cap ({Plugin.Configuration.MaxPriceIncreasePercentage}%)");
-                if (currentItem != null) { currentItem.Result = PricingResult.CapBlocked; currentItem.PriceChangePercent = cutPercentage; }
-              }
-              // Price normally
-              else
-              {
-                Svc.Log.Debug($"Setting new price");
-                _cachedPrices.TryAdd(itemName, _newPrice);
-                retainerSell->AskingPrice->SetValue(_newPrice.Value);
-                Communicator.PrintPriceUpdate(itemName, _oldPrice.Value, _newPrice.Value, cutPercentage);
-                Plugin.PinchRunLog?.IncrementAdjusted();
-                if (currentItem != null) { currentItem.Result = PricingResult.Applied; currentItem.FinalPrice = _newPrice.Value; }
-              }
-            }
-            else
-            {
-              Communicator.PrintAboveMaxCutError(itemName);
-              Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
-              if (currentItem != null) { currentItem.Result = PricingResult.UndercutTooDeep; currentItem.PriceChangePercent = cutPercentage; }
-            }
-          }
-
-          ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0); // confirm
-          ui->Close(true);
-
-          return true;
-        }
-        else
-        {
-          switch (_newPrice)
-          {
-            case -3: // below minimum listing price
-            case -2: // below price floor
-              if (IsHawkRun && Plugin.Configuration.AutoVendorSellOnPriceCheckFail)
-              {
-                if (currentItem != null) currentItem.Result = PricingResult.VendorSell;
-                Svc.Log.Debug($"[HawkRun] Price check failed — will vendor-sell");
-              }
-              else
-              {
-                if (_newPrice == -3)
-                {
-                  Communicator.PrintBelowMinimumListingPriceError(itemName);
-                  Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below minimum listing price ({Plugin.Configuration.MinimumListingPrice:N0} gil)");
-                  if (currentItem != null) currentItem.Result = PricingResult.BelowMinimum;
-                }
-                else
-                {
-                  Communicator.PrintBelowPriceFloorError(itemName);
-                  { var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Doman Enclave price (2x vendor)";
-                    Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below {floorLabel}"); }
-                  if (currentItem != null) currentItem.Result = PricingResult.BelowFloor;
-                }
-              }
-              break;
-
-            case -1: //no MB listings found
-            case null:
-            default:
-              Svc.Log.Warning("SetNewPrice: No price to set");
-              Communicator.PrintNoPriceToSetError(itemName);
-              Plugin.PinchRunLog?.AddEntry(ItemOutcome.NoData, cleanName, "No market board data");
-              if (currentItem != null) currentItem.Result = PricingResult.NoData;
-              break;
-          }
-
-          ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 1); // cancel
-          ui->Close(true);
-          return true;
-        }
-      }
-      else
+      if (!GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell)
+          || !GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
         return false;
+
+      var itemName = PopulateItemFromAddon(retainerSell, currentItem, out itemPayload, out listingQuantity);
+      var newPrice = currentItem?.FinalPrice ?? _hotKeyPrice;
+      var confirmed = ApplyPriceDecision(retainerSell, currentItem, itemName, newPrice);
+
+      ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, confirmed ? 0 : 1);
+      retainerSell->AtkUnitBase.Close(true);
+      return true;
     }
     finally
     {
-      var result = Plugin.CurrentRun?.CurrentItem?.Result ?? PricingResult.Pending;
+      var result = currentItem?.Result ?? PricingResult.Pending;
 
-      // Track listing value for run summary (before clearing state)
-      // Don't track vendor-pending items as listings
+      // Track listing value for run summary
       if (result != PricingResult.Skipped && result != PricingResult.VendorSell)
       {
-        var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
+        var listingValue = (currentItem?.FinalPrice.HasValue == true && currentItem.FinalPrice > 0)
+          ? currentItem.FinalPrice.Value
+          : currentItem?.CurrentListingPrice ?? 0;
         if (listingValue > 0)
         {
           Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
-          // RecordFinalPrice updates existing listing rows — skip during hawk runs
-          // (new listings aren't in the DB yet; they'll appear in the next pinch snapshot)
           if (!IsHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
             GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
         }
       }
 
-      _oldPrice = null;
-      _newPrice = null;
+      _historyFetched = false;
+      _hotKeyPrice = null;
 
-      // Don't increment for vendor-pending items — TrackVendorSale owns that
       if (result != PricingResult.VendorSell)
         Plugin.PinchRunLog.IncrementProcessed();
     }
   }
 
+  /// <summary>
+  /// On the second pass (after history fetch), applies the median sale history price.
+  /// If no usable history, FinalPrice from the first pass (non-outlier listing) is preserved.
+  /// </summary>
+  private void ApplyHistoryPrice(PricingItem? currentItem)
+  {
+    if (!_historyFetched || !_mbHandler.OutlierDetected || currentItem == null)
+      return;
+
+    // Validate history is for the right item (guard against manual MB browsing mid-run)
+    var historyPrice = (_mbHandler.HistoryItemId == currentItem.ItemId)
+      ? _mbHandler.GetHistoryPrice()
+      : null;
+
+    if (historyPrice.HasValue && historyPrice > 0)
+    {
+      currentItem.HistoryPrice = historyPrice;
+      currentItem.FinalPrice = historyPrice;
+      currentItem.Result = PricingResult.Pending; // reset for normal flow
+      Communicator.PrintHistoryFallback(
+        currentItem.ItemName, historyPrice.Value, _mbHandler.HistoryListingCount);
+    }
+    // If null (no history, or history failed floor/min): FinalPrice from first pass
+    // is preserved — falls through to normal pricing with the non-outlier listing.
+    _mbHandler.ClearHistory();
+  }
+
+  /// <summary>
+  /// Reads the RetainerSell addon and populates PricingItem with identity + prices.
+  /// Returns the raw item name (needed for chat messages with SeString control chars).
+  /// </summary>
+  private unsafe string PopulateItemFromAddon(
+    AddonRetainerSell* retainerSell, PricingItem? currentItem,
+    out ItemPayload? itemPayload, out int listingQuantity)
+  {
+    var itemName = retainerSell->ItemName->NodeText.ToString();
+    var cleanName = Communicator.CleanItemName(itemName, out var isHq);
+    itemPayload = Communicator.RawItemNameToItemPayload(itemName);
+    if (itemPayload != null)
+      GilTracker.GetItemCategory(itemPayload.ItemId);
+    listingQuantity = retainerSell->AtkValues[8].Int;
+
+    if (currentItem != null)
+    {
+      currentItem.ItemName = cleanName;
+      currentItem.IsHq = isHq;
+      currentItem.ItemId = itemPayload?.ItemId ?? 0;
+      currentItem.Quantity = listingQuantity;
+      currentItem.CurrentListingPrice = retainerSell->AskingPrice->Value;
+      currentItem.RetainerName = Plugin.CurrentRun?.CurrentRetainer ?? "";
+      if (itemPayload != null)
+        currentItem.VendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(itemPayload.ItemId).PriceLow;
+    }
+
+    return itemName;
+  }
+
+  /// <summary>
+  /// Evaluates the price and applies it to the RetainerSell addon.
+  /// Handles valid price (undercut/cap checks), error routing (floor/min/nodata),
+  /// and hawk-run vendor-sell. All chat messages and log entries happen here.
+  /// Returns true = confirm (price applied or kept), false = cancel (error/skip).
+  /// </summary>
+  /// <remarks>
+  /// CapBlocked and UndercutTooDeep return true (confirm) because the addon value
+  /// was never changed — confirming just keeps the old price (no-op).
+  /// </remarks>
+  private unsafe bool ApplyPriceDecision(
+    AddonRetainerSell* retainerSell, PricingItem? currentItem,
+    string itemName, int? newPrice)
+  {
+    var cleanName = Communicator.CleanItemName(itemName, out _);
+
+    // --- Valid price path ---
+    if (newPrice.HasValue && newPrice > 0)
+    {
+      if (IsHawkRun)
+      {
+        Svc.Log.Debug($"Setting new listing price");
+        retainerSell->AskingPrice->SetValue(newPrice.Value);
+        Communicator.PrintPriceUpdate(itemName, currentItem?.CurrentListingPrice, newPrice.Value, 0f);
+        Plugin.PinchRunLog?.IncrementAdjusted();
+        if (currentItem != null) currentItem.Result = PricingResult.Listed;
+      }
+      else
+      {
+        var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
+        var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
+
+        if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
+        {
+          if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap
+              && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
+          {
+            Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
+            Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
+              $"Price increase exceeds cap ({Plugin.Configuration.MaxPriceIncreasePercentage}%)");
+            if (currentItem != null) { currentItem.Result = PricingResult.CapBlocked; currentItem.PriceChangePercent = cutPercentage; }
+          }
+          else
+          {
+            Svc.Log.Debug($"Setting new price");
+            _cachedPrices.TryAdd(itemName, newPrice);
+            retainerSell->AskingPrice->SetValue(newPrice.Value);
+            Communicator.PrintPriceUpdate(itemName, oldPrice, newPrice.Value, cutPercentage);
+            Plugin.PinchRunLog?.IncrementAdjusted();
+            if (currentItem != null) currentItem.Result = PricingResult.Applied;
+          }
+        }
+        else
+        {
+          Communicator.PrintAboveMaxCutError(itemName);
+          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
+            $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
+          if (currentItem != null) { currentItem.Result = PricingResult.UndercutTooDeep; currentItem.PriceChangePercent = cutPercentage; }
+        }
+      }
+
+      return true; // confirm — price was applied, or kept unchanged (cap/undercut)
+    }
+
+    // --- Error path: no valid price ---
+    var result = currentItem?.Result ?? PricingResult.NoData;
+
+    switch (result)
+    {
+      case PricingResult.BelowMinimum:
+      case PricingResult.BelowFloor:
+        if (IsHawkRun && Plugin.Configuration.AutoVendorSellOnPriceCheckFail)
+        {
+          if (currentItem != null) currentItem.Result = PricingResult.VendorSell;
+          Svc.Log.Debug($"[HawkRun] Price check failed — will vendor-sell");
+        }
+        else if (result == PricingResult.BelowMinimum)
+        {
+          Communicator.PrintBelowMinimumListingPriceError(itemName);
+          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
+            $"Below minimum listing price ({Plugin.Configuration.MinimumListingPrice:N0} gil)");
+        }
+        else
+        {
+          Communicator.PrintBelowPriceFloorError(itemName);
+          var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor
+            ? "Vendor price" : "Doman Enclave price (2x vendor)";
+          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below {floorLabel}");
+        }
+        break;
+
+      default:
+        Svc.Log.Warning("SetNewPrice: No price to set");
+        Communicator.PrintNoPriceToSetError(itemName);
+        Plugin.PinchRunLog?.AddEntry(ItemOutcome.NoData, cleanName, "No market board data");
+        if (currentItem != null) currentItem.Result = PricingResult.NoData;
+        break;
+    }
+
+    return false; // cancel
+  }
+
   private void MBHandler_NewPriceReceived(object? sender, NewPriceEventArgs e)
   {
     Svc.Log.Debug($"New price received: {e.NewPrice}");
-    _newPrice = e.NewPrice;
 
-    // Mirror onto PricingItem
+    // Always capture for hotkey path (no CurrentRun/CurrentItem)
+    _hotKeyPrice = e.NewPrice > 0 ? e.NewPrice : null;
+
     var item = Plugin.CurrentRun?.CurrentItem;
     if (item != null)
-      item.MbPrice = e.NewPrice > 0 ? e.NewPrice : null;
+    {
+      item.MbPrice = _mbHandler.LastCheckedPrice > 0 ? _mbHandler.LastCheckedPrice : null;
+
+      if (e.NewPrice > 0)
+      {
+        item.FinalPrice = e.NewPrice;
+      }
+      else if (e.NewPrice == -2)
+        item.Result = PricingResult.BelowFloor;
+      else if (e.NewPrice == -3)
+        item.Result = PricingResult.BelowMinimum;
+      else
+        item.Result = PricingResult.NoData;
+
+      if (_mbHandler.OutlierDetected && !_historyFetched)
+        item.Result = PricingResult.NeedsHistory;
+    }
   }
 }
