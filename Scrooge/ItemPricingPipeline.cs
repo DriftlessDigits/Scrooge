@@ -48,12 +48,12 @@ internal sealed class ItemPricingPipeline : IDisposable
     _taskManager = taskManager;
     _applyJitter = applyJitter;
     _mbHandler = new MarketBoardHandler();
-    _mbHandler.NewPriceReceived += MBHandler_NewPriceReceived;
+    _mbHandler.NewPriceReceived += OnNewPriceReceived;
   }
 
   public void Dispose()
   {
-    _mbHandler.NewPriceReceived -= MBHandler_NewPriceReceived;
+    _mbHandler.NewPriceReceived -= OnNewPriceReceived;
     _mbHandler.Dispose();
   }
 
@@ -481,7 +481,7 @@ internal sealed class ItemPricingPipeline : IDisposable
     return false; // cancel
   }
 
-  private void MBHandler_NewPriceReceived(object? sender, NewPriceEventArgs e)
+  private void OnNewPriceReceived(object? sender, NewPriceEventArgs e)
   {
     Svc.Log.Debug($"New price received: {e.NewPrice}");
 
