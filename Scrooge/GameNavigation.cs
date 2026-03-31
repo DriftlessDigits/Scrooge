@@ -131,6 +131,19 @@ internal static class GameNavigation
                                       || e.Name.Equals("changer le prix", StringComparison.CurrentCultureIgnoreCase));
   }
 
+  /// <summary>Clicks the History tab on the ItemSearchResult (compare prices) window.</summary>
+  /// <remarks>Callback arg 0 switches to History tab. Verified in-game 2026-03-29.</remarks>
+  internal static unsafe bool? ClickHistoryTab()
+  {
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var addon)
+        && GenericHelpers.IsAddonReady(addon))
+    {
+      ECommons.Automation.Callback.Fire(addon, true, 0);
+      return true;
+    }
+    return false;
+  }
+
   /// <summary>
   /// Reads the "Selling X items" count for a retainer from the RetainerList addon.
   /// Layout: base offset 3, 10 AtkValues per retainer, offset 6 = selling text.
