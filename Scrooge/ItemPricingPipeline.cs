@@ -29,7 +29,6 @@ internal sealed class ItemPricingPipeline : IDisposable
   // Per-item state (reset after each item in SetNewPrice finally block)
   private int? _oldPrice;
   private int? _newPrice;
-  internal bool _skipCurrentItem;
 
   // VendorSellPending and ItemWasListed replaced by PricingItem.Result
   // (PricingResult.VendorSell and PricingResult.Listed respectively)
@@ -64,7 +63,6 @@ internal sealed class ItemPricingPipeline : IDisposable
   {
     _oldPrice = null;
     _newPrice = null;
-    _skipCurrentItem = false;
     // VendorSellPending/ItemWasListed now on PricingItem.Result — no reset needed
     // Cache is now owned by RunData — cleared by creating a new RunData per run
     // IsPinchRun/IsHawkRun now derived from Plugin.CurrentRun.Mode — no reset needed
@@ -89,7 +87,8 @@ internal sealed class ItemPricingPipeline : IDisposable
       else
       {
         Svc.Log.Debug("Current item is a mannequin item and will be skipped");
-        _skipCurrentItem = true;
+        var currentItem = Plugin.CurrentRun?.CurrentItem;
+        if (currentItem != null) currentItem.Result = PricingResult.Skipped;
         addon->Close(true);
       }
 
@@ -116,7 +115,8 @@ internal sealed class ItemPricingPipeline : IDisposable
     if (slot == null || slot->ItemId != hawkItem.ItemId)
     {
       Svc.Log.Warning($"[HawkRun] {hawkItem.Name} no longer at expected slot — skipping");
-      _skipCurrentItem = true;
+      var currentItem = Plugin.CurrentRun?.CurrentItem;
+      if (currentItem != null) currentItem.Result = PricingResult.Skipped;
       return true;
     }
 
@@ -133,7 +133,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// </summary>
   internal unsafe bool? ClickPutUpForSale()
   {
-    if (_skipCurrentItem)
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
       return true;
 
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon) && GenericHelpers.IsAddonReady(addon))
@@ -152,7 +152,8 @@ internal sealed class ItemPricingPipeline : IDisposable
 
       // "Put Up for Sale" not found — sell list full or item is bound
       Svc.Log.Warning("[HawkRun] 'Put Up for Sale' not in context menu — sell list may be full or item is bound");
-      _skipCurrentItem = true;
+      var currentItem = Plugin.CurrentRun?.CurrentItem;
+      if (currentItem != null) currentItem.Result = PricingResult.Skipped;
       addon->Close(true);
       return true;
     }
@@ -165,7 +166,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// </summary>
   internal unsafe bool? ClickHaveRetainerSellItems()
   {
-    if (_skipCurrentItem)
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
       return true;
 
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon)
@@ -187,7 +188,8 @@ internal sealed class ItemPricingPipeline : IDisposable
 
       // Option not found — item may not be vendorable
       Svc.Log.Warning("[HawkRun] 'Have Retainer Sell Items' not in context menu");
-      _skipCurrentItem = true;
+      var currentItem = Plugin.CurrentRun?.CurrentItem;
+      if (currentItem != null) currentItem.Result = PricingResult.Skipped;
       addon->Close(true);
       return true;
     }
@@ -202,7 +204,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// </summary>
   internal unsafe bool? DelayMarketBoard()
   {
-    if (_skipCurrentItem)
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
       return true;
 
     if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var addon) && GenericHelpers.IsAddonReady(&addon->AtkUnitBase))
@@ -226,7 +228,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// </summary>
   internal unsafe bool? ClickComparePrice()
   {
-    if (_skipCurrentItem)
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
       return true;
 
     if (GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var addon) && GenericHelpers.IsAddonReady(&addon->AtkUnitBase))
@@ -261,7 +263,7 @@ internal sealed class ItemPricingPipeline : IDisposable
 
     try
     {
-      if (_skipCurrentItem)
+      if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
         return true;
 
       // close compare price window
@@ -393,7 +395,7 @@ internal sealed class ItemPricingPipeline : IDisposable
 
       // Track listing value for run summary (before clearing state)
       // Don't track vendor-pending items as listings
-      if (!_skipCurrentItem && result != PricingResult.VendorSell)
+      if (result != PricingResult.Skipped && result != PricingResult.VendorSell)
       {
         var listingValue = (_newPrice.HasValue && _newPrice > 0) ? _newPrice.Value : _oldPrice ?? 0;
         if (listingValue > 0)
@@ -408,7 +410,6 @@ internal sealed class ItemPricingPipeline : IDisposable
 
       _oldPrice = null;
       _newPrice = null;
-      _skipCurrentItem = false;
 
       // Don't increment for vendor-pending items — TrackVendorSale owns that
       if (result != PricingResult.VendorSell)

@@ -182,6 +182,7 @@ internal sealed class HawkRunOrchestrator
     if (item.IsAlwaysVendor)
     {
       _hawkQueue.Dequeue();
+      _taskManager.Enqueue(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { ItemId = item.ItemId }; return true; }, $"HawkInitItem_{item.Name}");
       _taskManager.Enqueue(() => _pricing.ClickInventoryItem(item), $"HawkClickItem_{item.Name}");
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(_pricing.ClickHaveRetainerSellItems, $"HawkVendorSell_{item.Name}");
@@ -255,7 +256,7 @@ internal sealed class HawkRunOrchestrator
   private void TrackVendorSale(HawkWindow.HawkItem item)
   {
     // Don't track if vendor sell failed (e.g., non-vendorable item)
-    if (_pricing._skipCurrentItem)
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
       return;
 
     var vendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(item.ItemId).PriceLow;
