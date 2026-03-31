@@ -313,6 +313,10 @@ internal sealed class ItemPricingPipeline : IDisposable
       _historyFetched = false;
       _hotKeyPrice = null;
 
+      // Triage collection — save skipped items for post-run review
+      if (currentItem != null && RunData.IsTriageResult(result))
+        Plugin.CurrentRun?.TriageItems.Add(currentItem);
+
       if (result != PricingResult.VendorSell)
         Plugin.PinchRunLog.IncrementProcessed();
     }
