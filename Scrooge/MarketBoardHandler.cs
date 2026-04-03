@@ -6,6 +6,7 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using Lumina.Excel.Sheets;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace Scrooge;
@@ -37,6 +38,16 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   private int _lastRequestId = -1; // dedup: MB sends listings in batches of 10
   private readonly Random _random = new Random();
 
+  // --- Sale history support (v2.4) ---
+  private List<IMarketBoardHistoryListing>? _lastHistory;
+  internal bool OutlierDetected { get; private set; }
+
+  /// <summary>Item ID from the last HistoryReceived event. Used to validate history is for the correct item.</summary>
+  internal uint HistoryItemId { get; private set; }
+
+  /// <summary>The calculated undercut price BEFORE floor/min sentinel conversion. Used by triage UI.</summary>
+  internal int LastCheckedPrice { get; private set; }
+
   /// <summary>
   /// Setting NewPrice fires the event — this is the bridge to AutoPinch.
   /// </summary>
@@ -58,6 +69,7 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     _items = Svc.Data.GetExcelSheet<Item>();
 
     Plugin.MarketBoard.OfferingsReceived += MarketBoardOnOfferingsReceived;
+    Plugin.MarketBoard.HistoryReceived += OnHistoryReceived;
 
     Plugin.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerSell", AddonRetainerSellPostSetup);
     Plugin.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "ItemSearchResult", ItemSearchResultPostSetup);
@@ -66,8 +78,16 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   public void Dispose()
   {
     Plugin.MarketBoard.OfferingsReceived -= MarketBoardOnOfferingsReceived;
+    Plugin.MarketBoard.HistoryReceived -= OnHistoryReceived;
     Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerSell", AddonRetainerSellPostSetup);
     Plugin.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "ItemSearchResult", ItemSearchResultPostSetup);
+  }
+
+  private void OnHistoryReceived(IMarketBoardHistory history)
+  {
+    HistoryItemId = history.ItemId;
+    _lastHistory = history.HistoryListings.ToList();
+    Svc.Log.Debug($"[SaleHistory] Received {_lastHistory.Count} history entries for item {history.ItemId}");
   }
 
   /// <summary>
@@ -79,6 +99,8 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   {
     if (!_newRequest)
       return;
+
+    OutlierDetected = false;
 
     // Find the first listing that matches our HQ filter.
     // All listings in one response are for the same item, sorted by price ascending.
@@ -96,6 +118,7 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     // Treats all listings (NQ and HQ) as equals for gap analysis.
     if (Plugin.Configuration.OutlierDetection && !(_useHq && _itemHq))
     {
+      var startIndex = i;
       var itemCount = currentOfferings.ItemListings.Count;
       var window = Plugin.Configuration.OutlierSearchWindow;
 
@@ -122,6 +145,8 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
           i = j + 1; // skip everything below the cliff
         }
       }
+
+      OutlierDetected = (i != startIndex);
 
       // Re-check bounds after skipping outliers
       if (i >= currentOfferings.ItemListings.Count)
@@ -185,6 +210,8 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
       }
       else
         price = listingPrice;  // GentlemansMatch — copy price exactly
+
+      LastCheckedPrice = price; // capture before sentinel conversion
 
       // Price floor checks
       var itemId = currentOfferings.ItemListings[0].ItemId;
@@ -251,5 +278,53 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
     return false;
   }
-}
 
+  /// <summary>
+  /// Calculates a price from sale history when outlier detection fired.
+  /// Returns the median sale price, or null if no usable history or if
+  /// the median fails floor/min checks. No sentinels — null means
+  /// "fall back to first-pass price."
+  /// </summary>
+  internal int? GetHistoryPrice()
+  {
+    if (_lastHistory == null || _lastHistory.Count == 0)
+      return null;
+
+    var prices = _lastHistory
+      .Where(h => !_useHq || !_itemHq || h.IsHq)
+      .OrderBy(h => h.SalePrice)
+      .Select(h => (int)h.SalePrice)
+      .ToList();
+
+    if (prices.Count == 0)
+      return null;
+
+    // Median — resilient to outliers in history
+    var median = prices[prices.Count / 2];
+
+    // Floor/min checks — return null (not sentinels) so caller falls back cleanly
+    if (Plugin.Configuration.PriceFloorMode != PriceFloorMode.None)
+    {
+      var vendorPrice = (int)_items.GetRow(HistoryItemId).PriceLow;
+      var floorPrice = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave
+        ? vendorPrice * 2 : vendorPrice;
+      if (floorPrice > 0 && median < floorPrice)
+        return null;
+    }
+    if (Plugin.Configuration.MinimumListingPrice > 0 && median < Plugin.Configuration.MinimumListingPrice)
+      return null;
+
+    return median;
+  }
+
+  /// <summary>Clears stored history and outlier flag after use.</summary>
+  internal void ClearHistory()
+  {
+    _lastHistory = null;
+    HistoryItemId = 0;
+    OutlierDetected = false;
+  }
+
+  /// <summary>Number of history listings available.</summary>
+  internal int HistoryListingCount => _lastHistory?.Count ?? 0;
+}

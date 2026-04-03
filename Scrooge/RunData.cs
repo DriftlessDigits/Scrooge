@@ -133,4 +133,20 @@ internal class RunData
 
   /// <summary>Number of items with no MB data.</summary>
   public int NoDataCount => LogEntries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.NoData);
+
+  // --- Triage (Phase 2) ---
+
+  /// <summary>Collected PricingItems for skipped/error results. Powers the post-run triage UI.</summary>
+  public List<PricingItem> TriageItems { get; } = [];
+
+  /// <summary>Checks if a PricingResult should be collected for triage review.</summary>
+  public static bool IsTriageResult(PricingResult result) => result switch
+  {
+    PricingResult.BelowFloor => true,
+    PricingResult.BelowMinimum => true,
+    PricingResult.CapBlocked => true,
+    PricingResult.UndercutTooDeep => true,
+    PricingResult.NoData => true,
+    _ => false,
+  };
 }

@@ -245,4 +245,23 @@ public static class Communicator
     else
       Svc.Chat.PrintError($"{itemName}: {chatMessage}");
   }
+
+  /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
+  public static void PrintHistoryFallback(string itemName, int price, int saleCount)
+  {
+    if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
+      return;
+
+    var itemPayload = RawItemNameToItemPayload(itemName);
+    if (itemPayload != null)
+    {
+      var seString = new SeStringBuilder()
+        .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
+        .AddText($": Using sale history (median {price:N0} gil from {saleCount} sales)")
+        .Build();
+      Svc.Chat.Print(seString);
+    }
+    else
+      Svc.Chat.Print($"{itemName}: Using sale history (median {price:N0} gil from {saleCount} sales)");
+  }
 }

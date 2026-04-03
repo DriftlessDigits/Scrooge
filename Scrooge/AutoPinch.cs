@@ -384,14 +384,19 @@ internal sealed class AutoPinch : Window, IDisposable
       Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
     }
 
-    // Gil tracking: start run, set retainer, snapshot
-    if (Plugin.Configuration.EnableGilTracking)
+    // Set retainer name for log grouping (ClickRetainer doesn't fire for single-retainer runs)
     {
       var rm = RetainerManager.Instance();
       var retainerName = rm->GetActiveRetainer()->NameString;
-      GilTracker.StartRun(retainerName);
-      GilTracker.SetRetainer(retainerName);
-      _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+      Plugin.PinchRunLog.SetCurrentRetainer(retainerName);
+
+      // Gil tracking: start run, set retainer, snapshot
+      if (Plugin.Configuration.EnableGilTracking)
+      {
+        GilTracker.StartRun(retainerName);
+        GilTracker.SetRetainer(retainerName);
+        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+      }
     }
       
     EnqueueAllRetainerItems(EnqueueSingleItem, false);

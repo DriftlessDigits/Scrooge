@@ -6,6 +6,7 @@ using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Scrooge.Windows;
 using System;
@@ -131,6 +132,10 @@ internal sealed class HawkRunOrchestrator
     Plugin.PinchRunLog.StartNewRun(isHawkRun: true);
     Plugin.PinchRunLog.SetTotalItems(items.Count);
 
+    // Set retainer name for log grouping (ClickRetainer doesn't fire when already inside a retainer)
+    var rm = RetainerManager.Instance();
+    Plugin.PinchRunLog.SetCurrentRetainer(rm->GetActiveRetainer()->NameString);
+
     // Read current retainer's listing count from RetainerSellList
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var sellList) && GenericHelpers.IsAddonReady(sellList))
     {
@@ -182,6 +187,7 @@ internal sealed class HawkRunOrchestrator
     if (item.IsAlwaysVendor)
     {
       _hawkQueue.Dequeue();
+      _taskManager.Enqueue(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { ItemId = item.ItemId }; return true; }, $"HawkInitItem_{item.Name}");
       _taskManager.Enqueue(() => _pricing.ClickInventoryItem(item), $"HawkClickItem_{item.Name}");
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(_pricing.ClickHaveRetainerSellItems, $"HawkVendorSell_{item.Name}");
@@ -251,17 +257,29 @@ internal sealed class HawkRunOrchestrator
     return true;
   }
 
-  /// <summary>Tracks a vendor sale for summary and chat output.</summary>
+  /// <summary>Tracks a vendor sale for summary, log, and chat output.</summary>
   private void TrackVendorSale(HawkWindow.HawkItem item)
   {
     // Don't track if vendor sell failed (e.g., non-vendorable item)
-    if (_pricing._skipCurrentItem)
+    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.Skipped)
       return;
 
     var vendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(item.ItemId).PriceLow;
     var totalGil = vendorPrice * item.Quantity;
     Plugin.PinchRunLog.AddVendorSale(totalGil);
     Plugin.PinchRunLog.IncrementProcessed();
+
+    var reason = item.IsAlwaysVendor
+      ? "Always Vendor"
+      : Plugin.CurrentRun?.CurrentItem?.Result switch
+        {
+          PricingResult.BelowFloor => "Below floor",
+          PricingResult.BelowMinimum => "Below minimum",
+          _ => "Price check failed"
+        };
+    Plugin.PinchRunLog.AddEntry(ItemOutcome.VendorSold, item.Name,
+      $"{reason} — {totalGil:N0} gil ({vendorPrice:N0} × {item.Quantity})");
+
     Communicator.PrintVendorSold(item.Name, vendorPrice, item.Quantity);
   }
 
