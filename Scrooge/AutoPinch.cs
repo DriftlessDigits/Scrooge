@@ -315,12 +315,6 @@ internal sealed class AutoPinch : Window, IDisposable
 
       _taskManager.Enqueue(() => {
         Plugin.PinchRunLog.EndRun();
-        if (Plugin.CurrentRun?.TriageItems.Count > 0)
-        {
-          Svc.Log.Debug($"[Triage] {Plugin.CurrentRun.TriageItems.Count} items collected:");
-          foreach (var item in Plugin.CurrentRun.TriageItems)
-            Svc.Log.Debug($"[Triage]   {item.ItemName} — {item.Result}");
-        }
         Plugin.CurrentRun = null;
         if (Plugin.Configuration.EnableGilTracking)
           GilTracker.FinalizeRun();
@@ -422,12 +416,6 @@ internal sealed class AutoPinch : Window, IDisposable
 
     _taskManager.Enqueue(() => {
       Plugin.PinchRunLog.EndRun();
-      if (Plugin.CurrentRun?.TriageItems.Count > 0)
-      {
-        Svc.Log.Debug($"[Triage] {Plugin.CurrentRun.TriageItems.Count} items collected:");
-        foreach (var item in Plugin.CurrentRun.TriageItems)
-          Svc.Log.Debug($"[Triage]   {item.ItemName} — {item.Result}");
-      }
       Plugin.CurrentRun = null;
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.FinalizeRun();

@@ -257,7 +257,7 @@ internal sealed class HawkRunOrchestrator
     return true;
   }
 
-  /// <summary>Tracks a vendor sale for summary and chat output.</summary>
+  /// <summary>Tracks a vendor sale for summary, log, and chat output.</summary>
   private void TrackVendorSale(HawkWindow.HawkItem item)
   {
     // Don't track if vendor sell failed (e.g., non-vendorable item)
@@ -268,6 +268,18 @@ internal sealed class HawkRunOrchestrator
     var totalGil = vendorPrice * item.Quantity;
     Plugin.PinchRunLog.AddVendorSale(totalGil);
     Plugin.PinchRunLog.IncrementProcessed();
+
+    var reason = item.IsAlwaysVendor
+      ? "Always Vendor"
+      : Plugin.CurrentRun?.CurrentItem?.Result switch
+        {
+          PricingResult.BelowFloor => "Below floor",
+          PricingResult.BelowMinimum => "Below minimum",
+          _ => "Price check failed"
+        };
+    Plugin.PinchRunLog.AddEntry(ItemOutcome.VendorSold, item.Name,
+      $"{reason} — {totalGil:N0} gil ({vendorPrice:N0} × {item.Quantity})");
+
     Communicator.PrintVendorSold(item.Name, vendorPrice, item.Quantity);
   }
 
