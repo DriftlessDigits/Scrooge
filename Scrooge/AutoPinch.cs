@@ -315,6 +315,12 @@ internal sealed class AutoPinch : Window, IDisposable
 
       _taskManager.Enqueue(() => {
         Plugin.PinchRunLog.EndRun();
+        if (Plugin.CurrentRun?.TriageItems.Count > 0)
+        {
+          Svc.Log.Debug($"[Triage] {Plugin.CurrentRun.TriageItems.Count} items collected:");
+          foreach (var item in Plugin.CurrentRun.TriageItems)
+            Svc.Log.Debug($"[Triage]   {item.ItemName} — {item.Result}");
+        }
         Plugin.CurrentRun = null;
         if (Plugin.Configuration.EnableGilTracking)
           GilTracker.FinalizeRun();
@@ -384,14 +390,19 @@ internal sealed class AutoPinch : Window, IDisposable
       Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
     }
 
-    // Gil tracking: start run, set retainer, snapshot
-    if (Plugin.Configuration.EnableGilTracking)
+    // Set retainer name for log grouping (ClickRetainer doesn't fire for single-retainer runs)
     {
       var rm = RetainerManager.Instance();
       var retainerName = rm->GetActiveRetainer()->NameString;
-      GilTracker.StartRun(retainerName);
-      GilTracker.SetRetainer(retainerName);
-      _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+      Plugin.PinchRunLog.SetCurrentRetainer(retainerName);
+
+      // Gil tracking: start run, set retainer, snapshot
+      if (Plugin.Configuration.EnableGilTracking)
+      {
+        GilTracker.StartRun(retainerName);
+        GilTracker.SetRetainer(retainerName);
+        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
+      }
     }
       
     EnqueueAllRetainerItems(EnqueueSingleItem, false);
@@ -411,6 +422,12 @@ internal sealed class AutoPinch : Window, IDisposable
 
     _taskManager.Enqueue(() => {
       Plugin.PinchRunLog.EndRun();
+      if (Plugin.CurrentRun?.TriageItems.Count > 0)
+      {
+        Svc.Log.Debug($"[Triage] {Plugin.CurrentRun.TriageItems.Count} items collected:");
+        foreach (var item in Plugin.CurrentRun.TriageItems)
+          Svc.Log.Debug($"[Triage]   {item.ItemName} — {item.Result}");
+      }
       Plugin.CurrentRun = null;
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.FinalizeRun();
@@ -469,16 +486,6 @@ internal sealed class AutoPinch : Window, IDisposable
     _taskManager.Enqueue(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
     _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
     _taskManager.Enqueue(_pricing.SetNewPrice, $"SetNewPrice{index}");
-    // Conditional history fetch — only runs if outlier needs history
-    _taskManager.Enqueue(() => {
-      if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.NeedsHistory)
-      {
-        _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPriceRetry{index}");
-        _taskManager.InsertDelayNext(1500);
-        _taskManager.Insert(GameNavigation.ClickHistoryTab, $"ClickHistoryTab{index}");
-      }
-      return true;
-    }, $"CheckHistory{index}");
   }
 
   /// <summary>
@@ -489,16 +496,6 @@ internal sealed class AutoPinch : Window, IDisposable
   /// <param name="index">Item index in the RetainerSellList addon (0-based).</param>
   private void InsertSingleItem(int index)
   {
-    // Conditional history fetch — inserted before SetNewPrice because Insert is reverse order
-    _taskManager.Insert(() => {
-      if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.NeedsHistory)
-      {
-        _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPriceRetry{index}");
-        _taskManager.InsertDelayNext(1500);
-        _taskManager.Insert(GameNavigation.ClickHistoryTab, $"ClickHistoryTab{index}");
-      }
-      return true;
-    }, $"CheckHistory{index}");
     _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPrice{index}");
     _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
     _taskManager.Insert(_pricing.ClickComparePrice, $"ClickComparePrice{index}");

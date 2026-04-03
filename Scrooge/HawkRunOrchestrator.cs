@@ -6,6 +6,7 @@ using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
+using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using Scrooge.Windows;
 using System;
@@ -130,6 +131,10 @@ internal sealed class HawkRunOrchestrator
 
     Plugin.PinchRunLog.StartNewRun(isHawkRun: true);
     Plugin.PinchRunLog.SetTotalItems(items.Count);
+
+    // Set retainer name for log grouping (ClickRetainer doesn't fire when already inside a retainer)
+    var rm = RetainerManager.Instance();
+    Plugin.PinchRunLog.SetCurrentRetainer(rm->GetActiveRetainer()->NameString);
 
     // Read current retainer's listing count from RetainerSellList
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var sellList) && GenericHelpers.IsAddonReady(sellList))

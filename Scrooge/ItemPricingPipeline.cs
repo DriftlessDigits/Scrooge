@@ -26,9 +26,6 @@ internal sealed class ItemPricingPipeline : IDisposable
   private readonly MarketBoardHandler _mbHandler;
   private readonly Func<int, int> _applyJitter;
 
-  // Re-entry control for history fallback (reset at end of SetNewPrice)
-  private bool _historyFetched;
-
   // Fallback for PostPinch hotkey path (no CurrentRun/CurrentItem)
   private int? _hotKeyPrice;
 
@@ -60,7 +57,6 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// <summary>Clears per-item and per-run state. Called at the start of each run.</summary>
   internal void ClearState()
   {
-    _historyFetched = false;
     _hotKeyPrice = null;
   }
 
@@ -234,7 +230,7 @@ internal sealed class ItemPricingPipeline : IDisposable
       {
         Svc.Log.Debug($"{itemName}: using cached price");
         // Cache hit skips the MB query entirely — MBHandler never fires, so no
-        // outlier detection, no NeedsHistory, no history fetch.
+        // outlier detection and no history fallback.
         var currentItem = Plugin.CurrentRun?.CurrentItem;
         if (currentItem != null) currentItem.FinalPrice = value;
         return true;
@@ -252,20 +248,11 @@ internal sealed class ItemPricingPipeline : IDisposable
 
   /// <summary>
   /// Final step: applies the calculated price to the listing.
-  /// Orchestrates history interception, addon reading, price evaluation,
-  /// and confirm/cancel. Business logic lives in ApplyPriceDecision.
+  /// Orchestrates addon reading, price evaluation, and confirm/cancel.
+  /// Business logic lives in ApplyPriceDecision.
   /// </summary>
   internal unsafe bool? SetNewPrice()
   {
-    // History interception — before try/finally so PricingItem state is preserved.
-    // Hawk runs skip this — they have no CheckHistory step in their task queue,
-    // so the early return would silently drop the item.
-    if (Plugin.CurrentRun?.CurrentItem?.Result == PricingResult.NeedsHistory && !_historyFetched && !IsHawkRun)
-    {
-      _historyFetched = true;
-      return true; // AutoPinch injects history steps, re-calls SetNewPrice
-    }
-
     var currentItem = Plugin.CurrentRun?.CurrentItem;
     ItemPayload? itemPayload = null;
     var listingQuantity = 1;
@@ -278,7 +265,28 @@ internal sealed class ItemPricingPipeline : IDisposable
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var searchAddon))
         searchAddon->Close(true);
 
-      ApplyHistoryPrice(currentItem);
+      // History fallback — history data arrives for free with Compare Prices.
+      // If outliers were detected and no valid price, try the sale history median.
+      // Skip if price failed floor/min checks — those are definitive answers.
+      if (_mbHandler.OutlierDetected && currentItem != null
+          && currentItem.Result != PricingResult.BelowMinimum
+          && currentItem.Result != PricingResult.BelowFloor
+          && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
+      {
+        var historyPrice = (_mbHandler.HistoryItemId == currentItem.ItemId)
+          ? _mbHandler.GetHistoryPrice()
+          : null;
+
+        if (historyPrice.HasValue && historyPrice > 0)
+        {
+          currentItem.HistoryPrice = historyPrice;
+          currentItem.FinalPrice = historyPrice;
+          currentItem.Result = PricingResult.Pending;
+          Communicator.PrintHistoryFallback(
+            currentItem.ItemName, historyPrice.Value, _mbHandler.HistoryListingCount);
+        }
+        _mbHandler.ClearHistory();
+      }
 
       if (!GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell)
           || !GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
@@ -310,7 +318,6 @@ internal sealed class ItemPricingPipeline : IDisposable
         }
       }
 
-      _historyFetched = false;
       _hotKeyPrice = null;
 
       // Triage collection — save skipped items for post-run review
@@ -322,32 +329,7 @@ internal sealed class ItemPricingPipeline : IDisposable
     }
   }
 
-  /// <summary>
-  /// On the second pass (after history fetch), applies the median sale history price.
-  /// If no usable history, FinalPrice from the first pass (non-outlier listing) is preserved.
-  /// </summary>
-  private void ApplyHistoryPrice(PricingItem? currentItem)
-  {
-    if (!_historyFetched || !_mbHandler.OutlierDetected || currentItem == null)
-      return;
 
-    // Validate history is for the right item (guard against manual MB browsing mid-run)
-    var historyPrice = (_mbHandler.HistoryItemId == currentItem.ItemId)
-      ? _mbHandler.GetHistoryPrice()
-      : null;
-
-    if (historyPrice.HasValue && historyPrice > 0)
-    {
-      currentItem.HistoryPrice = historyPrice;
-      currentItem.FinalPrice = historyPrice;
-      currentItem.Result = PricingResult.Pending; // reset for normal flow
-      Communicator.PrintHistoryFallback(
-        currentItem.ItemName, historyPrice.Value, _mbHandler.HistoryListingCount);
-    }
-    // If null (no history, or history failed floor/min): FinalPrice from first pass
-    // is preserved — falls through to normal pricing with the non-outlier listing.
-    _mbHandler.ClearHistory();
-  }
 
   /// <summary>
   /// Reads the RetainerSell addon and populates PricingItem with identity + prices.
@@ -503,9 +485,6 @@ internal sealed class ItemPricingPipeline : IDisposable
         item.Result = PricingResult.BelowMinimum;
       else
         item.Result = PricingResult.NoData;
-
-      if (_mbHandler.OutlierDetected && !_historyFetched)
-        item.Result = PricingResult.NeedsHistory;
     }
   }
 }

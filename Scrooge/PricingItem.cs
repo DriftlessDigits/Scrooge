@@ -13,8 +13,6 @@ public enum PricingResult
   Applied,
   /// <summary>New listing placed successfully (hawk run).</summary>
   Listed,
-  /// <summary>Outlier detected — need to fetch sale history before deciding.</summary>
-  NeedsHistory,
   /// <summary>Item skipped (mannequin, or other non-priceable state).</summary>
   Skipped,
   /// <summary>MB price below vendor/doman enclave floor (was sentinel -2).</summary>
