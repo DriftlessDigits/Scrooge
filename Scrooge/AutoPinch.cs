@@ -33,6 +33,7 @@ internal sealed class AutoPinch : Window, IDisposable
 {
   private readonly TaskManager _taskManager;
   private readonly Random _random = new Random();
+  internal ItemPricingPipeline Pricing => _pricing;
   private readonly ItemPricingPipeline _pricing;
   private readonly HawkRunOrchestrator _hawkOrchestrator;
 

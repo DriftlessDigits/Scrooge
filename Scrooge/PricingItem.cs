@@ -90,4 +90,7 @@ internal class PricingItem
 
   /// <summary>The final price that was applied (if Result is Applied or Listed).</summary>
   public int? FinalPrice { get; set; }
+
+  /// <summary>When true, cap and undercut price guards are skipped. Set by triage reprice.</summary>
+  public bool BypassPriceGuards { get; set; }
 }

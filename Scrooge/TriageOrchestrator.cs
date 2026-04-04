@@ -51,6 +51,116 @@ internal sealed class TriageOrchestrator : IDisposable
   internal bool QueueSingle(PricingItem item) => QueueAll([item]);
 
   /// <summary>
+  /// Reprices a cap-blocked or undercut item by running it through the normal pricing
+  /// pipeline with price guards bypassed. Requires being at the item's retainer sell list.
+  /// </summary>
+  internal unsafe bool QueueReprice(PricingItem item)
+  {
+    if (IsRunning) return false;
+
+    // Must be at the retainer sell list for this item's retainer
+    string? activeRetainer = null;
+    bool sellListOpen = false;
+
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
+    {
+      var rm = RetainerManager.Instance();
+      activeRetainer = rm->GetActiveRetainer()->NameString;
+      sellListOpen = true;
+    }
+    else if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out _))
+    {
+      var rm = RetainerManager.Instance();
+      activeRetainer = rm->GetActiveRetainer()->NameString;
+    }
+    else if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out _))
+    {
+      Svc.Chat.PrintError("[Scrooge] Talk to a retainer or open the retainer list first.");
+      return false;
+    }
+
+    // Reset item state for repricing
+    item.BypassPriceGuards = true;
+    item.Result = PricingResult.Pending;
+    item.FinalPrice = null;
+
+    // Create a temporary run so the pipeline can find CurrentItem and mode
+    var tempRun = new RunData { Mode = RunMode.Pinch, TotalItems = 1 };
+    tempRun.CurrentItem = item;
+    Plugin.CurrentRun = tempRun;
+
+    IsRunning = true;
+    _currentRetainer = activeRetainer;
+
+    // Navigate to retainer + sell list if needed
+    if (activeRetainer != null && item.RetainerName != activeRetainer)
+    {
+      // Wrong retainer — close and navigate
+      if (sellListOpen)
+      {
+        _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "RepriceCloseSellList");
+        _taskManager.DelayNext(100);
+      }
+      _taskManager.Enqueue(GameNavigation.CloseRetainer, "RepriceCloseRetainer");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(() => NavigateToRetainer(item.RetainerName), $"RepriceNav_{item.RetainerName}");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
+      _taskManager.DelayNext(500);
+      _currentRetainer = item.RetainerName;
+    }
+    else if (activeRetainer == null)
+    {
+      // At retainer list — navigate to the correct one
+      _taskManager.Enqueue(() => NavigateToRetainer(item.RetainerName), $"RepriceNav_{item.RetainerName}");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
+      _taskManager.DelayNext(500);
+      _currentRetainer = item.RetainerName;
+    }
+    else if (!sellListOpen)
+    {
+      // Right retainer, but sell list not open
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
+      _taskManager.DelayNext(500);
+    }
+
+    // Auto-dismiss retainer greeting dialogs
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
+
+    // Standard pinch item flow: right-click → adjust price → compare prices → set price
+    var pricing = Plugin.AutoPinch.Pricing;
+    _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(item.SlotIndex),
+      $"RepriceRightClick_{item.ItemName}");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(pricing.ClickAdjustPrice, $"RepriceAdjust_{item.ItemName}");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(pricing.ClickComparePrice, $"RepriceCompare_{item.ItemName}");
+    _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
+    _taskManager.Enqueue(pricing.SetNewPrice, $"RepriceSetPrice_{item.ItemName}");
+
+    // Cleanup: check result and update triage
+    _taskManager.Enqueue(() =>
+    {
+      RemoveTalkListeners();
+      var success = item.Result == PricingResult.Applied;
+      Plugin.CurrentRun = null;
+      IsRunning = false;
+
+      if (success)
+        Plugin.TriageWindow.RemoveItem(item);
+      else
+        Svc.Chat.PrintError($"[Scrooge] Reprice failed for {item.ItemName}: {item.Result}");
+
+      Util.FlashWindow();
+      return true;
+    }, "RepriceEnd");
+
+    return true;
+  }
+
+  /// <summary>
   /// Queue multiple items for pull + vendor. Groups by retainer,
   /// sorts by descending slot index to avoid index shifting.
   /// Returns false if the queue was rejected (not at retainer list, no space, etc.).

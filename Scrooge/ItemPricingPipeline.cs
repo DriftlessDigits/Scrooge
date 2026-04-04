@@ -398,10 +398,12 @@ internal sealed class ItemPricingPipeline : IDisposable
         var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
         var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
 
-        if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
+        if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage
+            || currentItem?.BypassPriceGuards == true)
         {
           if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap
-              && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
+              && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage
+              && currentItem?.BypassPriceGuards != true)
           {
             Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
             Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,

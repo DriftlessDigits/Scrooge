@@ -14,6 +14,8 @@ namespace Scrooge.Windows
   internal sealed class TriageWindow : Window
   {
     private List<PricingItem>? _sortedItems;
+    private List<PricingItem> _triageItems = [];
+    private HashSet<PricingItem> _selected = [];
 
     internal TriageWindow() : base("Scrooge - Triage")
     {
@@ -29,14 +31,13 @@ namespace Scrooge.Windows
 
     public override void Draw()
     {
-      var run = Plugin.CurrentRun ?? _lastRun;
-      if (run == null || run.TriageItems.Count == 0)
+      if (_triageItems.Count == 0)
       {
         ImGui.TextDisabled("No triage items.");
         return;
       }
 
-      var triageItems = run.TriageItems;
+      var triageItems = _triageItems;
       var isRunning = Plugin.TriageOrchestrator.IsRunning;
 
       // Summary line
@@ -47,6 +48,7 @@ namespace Scrooge.Windows
       // Bulk action buttons
       PricingItem? singleVendor = null;
       List<PricingItem>? bulkVendor = null;
+      PricingItem? singleReprice = null;
       PricingItem? singleIgnore = null;
       bool dismissAll = false;
 
@@ -60,6 +62,19 @@ namespace Scrooge.Windows
         if (ImGui.Button("Vendor Below Floor"))
           bulkVendor = triageItems.Where(t => t.Result == PricingResult.BelowFloor).ToList();
         ImGui.SameLine();
+
+        // Vendor Selected — only vendor-eligible items from the selection
+        var vendorEligibleSelected = _selected
+          .Where(t => t.Result != PricingResult.CapBlocked && t.Result != PricingResult.UndercutTooDeep)
+          .ToList();
+        var selectedCount = vendorEligibleSelected.Count;
+        if (selectedCount > 0)
+        {
+          if (ImGui.Button($"Vendor Selected ({selectedCount})"))
+            bulkVendor = vendorEligibleSelected;
+          ImGui.SameLine();
+        }
+
         if (ImGui.Button("Dismiss"))
           dismissAll = true;
       }
@@ -72,11 +87,12 @@ namespace Scrooge.Windows
       }
       ImGui.Spacing();
 
-      if (ImGui.BeginTable("TriageTable", 11,
+      if (ImGui.BeginTable("TriageTable", 12,
         ImGuiTableFlags.ScrollY | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH
         | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp
         | ImGuiTableFlags.Sortable | ImGuiTableFlags.SortTristate))
       {
+        ImGui.TableSetupColumn("##sel", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.NoSort, 20);
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultSort, 1.0f);
         ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch, 0.8f);
         ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 30);
@@ -90,22 +106,22 @@ namespace Scrooge.Windows
         ImGui.TableSetupColumn("Action", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.NoSort, 0.8f);
         ImGui.TableHeadersRow();
 
-        // Column header tooltips (columns 2-9)
-        for (int col = 2; col <= 9; col++)
+        // Column header tooltips (columns 3-10, offset by checkbox column)
+        for (int col = 3; col <= 10; col++)
         {
           ImGui.TableSetColumnIndex(col);
           if (ImGui.IsItemHovered())
           {
             var tip = col switch
             {
-              2 => "Stack size of the listing",
-              3 => "Your current listing price per unit",
-              4 => "Current market board price per unit",
-              5 => "NPC vendor sell price per unit",
-              6 => "Total gil received if vendor-sold (Vendor/ea × Qty)",
-              7 => "Gil difference if you vendor instead of selling on MB at the listed price",
-              8 => "Why this item was skipped during the run",
-              9 => "Sale history and pricing context for the skip decision",
+              3 => "Stack size of the listing",
+              4 => "Your current listing price per unit",
+              5 => "Current market board price per unit",
+              6 => "NPC vendor sell price per unit",
+              7 => "Total gil received if vendor-sold (Vendor/ea × Qty)",
+              8 => "Gil difference if you vendor instead of selling on MB at the listed price",
+              9 => "Why this item was skipped during the run",
+              10 => "Sale history and pricing context for the skip decision",
               _ => ""
             };
             ImGui.SetTooltip(tip);
@@ -128,16 +144,16 @@ namespace Scrooge.Windows
             {
               var cmp = col switch
               {
-                0 => string.Compare(a.ItemName, b.ItemName),
-                1 => string.Compare(a.RetainerName, b.RetainerName),
-                2 => a.Quantity.CompareTo(b.Quantity),
-                3 => (a.CurrentListingPrice ?? 0).CompareTo(b.CurrentListingPrice ?? 0),
-                4 => (a.MbPrice ?? 0).CompareTo(b.MbPrice ?? 0),
-                5 => a.VendorPrice.CompareTo(b.VendorPrice),
-                6 => (a.VendorPrice * a.Quantity).CompareTo(b.VendorPrice * b.Quantity),
-                7 => VsMb(a).CompareTo(VsMb(b)),
-                8 => a.Result.CompareTo(b.Result),
-                9 => a.HistorySaleCount.CompareTo(b.HistorySaleCount),
+                1 => string.Compare(a.ItemName, b.ItemName),
+                2 => string.Compare(a.RetainerName, b.RetainerName),
+                3 => a.Quantity.CompareTo(b.Quantity),
+                4 => (a.CurrentListingPrice ?? 0).CompareTo(b.CurrentListingPrice ?? 0),
+                5 => (a.MbPrice ?? 0).CompareTo(b.MbPrice ?? 0),
+                6 => a.VendorPrice.CompareTo(b.VendorPrice),
+                7 => (a.VendorPrice * a.Quantity).CompareTo(b.VendorPrice * b.Quantity),
+                8 => VsMb(a).CompareTo(VsMb(b)),
+                9 => a.Result.CompareTo(b.Result),
+                10 => a.HistorySaleCount.CompareTo(b.HistorySaleCount),
                 _ => 0
               };
               return asc ? cmp : -cmp;
@@ -160,6 +176,15 @@ namespace Scrooge.Windows
             PricingResult.UndercutTooDeep => new Vector4(1f, 1f, 0.3f, 1f),
             _ => new Vector4(0.5f, 0.5f, 0.5f, 1f),
           };
+
+          // Checkbox
+          ImGui.TableNextColumn();
+          var isSelected = _selected.Contains(item);
+          if (ImGui.Checkbox($"##chk{i}", ref isSelected))
+          {
+            if (isSelected) _selected.Add(item);
+            else _selected.Remove(item);
+          }
 
           // Item
           ImGui.TableNextColumn();
@@ -210,9 +235,16 @@ namespace Scrooge.Windows
           ImGui.TableNextColumn();
           if (!isRunning)
           {
-            // Vendor only makes sense for floor/minimum/nodata — not cap or undercut
-            if (item.Result != PricingResult.CapBlocked && item.Result != PricingResult.UndercutTooDeep)
+            if (item.Result == PricingResult.CapBlocked || item.Result == PricingResult.UndercutTooDeep)
             {
+              // Cap/undercut items get Reprice (runs through pipeline with guards bypassed)
+              if (ImGui.SmallButton($"Reprice##{i}"))
+                singleReprice = item;
+              ImGui.SameLine();
+            }
+            else
+            {
+              // Floor/minimum/nodata items get Vendor
               if (ImGui.SmallButton($"Vendor##{i}"))
                 singleVendor = item;
               ImGui.SameLine();
@@ -229,6 +261,7 @@ namespace Scrooge.Windows
       {
         triageItems.Clear();
         _sortedItems = null;
+        _selected.Clear();
       }
       else if (bulkVendor != null && bulkVendor.Count > 0)
       {
@@ -236,7 +269,13 @@ namespace Scrooge.Windows
         {
           triageItems.RemoveAll(t => bulkVendor.Contains(t));
           _sortedItems = null;
+          _selected.ExceptWith(bulkVendor);
         }
+      }
+      else if (singleReprice != null)
+      {
+        // Reprice removes from triage on success via RemoveItem callback
+        Plugin.TriageOrchestrator.QueueReprice(singleReprice);
       }
       else if (singleVendor != null)
       {
@@ -282,13 +321,19 @@ namespace Scrooge.Windows
     private static int VsMb(PricingItem item) =>
       item.MbPrice.HasValue ? (item.VendorPrice - item.MbPrice.Value) * item.Quantity : 0;
 
-    private RunData? _lastRun;
-
-    /// <summary>Stores a reference to the run so triage data survives after CurrentRun is cleared.</summary>
+    /// <summary>Stores triage items from the completed run so they survive after CurrentRun is cleared.</summary>
     internal void SetRun(RunData run)
     {
-      _lastRun = run;
+      _triageItems = run.TriageItems;
       _sortedItems = null; // force re-sort on new data
+      _selected.Clear();
+    }
+
+    /// <summary>Removes an item from the triage list (called after successful reprice or vendor).</summary>
+    internal void RemoveItem(PricingItem item)
+    {
+      _triageItems.Remove(item);
+      _sortedItems = null;
     }
   }
 }
