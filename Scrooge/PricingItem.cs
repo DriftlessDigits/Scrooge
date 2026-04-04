@@ -68,6 +68,15 @@ internal class PricingItem
   /// <summary>Median price from sale history (populated only when outlier triggers history fetch).</summary>
   public int? HistoryPrice { get; set; }
 
+  /// <summary>Number of sales in the last 14 days from sale history.</summary>
+  public int HistorySaleCount { get; set; }
+
+  /// <summary>Median sale price from the last 14 days.</summary>
+  public int? HistoryMedianPrice { get; set; }
+
+  /// <summary>Average sale price from the last 14 days.</summary>
+  public int? HistoryAvgPrice { get; set; }
+
   /// <summary>NPC vendor sell price from Lumina (Item.PriceLow).</summary>
   public int VendorPrice { get; set; }
 

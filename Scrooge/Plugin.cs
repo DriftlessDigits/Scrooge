@@ -44,6 +44,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
+  internal static TriageWindow TriageWindow { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
@@ -98,6 +100,9 @@ public sealed class Plugin : IDalamudPlugin
 
     HawkWindow = new HawkWindow();
     WindowSystem.AddWindow(HawkWindow);
+
+    TriageWindow = new TriageWindow();
+    WindowSystem.AddWindow(TriageWindow);
 
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 

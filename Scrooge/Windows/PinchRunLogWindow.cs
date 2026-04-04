@@ -184,6 +184,10 @@ namespace Scrooge.Windows
         ? $"{run.TotalListingGil:N0} gil put on market"
         : $"{run.TotalListingGil:N0} gil on market");
 
+      // Hand off triage data to the triage window
+      if (run.TriageItems.Count > 0)
+        Plugin.TriageWindow.SetRun(run);
+
       // Stop timer and mark run complete
       run.IsComplete = true;
       run.RunStopwatch.Stop();
@@ -357,6 +361,20 @@ namespace Scrooge.Windows
 
       if (treeOpen) ImGui.TreePop();
 
+      // --- Triage summary + launch button ---
+      if (run.IsComplete && run.TriageItems.Count > 0)
+      {
+        ImGui.Spacing();
+        ImGui.Indent(16);
+        ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f));
+        ImGui.Text($"{run.TriageItems.Count} {(run.TriageItems.Count == 1 ? "item needs" : "items need")} triage");
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Open Triage"))
+          Plugin.TriageWindow.IsOpen = true;
+        ImGui.Unindent(16);
+      }
+
       // Auto-scroll to bottom when new entries appear
       if (_autoScroll && ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 20)
         ImGui.SetScrollHereY(1.0f);
@@ -470,6 +488,11 @@ namespace Scrooge.Windows
               break;
           }
         }
+
+        // Triage summary
+        if (run.IsComplete && run.TriageItems.Count > 0)
+          sb.AppendLine().AppendLine($"{run.TriageItems.Count} {(run.TriageItems.Count == 1 ? "item needs" : "items need")} triage");
+
         ImGui.SetClipboardText(sb.ToString());
       }
     }

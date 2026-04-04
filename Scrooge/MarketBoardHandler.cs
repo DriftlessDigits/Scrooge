@@ -327,4 +327,29 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
   /// <summary>Number of history listings available.</summary>
   internal int HistoryListingCount => _lastHistory?.Count ?? 0;
+
+  /// <summary>
+  /// Populates 14-day sale history stats on the given PricingItem.
+  /// Called for every item in SetNewPrice so triage has full context.
+  /// </summary>
+  internal void PopulateHistoryStats(PricingItem item)
+  {
+    if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != item.ItemId)
+      return;
+
+    var cutoff = DateTime.UtcNow.AddDays(-14);
+    var recent = _lastHistory
+      .Where(h => h.PurchaseTime >= cutoff)
+      .Where(h => !_useHq || !_itemHq || h.IsHq)
+      .Select(h => (int)h.SalePrice)
+      .ToList();
+
+    item.HistorySaleCount = recent.Count;
+    if (recent.Count == 0)
+      return;
+
+    recent.Sort();
+    item.HistoryMedianPrice = recent[recent.Count / 2];
+    item.HistoryAvgPrice = (int)recent.Average();
+  }
 }

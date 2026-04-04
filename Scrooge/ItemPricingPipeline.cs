@@ -265,6 +265,17 @@ internal sealed class ItemPricingPipeline : IDisposable
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var searchAddon))
         searchAddon->Close(true);
 
+      if (!GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell)
+          || !GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
+        return false;
+
+      var itemName = PopulateItemFromAddon(retainerSell, currentItem, out itemPayload, out listingQuantity);
+
+      // Always populate 14-day history stats for triage context
+      // Must run after PopulateItemFromAddon which sets ItemId
+      if (currentItem != null)
+        _mbHandler.PopulateHistoryStats(currentItem);
+
       // History fallback — history data arrives for free with Compare Prices.
       // If outliers were detected and no valid price, try the sale history median.
       // Skip if price failed floor/min checks — those are definitive answers.
@@ -287,12 +298,6 @@ internal sealed class ItemPricingPipeline : IDisposable
         }
         _mbHandler.ClearHistory();
       }
-
-      if (!GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell)
-          || !GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
-        return false;
-
-      var itemName = PopulateItemFromAddon(retainerSell, currentItem, out itemPayload, out listingQuantity);
       var newPrice = currentItem?.FinalPrice ?? _hotKeyPrice;
       var confirmed = ApplyPriceDecision(retainerSell, currentItem, itemName, newPrice);
 
