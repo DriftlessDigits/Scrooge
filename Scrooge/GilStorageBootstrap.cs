@@ -50,6 +50,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 4);
     }
 
+    if (version < 5)
+    {
+      MigrateV5(connection);
+      SetSchemaVersion(connection, 5);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -577,6 +583,20 @@ internal class GilStorageBootstrap
           WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0
           GROUP BY item_id", connection);
     backfill.ExecuteNonQuery();
+  }
+
+  /// <summary>V5: Add indexes for snapshot dedup and transaction range queries.</summary>
+  private static void MigrateV5(SqliteConnection connection)
+  {
+    using var idx1 = new SqliteCommand(
+        "CREATE INDEX IF NOT EXISTS idx_gil_snapshots_ts ON gil_snapshots(timestamp DESC)",
+        connection);
+    idx1.ExecuteNonQuery();
+
+    using var idx2 = new SqliteCommand(
+        "CREATE INDEX IF NOT EXISTS idx_txn_ts_dir ON transactions(timestamp, direction)",
+        connection);
+    idx2.ExecuteNonQuery();
   }
 
   // =========================================================================

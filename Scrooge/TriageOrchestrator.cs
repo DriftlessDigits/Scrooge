@@ -340,6 +340,14 @@ internal sealed class TriageOrchestrator : IDisposable
     _vendorSoldCount++;
     _vendorSoldGil += totalGil;
     Communicator.PrintVendorSold(item.ItemName, vendorPrice, item.Quantity);
+
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      GilStorage.InsertTransaction(now, "earned", "vendor_sale", totalGil,
+        item.ItemId, item.ItemName, GilTracker.GetItemCategory(item.ItemId),
+        item.Quantity, vendorPrice, item.IsHq, "", "NPC Vendor");
+    }
   }
 
   /// <summary>Auto-clicks the retainer greeting dialog.</summary>

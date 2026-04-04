@@ -49,6 +49,7 @@ public sealed class Plugin : IDalamudPlugin
   internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
 
   private RetainerHistoryHook? _retainerHistoryHook;
+  private GilTrackEventListener? _gilTrackListener;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
@@ -97,6 +98,15 @@ public sealed class Plugin : IDalamudPlugin
       Svc.Log.Warning(ex, "RetainerHistory hook failed — gil tracking will not capture sale history");
     }
 
+    try
+    {
+      _gilTrackListener = new GilTrackEventListener();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "GilTrackEventListener failed — passive snapshots disabled");
+    }
+
     GilDashboard = new GilWindow();
     WindowSystem.AddWindow(GilDashboard);
 
@@ -123,6 +133,7 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    _gilTrackListener?.Dispose();
     _retainerHistoryHook?.Dispose();
     GilStorage.Dispose();
     CommandManager.RemoveHandler("/giltrack");
