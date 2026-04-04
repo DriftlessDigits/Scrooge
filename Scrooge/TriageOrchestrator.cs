@@ -300,8 +300,10 @@ internal sealed class TriageOrchestrator : IDisposable
   {
     if (_triageQueue == null || _triageQueue.Count == 0)
     {
-      // Done — close retainer and print summary
-      if (_currentRetainer != null)
+      var hasReprices = _repriceQueue != null && _repriceQueue.Count > 0;
+
+      // Only close retainer if no reprices pending — reprices need the sell list open
+      if (_currentRetainer != null && !hasReprices)
       {
         _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "TriageCloseSellList");
         _taskManager.DelayNext(100);
@@ -311,19 +313,20 @@ internal sealed class TriageOrchestrator : IDisposable
 
       _taskManager.Enqueue(() =>
       {
-        RemoveTalkListeners();
-        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
         Communicator.PrintTriageSummary(_vendorSoldCount, _vendorSoldGil, _pulledCount);
         IsRunning = false;
         _triageQueue = null;
 
-        // Chain reprices if any are pending
-        if (_repriceQueue != null && _repriceQueue.Count > 0)
+        // Chain reprices if any are pending — keep listeners alive
+        if (hasReprices)
         {
           StartNextReprice();
           return true;
         }
 
+        // Fully done — clean up listeners
+        RemoveTalkListeners();
+        Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
         _repriceQueue = null;
         Util.FlashWindow();
         return true;
