@@ -246,6 +246,19 @@ public static class Communicator
       Svc.Chat.PrintError($"{itemName}: {chatMessage}");
   }
 
+  /// <summary>Chat summary after a triage run completes.</summary>
+  public static void PrintTriageSummary(int count, long totalGil)
+  {
+    if (count == 0)
+    {
+      Svc.Chat.Print("[Scrooge] Triage complete — no items vendored.");
+      return;
+    }
+
+    var label = count == 1 ? "item" : "items";
+    Svc.Chat.Print($"[Scrooge] Triage complete — vendored {count} {label} for {totalGil:N0} gil.");
+  }
+
   /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
   public static void PrintHistoryFallback(string itemName, int price, int saleCount)
   {

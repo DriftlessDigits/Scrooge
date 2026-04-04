@@ -46,6 +46,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static TriageWindow TriageWindow { get; private set; } = null!;
 
+  internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
@@ -104,6 +106,8 @@ public sealed class Plugin : IDalamudPlugin
     TriageWindow = new TriageWindow();
     WindowSystem.AddWindow(TriageWindow);
 
+    TriageOrchestrator = new TriageOrchestrator();
+
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 
     CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
@@ -115,6 +119,7 @@ public sealed class Plugin : IDalamudPlugin
   public void Dispose()
   {
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
+    TriageOrchestrator.Dispose();
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");

@@ -37,13 +37,42 @@ namespace Scrooge.Windows
       }
 
       var triageItems = run.TriageItems;
+      var isRunning = Plugin.TriageOrchestrator.IsRunning;
 
       // Summary line
       var totalVendorGil = triageItems.Sum(t => t.VendorPrice * t.Quantity);
       ImGui.Text($"{triageItems.Count} {(triageItems.Count == 1 ? "item" : "items")} skipped — vendoring all would free {triageItems.Count} {(triageItems.Count == 1 ? "slot" : "slots")} and net {totalVendorGil:N0} gil");
       ImGui.Spacing();
 
-      if (ImGui.BeginTable("TriageTable", 10,
+      // Bulk action buttons
+      PricingItem? singleVendor = null;
+      List<PricingItem>? bulkVendor = null;
+      PricingItem? singleIgnore = null;
+      bool dismissAll = false;
+
+      if (!isRunning)
+      {
+        if (ImGui.Button("Vendor All"))
+          bulkVendor = triageItems
+            .Where(t => t.Result != PricingResult.CapBlocked && t.Result != PricingResult.UndercutTooDeep)
+            .ToList();
+        ImGui.SameLine();
+        if (ImGui.Button("Vendor Below Floor"))
+          bulkVendor = triageItems.Where(t => t.Result == PricingResult.BelowFloor).ToList();
+        ImGui.SameLine();
+        if (ImGui.Button("Dismiss"))
+          dismissAll = true;
+      }
+      else
+      {
+        if (ImGui.Button("Cancel"))
+          Plugin.TriageOrchestrator.Abort();
+        ImGui.SameLine();
+        ImGui.TextDisabled("Triage in progress...");
+      }
+      ImGui.Spacing();
+
+      if (ImGui.BeginTable("TriageTable", 11,
         ImGuiTableFlags.ScrollY | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH
         | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp
         | ImGuiTableFlags.Sortable | ImGuiTableFlags.SortTristate))
@@ -58,6 +87,7 @@ namespace Scrooge.Windows
         ImGui.TableSetupColumn("vs MB", ImGuiTableColumnFlags.WidthFixed, 55);
         ImGui.TableSetupColumn("Reason", ImGuiTableColumnFlags.WidthStretch, 2.0f);
         ImGui.TableSetupColumn("Details", ImGuiTableColumnFlags.WidthStretch, 1.5f);
+        ImGui.TableSetupColumn("Action", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.NoSort, 0.8f);
         ImGui.TableHeadersRow();
 
         // Column header tooltips (columns 2-9)
@@ -117,8 +147,9 @@ namespace Scrooge.Windows
           sortSpecs.SpecsDirty = false;
         }
 
-        foreach (var item in _sortedItems)
+        for (int i = 0; i < _sortedItems.Count; i++)
         {
+          var item = _sortedItems[i];
           ImGui.TableNextRow();
 
           var color = item.Result switch
@@ -174,8 +205,51 @@ namespace Scrooge.Windows
           // Details
           ImGui.TableNextColumn();
           ImGui.Text(BuildDetails(item));
+
+          // Action buttons
+          ImGui.TableNextColumn();
+          if (!isRunning)
+          {
+            // Vendor only makes sense for floor/minimum/nodata — not cap or undercut
+            if (item.Result != PricingResult.CapBlocked && item.Result != PricingResult.UndercutTooDeep)
+            {
+              if (ImGui.SmallButton($"Vendor##{i}"))
+                singleVendor = item;
+              ImGui.SameLine();
+            }
+            if (ImGui.SmallButton($"X##{i}"))
+              singleIgnore = item;
+          }
         }
         ImGui.EndTable();
+      }
+
+      // Process actions after table draw (don't modify lists mid-iteration)
+      if (dismissAll)
+      {
+        triageItems.Clear();
+        _sortedItems = null;
+      }
+      else if (bulkVendor != null && bulkVendor.Count > 0)
+      {
+        if (Plugin.TriageOrchestrator.QueueAll(bulkVendor))
+        {
+          triageItems.RemoveAll(t => bulkVendor.Contains(t));
+          _sortedItems = null;
+        }
+      }
+      else if (singleVendor != null)
+      {
+        if (Plugin.TriageOrchestrator.QueueSingle(singleVendor))
+        {
+          triageItems.Remove(singleVendor);
+          _sortedItems = null;
+        }
+      }
+      else if (singleIgnore != null)
+      {
+        triageItems.Remove(singleIgnore);
+        _sortedItems = null;
       }
     }
 

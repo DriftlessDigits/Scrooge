@@ -2,6 +2,8 @@ using ECommons;
 using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
 using ECommons.UIHelpers.AtkReaderImplementations;
+using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System;
 using System.Collections.Generic;
@@ -129,6 +131,96 @@ internal static class GameNavigation
                                       || e.Name.Equals("preis ändern", StringComparison.CurrentCultureIgnoreCase)
                                       || e.Name.Equals("価格を変更する", StringComparison.CurrentCultureIgnoreCase)
                                       || e.Name.Equals("changer le prix", StringComparison.CurrentCultureIgnoreCase));
+  }
+
+  /// <summary>
+  /// Clicks "Return Items to Inventory" in the retainer sell list context menu.
+  /// Returns the item from the MB listing to the player's inventory.
+  /// </summary>
+  internal static unsafe bool? ClickReturnToInventory()
+  {
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon)
+        && GenericHelpers.IsAddonReady(addon))
+    {
+      var reader = new ReaderContextMenu(addon);
+      for (int i = 0; i < reader.Entries.Count; i++)
+      {
+        if (reader.Entries[i].Name.Equals(
+            "Return Items to Inventory", StringComparison.OrdinalIgnoreCase))
+        {
+          ECommons.Automation.Callback.Fire(addon, true, 0, i, 0, 0, 0);
+          return true;
+        }
+      }
+      Svc.Log.Warning("[Triage] 'Return Items to Inventory' not in context menu");
+      addon->Close(true);
+      return true;
+    }
+    return false;
+  }
+
+  /// <summary>
+  /// Clicks "Have Retainer Sell Items" in the context menu for an inventory item.
+  /// Standalone version for triage flow (no PricingItem state dependency).
+  /// </summary>
+  internal static unsafe bool? ClickVendorSellItem()
+  {
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon)
+        && GenericHelpers.IsAddonReady(addon))
+    {
+      var reader = new ReaderContextMenu(addon);
+      for (int i = 0; i < reader.Entries.Count; i++)
+      {
+        if (reader.Entries[i].Name.Equals(
+            "Have Retainer Sell Items", StringComparison.OrdinalIgnoreCase))
+        {
+          ECommons.Automation.Callback.Fire(addon, true, 0, i, 0, 0, 0);
+          return true;
+        }
+      }
+      Svc.Log.Warning("[Triage] 'Have Retainer Sell Items' not in context menu");
+      addon->Close(true);
+      return true;
+    }
+    return false;
+  }
+
+  /// <summary>
+  /// Right-clicks an item in the player's inventory by item ID.
+  /// Scans all 4 inventory bags to find the first matching stack.
+  /// </summary>
+  internal static unsafe bool? ClickInventoryItemById(uint itemId, bool isHq)
+  {
+    var im = InventoryManager.Instance();
+    var containers = new[]
+    {
+      InventoryType.Inventory1, InventoryType.Inventory2,
+      InventoryType.Inventory3, InventoryType.Inventory4,
+    };
+
+    foreach (var containerType in containers)
+    {
+      var container = im->GetInventoryContainer(containerType);
+      if (container == null) continue;
+
+      for (int i = 0; i < container->Size; i++)
+      {
+        var slot = container->GetInventorySlot(i);
+        if (slot == null || slot->ItemId == 0) continue;
+
+        var slotIsHq = slot->Flags.HasFlag(InventoryItem.ItemFlags.HighQuality);
+        if (slot->ItemId == itemId && slotIsHq == isHq)
+        {
+          var agent = AgentInventoryContext.Instance();
+          var addonId = AgentInventory.Instance()->OpenAddonId;
+          agent->OpenForItemSlot(containerType, i, 0, addonId);
+          return true;
+        }
+      }
+    }
+
+    Svc.Log.Warning($"[Triage] Item {itemId} not found in inventory after pull");
+    return true;
   }
 
   /// <summary>
