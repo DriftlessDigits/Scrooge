@@ -25,9 +25,11 @@ internal sealed class TriageOrchestrator : IDisposable
   private readonly TaskManager _taskManager;
 
   private Queue<PricingItem>? _triageQueue;
+  private List<PricingItem>? _repriceQueue;
   private string? _currentRetainer;
   private int _vendorSoldCount;
   private long _vendorSoldGil;
+  private int _pulledCount;
 
   /// <summary>True while a triage run is in progress.</summary>
   internal bool IsRunning { get; private set; }
@@ -140,7 +142,7 @@ internal sealed class TriageOrchestrator : IDisposable
     _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
     _taskManager.Enqueue(pricing.SetNewPrice, $"RepriceSetPrice_{item.ItemName}");
 
-    // Cleanup: check result and update triage
+    // Cleanup: check result and update triage, chain next reprice if any
     _taskManager.Enqueue(() =>
     {
       RemoveTalkListeners();
@@ -153,11 +155,63 @@ internal sealed class TriageOrchestrator : IDisposable
       else
         Svc.Chat.PrintError($"[Scrooge] Reprice failed for {item.ItemName}: {item.Result}");
 
+      // Chain next reprice if batch has more
+      if (_repriceQueue != null && _repriceQueue.Count > 0)
+      {
+        StartNextReprice();
+        return true;
+      }
+
+      _repriceQueue = null;
       Util.FlashWindow();
       return true;
     }, "RepriceEnd");
 
     return true;
+  }
+
+  /// <summary>
+  /// Processes a batch of triage decisions. Vendor/Pull items are batched together
+  /// (grouped by retainer, descending slot order). Reprices chain sequentially after.
+  /// </summary>
+  internal unsafe bool QueueTriageBatch(Dictionary<PricingItem, TriageAction> actions)
+  {
+    if (IsRunning || actions.Count == 0) return false;
+
+    var vendorPull = actions
+      .Where(a => a.Value == TriageAction.Vendor || a.Value == TriageAction.Pull)
+      .Select(a => { a.Key.QueuedAction = a.Value; return a.Key; })
+      .ToList();
+
+    var reprices = actions
+      .Where(a => a.Value == TriageAction.Reprice)
+      .Select(a => a.Key)
+      .ToList();
+
+    _repriceQueue = reprices.Count > 0 ? reprices : null;
+
+    if (vendorPull.Count > 0)
+      return QueueAll(vendorPull);
+
+    // No vendor/pull items — start reprices directly
+    if (_repriceQueue != null && _repriceQueue.Count > 0)
+      return StartNextReprice();
+
+    return false;
+  }
+
+  /// <summary>Starts the next reprice from the reprice queue.</summary>
+  private bool StartNextReprice()
+  {
+    if (_repriceQueue == null || _repriceQueue.Count == 0)
+    {
+      _repriceQueue = null;
+      return false;
+    }
+
+    var item = _repriceQueue[0];
+    _repriceQueue.RemoveAt(0);
+    return QueueReprice(item);
   }
 
   /// <summary>
@@ -210,6 +264,7 @@ internal sealed class TriageOrchestrator : IDisposable
     _currentRetainer = activeRetainer;
     _vendorSoldCount = 0;
     _vendorSoldGil = 0;
+    _pulledCount = 0;
     IsRunning = true;
 
     // If we're inside a retainer but sell list isn't open, open it first
@@ -258,9 +313,18 @@ internal sealed class TriageOrchestrator : IDisposable
       {
         RemoveTalkListeners();
         Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
-        Communicator.PrintTriageSummary(_vendorSoldCount, _vendorSoldGil);
+        Communicator.PrintTriageSummary(_vendorSoldCount, _vendorSoldGil, _pulledCount);
         IsRunning = false;
         _triageQueue = null;
+
+        // Chain reprices if any are pending
+        if (_repriceQueue != null && _repriceQueue.Count > 0)
+        {
+          StartNextReprice();
+          return true;
+        }
+
+        _repriceQueue = null;
         Util.FlashWindow();
         return true;
       }, "TriageEnd");
@@ -295,17 +359,26 @@ internal sealed class TriageOrchestrator : IDisposable
       $"TriageReturn_{item.ItemName}");
     _taskManager.DelayNext(500);
 
-    // Vendor: find item in inventory → right-click → "Have Retainer Sell Items"
-    _taskManager.Enqueue(() => GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
-      $"TriageClickInv_{item.ItemName}");
-    _taskManager.DelayNext(100);
-    _taskManager.Enqueue(GameNavigation.ClickVendorSellItem,
-      $"TriageVendor_{item.ItemName}");
-    _taskManager.DelayNext(100);
+    if (item.QueuedAction == TriageAction.Vendor)
+    {
+      // Vendor: find item in inventory → right-click → "Have Retainer Sell Items"
+      _taskManager.Enqueue(() => GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
+        $"TriageClickInv_{item.ItemName}");
+      _taskManager.DelayNext(100);
+      _taskManager.Enqueue(GameNavigation.ClickVendorSellItem,
+        $"TriageVendor_{item.ItemName}");
+      _taskManager.DelayNext(100);
 
-    // Track the sale
-    _taskManager.Enqueue(() => { TrackVendorSale(item); return true; },
-      $"TriageTrack_{item.ItemName}");
+      // Track the sale
+      _taskManager.Enqueue(() => { TrackVendorSale(item); return true; },
+        $"TriageTrack_{item.ItemName}");
+    }
+    else
+    {
+      // Pull only — track the pull
+      _taskManager.Enqueue(() => { _pulledCount++; return true; },
+        $"TriagePulled_{item.ItemName}");
+    }
 
     // Continue to next item
     _taskManager.Enqueue(ProcessNext, "TriageProcessNext");

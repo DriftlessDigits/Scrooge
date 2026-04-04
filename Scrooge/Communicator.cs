@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Dalamud.Game.Text.SeStringHandling;
@@ -247,16 +248,21 @@ public static class Communicator
   }
 
   /// <summary>Chat summary after a triage run completes.</summary>
-  public static void PrintTriageSummary(int count, long totalGil)
+  public static void PrintTriageSummary(int vendorCount, long totalGil, int pulledCount = 0)
   {
-    if (count == 0)
+    var parts = new List<string>();
+    if (vendorCount > 0)
+      parts.Add($"vendored {vendorCount} {(vendorCount == 1 ? "item" : "items")} for {totalGil:N0} gil");
+    if (pulledCount > 0)
+      parts.Add($"pulled {pulledCount} {(pulledCount == 1 ? "item" : "items")}");
+
+    if (parts.Count == 0)
     {
-      Svc.Chat.Print("[Scrooge] Triage complete — no items vendored.");
+      Svc.Chat.Print("[Scrooge] Triage complete — no items processed.");
       return;
     }
 
-    var label = count == 1 ? "item" : "items";
-    Svc.Chat.Print($"[Scrooge] Triage complete — vendored {count} {label} for {totalGil:N0} gil.");
+    Svc.Chat.Print($"[Scrooge] Triage complete — {string.Join(", ", parts)}.");
   }
 
   /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
