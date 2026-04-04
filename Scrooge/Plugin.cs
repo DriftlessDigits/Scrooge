@@ -181,7 +181,7 @@ public sealed class Plugin : IDalamudPlugin
     {
       args.AddMenuItem(new MenuItem
       {
-        Name = "Remove Hawk Ban",
+        Name = "Remove Scrooge Ban",
         PrefixChar = 'S',
         PrefixColor = 539,
         OnClicked = _ =>
@@ -255,10 +255,10 @@ public sealed class Plugin : IDalamudPlugin
       });
     }
 
-    // Ban from Hawk (red)
+    // Ban from Scrooge (red)
     args.AddMenuItem(new MenuItem
     {
-      Name = "Ban from Hawk",
+      Name = "Ban from Scrooge",
       PrefixChar = 'S',
       PrefixColor = 17, // red
       OnClicked = _ =>

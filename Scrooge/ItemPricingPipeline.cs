@@ -276,6 +276,28 @@ internal sealed class ItemPricingPipeline : IDisposable
       if (currentItem != null)
         _mbHandler.PopulateHistoryStats(currentItem);
 
+      // Ban check — item goes through MB lookup but price is never changed
+      if (itemPayload != null)
+      {
+        var banId = itemPayload.IsHQ ? itemPayload.ItemId + 1_000_000u : itemPayload.ItemId;
+        if (Plugin.Configuration.BannedItemIds.Contains(banId))
+        {
+          var cleanName = Communicator.CleanItemName(itemName, out _);
+          var listed = currentItem?.CurrentListingPrice;
+          var mb = currentItem?.MbPrice;
+          var detail = mb.HasValue
+            ? $"Listed at {listed:N0}, MB at {mb:N0}"
+            : $"Listed at {listed:N0}, no MB data";
+          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Banned, cleanName, detail);
+          if (currentItem != null) currentItem.Result = PricingResult.Banned;
+
+          // Confirm without changing (keeps original price)
+          ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0);
+          retainerSell->AtkUnitBase.Close(true);
+          return true;
+        }
+      }
+
       // History fallback — history data arrives for free with Compare Prices.
       // If outliers were detected and no valid price, try the sale history median.
       // Skip if price failed floor/min checks — those are definitive answers.

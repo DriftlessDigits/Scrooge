@@ -1100,7 +1100,7 @@ public sealed class ConfigWindow : Window
 
     if (bannedIds.Count == 0)
     {
-      ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window to add items you never want to list.");
+      ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window or right-click context menu to add items Scrooge should never reprice or list.");
     }
     else
     {

@@ -40,6 +40,8 @@ public enum PricingResult
   UndercutTooDeep,
   /// <summary>Below floor + auto vendor sell enabled — will vendor-sell.</summary>
   VendorSell,
+  /// <summary>Item is on the ban list — observed but not repriced.</summary>
+  Banned,
 }
 
 /// <summary>

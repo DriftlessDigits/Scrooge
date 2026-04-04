@@ -15,7 +15,8 @@ namespace Scrooge.Windows
     Skipped,     // red — rule blocked, no price set
     NoData,      // yellow — no competition, player decides
     Outlier,     // normal — system handled it, got a price
-    VendorSold   // green — vendor-sold through retainer
+    VendorSold,  // green — vendor-sold through retainer
+    Banned       // blue — on ban list, observed but not changed
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
@@ -346,6 +347,7 @@ namespace Scrooge.Windows
                 ItemOutcome.Skipped => new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f),
                 ItemOutcome.NoData => new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f),
                 ItemOutcome.VendorSold => new System.Numerics.Vector4(0.4f, 0.9f, 0.4f, 1f),
+                ItemOutcome.Banned => new System.Numerics.Vector4(0.4f, 0.6f, 1f, 1f),
                 _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
               };
 
@@ -481,6 +483,7 @@ namespace Scrooge.Windows
                   ItemOutcome.Skipped => "Skipped",
                   ItemOutcome.NoData => "No data",
                   ItemOutcome.VendorSold => "Vendor-sold",
+                  ItemOutcome.Banned => "Banned",
                   _ => "Entry"
                 };
                 sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");
