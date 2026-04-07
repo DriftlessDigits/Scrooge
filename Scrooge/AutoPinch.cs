@@ -154,7 +154,72 @@ internal sealed class AutoPinch : Window, IDisposable
         var oldSize = AutoPinchOverlay.ImGuiSetup(node);
         DrawAutoPinchButton(PinchAllRetainerItems);
         AutoPinchOverlay.ImGuiPostSetup(oldSize);
+
+        // Draw ban indicators on sell list rows
+        if (Plugin.Configuration.BannedItemIds.Count > 0)
+          DrawSellListBanIndicators(addon);
       }
+    }
+  }
+
+  /// <summary>
+  /// Draws a red overlay stripe on RetainerSellList rows for banned items.
+  /// Reads item IDs from AtkValues (stride 13) and matches against BannedItemIds.
+  /// </summary>
+  private unsafe void DrawSellListBanIndicators(AtkUnitBase* addon)
+  {
+    var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
+    if (listNode == null) return;
+    var listComponent = (AtkComponentList*)listNode->Component;
+    var listLength = listComponent->ListLength;
+    if (listLength == 0) return;
+
+    // Match by icon ID — container slot order doesn't match UI display order.
+    // Build a set of banned icon IDs from Lumina, then check each row's AtkValue icon.
+    var itemSheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+    var bannedIcons = new HashSet<int>();
+    foreach (var id in Plugin.Configuration.BannedItemIds)
+    {
+      var baseId = id >= 1_000_000 ? id - 1_000_000 : id;
+      var baseIcon = (int)itemSheet.GetRow(baseId).Icon;
+      bannedIcons.Add(baseIcon);           // NQ
+      bannedIcons.Add(baseIcon + 1_000_000); // HQ
+    }
+
+    if (bannedIcons.Count == 0) return;
+
+    var drawList = ImGui.GetBackgroundDrawList();
+    var banColor = ImGui.GetColorU32(new System.Numerics.Vector4(1f, 0.2f, 0.2f, 0.25f));
+
+    for (var i = 0; i < listLength; i++)
+    {
+      // Icon is at AtkValues stride 13, offset 10
+      var atkIdx = 10 + (i * 13);
+      if (atkIdx >= addon->AtkValuesCount) break;
+      var iconId = addon->AtkValues[atkIdx].Int;
+
+      if (!bannedIcons.Contains(iconId))
+        continue;
+
+      // Get the icon node within this list row (first component node = icon)
+      var renderer = listComponent->GetItemRenderer(i);
+      if (renderer == null) continue;
+      var ownerNode = renderer->OwnerNode;
+      if (ownerNode == null || !ownerNode->AtkResNode.IsVisible()) continue;
+
+      // Node [12] (type 1008, 44x48) is the item icon component on the left
+      if (renderer->UldManager.NodeListCount <= 12) continue;
+      var iconNode = renderer->UldManager.NodeList[12];
+      if (iconNode == null || !iconNode->IsVisible()) continue;
+
+      var position = AutoPinchOverlay.GetNodePosition(iconNode);
+      var scale = AutoPinchOverlay.GetNodeScale(iconNode);
+      var size = new System.Numerics.Vector2(iconNode->Width * scale.X, iconNode->Height * scale.Y);
+
+      drawList.AddRectFilled(
+        new System.Numerics.Vector2(position.X, position.Y),
+        new System.Numerics.Vector2(position.X + size.X, position.Y + size.Y),
+        banColor);
     }
   }
 
