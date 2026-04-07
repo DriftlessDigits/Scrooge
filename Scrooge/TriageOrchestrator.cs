@@ -101,30 +101,30 @@ internal sealed class TriageOrchestrator : IDisposable
       if (sellListOpen)
       {
         _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "RepriceCloseSellList");
-        _taskManager.DelayNext(100);
+        _taskManager.DelayNext(500);
       }
       _taskManager.Enqueue(GameNavigation.CloseRetainer, "RepriceCloseRetainer");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(() => NavigateToRetainer(item.RetainerName), $"RepriceNav_{item.RetainerName}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
       _taskManager.DelayNext(500);
+      _taskManager.Enqueue(() => NavigateToRetainer(item.RetainerName), $"RepriceNav_{item.RetainerName}");
+      _taskManager.DelayNext(500);
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
+      _taskManager.DelayNext(1000);
       _currentRetainer = item.RetainerName;
     }
     else if (activeRetainer == null)
     {
       // At retainer list — navigate to the correct one
       _taskManager.Enqueue(() => NavigateToRetainer(item.RetainerName), $"RepriceNav_{item.RetainerName}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
       _taskManager.DelayNext(500);
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
+      _taskManager.DelayNext(1000);
       _currentRetainer = item.RetainerName;
     }
     else if (!sellListOpen)
     {
       // Right retainer, but sell list not open
       _taskManager.Enqueue(GameNavigation.ClickSellItems, "RepriceOpenSellList");
-      _taskManager.DelayNext(500);
+      _taskManager.DelayNext(1000);
     }
 
     // Auto-dismiss retainer greeting dialogs
@@ -135,7 +135,7 @@ internal sealed class TriageOrchestrator : IDisposable
     var pricing = Plugin.AutoPinch.Pricing;
     _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(item.SlotIndex),
       $"RepriceRightClick_{item.ItemName}");
-    _taskManager.DelayNext(100);
+    _taskManager.DelayNext(500);
     _taskManager.Enqueue(pricing.ClickAdjustPrice, $"RepriceAdjust_{item.ItemName}");
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(pricing.ClickComparePrice, $"RepriceCompare_{item.ItemName}");
@@ -306,9 +306,9 @@ internal sealed class TriageOrchestrator : IDisposable
       if (_currentRetainer != null && !hasReprices)
       {
         _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "TriageCloseSellList");
-        _taskManager.DelayNext(100);
+        _taskManager.DelayNext(500);
         _taskManager.Enqueue(GameNavigation.CloseRetainer, "TriageCloseRetainer");
-        _taskManager.DelayNext(100);
+        _taskManager.DelayNext(500);
       }
 
       _taskManager.Enqueue(() =>
@@ -342,35 +342,35 @@ internal sealed class TriageOrchestrator : IDisposable
       if (_currentRetainer != null)
       {
         _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "TriageCloseSellList");
-        _taskManager.DelayNext(100);
+        _taskManager.DelayNext(500);
         _taskManager.Enqueue(GameNavigation.CloseRetainer, "TriageCloseRetainer");
-        _taskManager.DelayNext(100);
+        _taskManager.DelayNext(500);
       }
 
       _taskManager.Enqueue(() => NavigateToRetainer(item.RetainerName), $"TriageNav_{item.RetainerName}");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(GameNavigation.ClickSellItems, "TriageClickSellItems");
       _taskManager.DelayNext(500);
+      _taskManager.Enqueue(GameNavigation.ClickSellItems, "TriageClickSellItems");
+      _taskManager.DelayNext(1000);
       _currentRetainer = item.RetainerName;
     }
 
     // Pull: right-click item in sell list → "Return Items to Inventory"
     _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(item.SlotIndex),
       $"TriageRightClick_{item.ItemName}");
-    _taskManager.DelayNext(100);
+    _taskManager.DelayNext(500);
     _taskManager.Enqueue(GameNavigation.ClickReturnToInventory,
       $"TriageReturn_{item.ItemName}");
-    _taskManager.DelayNext(500);
+    _taskManager.DelayNext(1000);
 
     if (item.QueuedAction == TriageAction.Vendor)
     {
       // Vendor: find item in inventory → right-click → "Have Retainer Sell Items"
       _taskManager.Enqueue(() => GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
         $"TriageClickInv_{item.ItemName}");
-      _taskManager.DelayNext(100);
+      _taskManager.DelayNext(500);
       _taskManager.Enqueue(GameNavigation.ClickVendorSellItem,
         $"TriageVendor_{item.ItemName}");
-      _taskManager.DelayNext(100);
+      _taskManager.DelayNext(500);
 
       // Track the sale
       _taskManager.Enqueue(() => { TrackVendorSale(item); return true; },
