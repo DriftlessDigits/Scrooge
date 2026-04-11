@@ -156,8 +156,6 @@ public sealed class Plugin : IDalamudPlugin
   /// </summary>
   private unsafe void OnContextMenuOpened(IMenuOpenedArgs args)
   {
-    Svc.Log.Debug($"[Scrooge] OnContextMenuOpened: MenuType={args.MenuType}, Target={args.Target?.GetType().Name}");
-
     // --- Retainer Sell List: Ban/Unban (always available) ---
     // Retainer sell list context menus fire as ContextMenuType.Default, not Inventory.
     // SelectedItemIndex returns -1 on this addon, so we use GameGui.HoveredItem instead.
