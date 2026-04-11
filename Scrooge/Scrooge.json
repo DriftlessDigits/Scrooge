@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Added Triage UI — review, reprice, and vendor-sell retainer items with history-based recommendations. Ban items from Scrooge via retainer sell list context menu. GilTrack passive transaction capture from chat."
+  "Changelog": "Sale history fallback now triggers on zero listings and HQ items with only NQ on the market board, not just outlier detection."
 }

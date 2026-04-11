@@ -299,9 +299,10 @@ internal sealed class ItemPricingPipeline : IDisposable
       }
 
       // History fallback — history data arrives for free with Compare Prices.
-      // If outliers were detected and no valid price, try the sale history median.
-      // Skip if price failed floor/min checks — those are definitive answers.
-      if (_mbHandler.OutlierDetected && currentItem != null
+      // If no valid price was found (outliers, zero listings, no matching quality),
+      // try the sale history median. Skip if price failed floor/min checks — those
+      // are definitive answers.
+      if (currentItem != null
           && currentItem.Result != PricingResult.BelowMinimum
           && currentItem.Result != PricingResult.BelowFloor
           && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
