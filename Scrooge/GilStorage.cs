@@ -288,6 +288,17 @@ internal static class GilStorage
     };
   }
 
+  /// <summary>Gets the most recent snapshot's timestamp and player gil for dedup checks.</summary>
+  internal static (long Timestamp, long Gil)? GetLatestPlayerGilAndTimestamp()
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT timestamp, player_gil FROM gil_snapshots ORDER BY timestamp DESC LIMIT 1",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    if (!reader.Read()) return null;
+    return (reader.GetInt64(0), reader.GetInt64(1));
+  }
+
   /// <summary>Gets the N most recent retainer sales as SaleRecord objects.</summary>
   internal static List<SaleRecord> GetRecentSales(int limit)
   {

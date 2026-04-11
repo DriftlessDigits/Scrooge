@@ -1,5 +1,18 @@
 namespace Scrooge;
 
+/// <summary>User-assigned action for a triage item.</summary>
+public enum TriageAction
+{
+  /// <summary>No action selected — item stays in the list.</summary>
+  None,
+  /// <summary>Pull from MB and vendor-sell to NPC.</summary>
+  Vendor,
+  /// <summary>Pull from MB back to inventory (no vendor).</summary>
+  Pull,
+  /// <summary>Reprice on the MB with price guards bypassed.</summary>
+  Reprice,
+}
+
 /// <summary>
 /// The result of evaluating a single item's price during a run.
 /// Replaces sentinel values (-1, -2, -3) and boolean flag side-channels
@@ -27,6 +40,8 @@ public enum PricingResult
   UndercutTooDeep,
   /// <summary>Below floor + auto vendor sell enabled — will vendor-sell.</summary>
   VendorSell,
+  /// <summary>Item is on the ban list — observed but not repriced.</summary>
+  Banned,
 }
 
 /// <summary>
@@ -68,6 +83,15 @@ internal class PricingItem
   /// <summary>Median price from sale history (populated only when outlier triggers history fetch).</summary>
   public int? HistoryPrice { get; set; }
 
+  /// <summary>Number of sales in the last 14 days from sale history.</summary>
+  public int HistorySaleCount { get; set; }
+
+  /// <summary>Median sale price from the last 14 days.</summary>
+  public int? HistoryMedianPrice { get; set; }
+
+  /// <summary>Average sale price from the last 14 days.</summary>
+  public int? HistoryAvgPrice { get; set; }
+
   /// <summary>NPC vendor sell price from Lumina (Item.PriceLow).</summary>
   public int VendorPrice { get; set; }
 
@@ -81,4 +105,10 @@ internal class PricingItem
 
   /// <summary>The final price that was applied (if Result is Applied or Listed).</summary>
   public int? FinalPrice { get; set; }
+
+  /// <summary>When true, cap and undercut price guards are skipped. Set by triage reprice.</summary>
+  public bool BypassPriceGuards { get; set; }
+
+  /// <summary>Action assigned by the user in the triage window. Used by the orchestrator.</summary>
+  public TriageAction QueuedAction { get; set; } = TriageAction.None;
 }

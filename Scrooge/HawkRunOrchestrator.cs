@@ -269,6 +269,14 @@ internal sealed class HawkRunOrchestrator
     Plugin.PinchRunLog.AddVendorSale(totalGil);
     Plugin.PinchRunLog.IncrementProcessed();
 
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      GilStorage.InsertTransaction(now, "earned", "vendor_sale", totalGil,
+        item.ItemId, item.Name, GilTracker.GetItemCategory(item.ItemId),
+        item.Quantity, vendorPrice, item.IsHq, "", "NPC Vendor");
+    }
+
     var reason = item.IsAlwaysVendor
       ? "Always Vendor"
       : Plugin.CurrentRun?.CurrentItem?.Result switch

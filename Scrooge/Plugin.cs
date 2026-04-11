@@ -9,6 +9,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using ECommons;
 using ECommons.DalamudServices;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Scrooge.Windows;
 
 namespace Scrooge;
@@ -44,7 +45,12 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
+  internal static TriageWindow TriageWindow { get; private set; } = null!;
+
+  internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
+  private GilTrackEventListener? _gilTrackListener;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
@@ -93,11 +99,25 @@ public sealed class Plugin : IDalamudPlugin
       Svc.Log.Warning(ex, "RetainerHistory hook failed — gil tracking will not capture sale history");
     }
 
+    try
+    {
+      _gilTrackListener = new GilTrackEventListener();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "GilTrackEventListener failed — passive snapshots disabled");
+    }
+
     GilDashboard = new GilWindow();
     WindowSystem.AddWindow(GilDashboard);
 
     HawkWindow = new HawkWindow();
     WindowSystem.AddWindow(HawkWindow);
+
+    TriageWindow = new TriageWindow();
+    WindowSystem.AddWindow(TriageWindow);
+
+    TriageOrchestrator = new TriageOrchestrator();
 
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 
@@ -110,9 +130,11 @@ public sealed class Plugin : IDalamudPlugin
   public void Dispose()
   {
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
+    TriageOrchestrator.Dispose();
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    _gilTrackListener?.Dispose();
     _retainerHistoryHook?.Dispose();
     GilStorage.Dispose();
     CommandManager.RemoveHandler("/giltrack");
@@ -128,12 +150,59 @@ public sealed class Plugin : IDalamudPlugin
   private void OnGilTrackCommand(string command, string args) => GilDashboard.Toggle();
 
   /// <summary>
-  /// Adds Hawk Run context menu options to inventory items when the HawkWindow is open.
+  /// Adds Scrooge context menu options:
+  /// - Retainer sell list: Ban/Unban (available any time)
+  /// - Inventory items: Full Hawk menu (when HawkWindow is open)
   /// </summary>
-  private void OnContextMenuOpened(IMenuOpenedArgs args)
+  private unsafe void OnContextMenuOpened(IMenuOpenedArgs args)
   {
-    if (!HawkWindow.IsOpen)
+    // --- Retainer Sell List: Ban/Unban (always available) ---
+    // Retainer sell list context menus fire as ContextMenuType.Default, not Inventory.
+    // SelectedItemIndex returns -1 on this addon, so we use GameGui.HoveredItem instead.
+    if (args.MenuType == ContextMenuType.Default
+        && GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var sellListAddon)
+        && GenericHelpers.IsAddonReady(sellListAddon))
+    {
+      var hoveredItem = Svc.GameGui.HoveredItem;
+      if (hoveredItem == 0)
+        return;
+
+      var isHq = hoveredItem >= 1_000_000;
+      var sellListItemId = isHq ? (uint)(hoveredItem - 1_000_000) : (uint)hoveredItem;
+      var banId = isHq ? sellListItemId + 1_000_000 : sellListItemId;
+
+      var isBanned = Configuration.BannedItemIds.Contains(banId);
+      if (isBanned)
+      {
+        args.AddMenuItem(new MenuItem
+        {
+          Name = "Remove Scrooge Ban",
+          PrefixChar = 'S',
+          PrefixColor = 539,
+          OnClicked = _ =>
+          {
+            Configuration.BannedItemIds.Remove(banId);
+            Configuration.Save();
+          },
+        });
+      }
+      else
+      {
+        args.AddMenuItem(new MenuItem
+        {
+          Name = "Ban from Scrooge",
+          PrefixChar = 'S',
+          PrefixColor = 17, // red
+          OnClicked = _ =>
+          {
+            Configuration.BannedItemIds.Add(banId);
+            Configuration.AlwaysVendorItemIds.Remove(banId); // mutual exclusivity
+            Configuration.Save();
+          },
+        });
+      }
       return;
+    }
 
     if (args.MenuType != ContextMenuType.Inventory)
       return;
@@ -148,19 +217,59 @@ public sealed class Plugin : IDalamudPlugin
     if (itemId == 0)
       return;
 
+    // (Retainer sell list handled above for ContextMenuType.Default)
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
+    {
+      var isBanned = Configuration.BannedItemIds.Contains(itemId);
+      if (isBanned)
+      {
+        args.AddMenuItem(new MenuItem
+        {
+          Name = "Remove Scrooge Ban",
+          PrefixChar = 'S',
+          PrefixColor = 539,
+          OnClicked = _ =>
+          {
+            Configuration.BannedItemIds.Remove(itemId);
+            Configuration.Save();
+          },
+        });
+      }
+      else
+      {
+        args.AddMenuItem(new MenuItem
+        {
+          Name = "Ban from Scrooge",
+          PrefixChar = 'S',
+          PrefixColor = 17, // red
+          OnClicked = _ =>
+          {
+            Configuration.BannedItemIds.Add(itemId);
+            Configuration.AlwaysVendorItemIds.Remove(itemId); // mutual exclusivity
+            Configuration.Save();
+          },
+        });
+      }
+      return;
+    }
+
+    // --- Hawk Window: Full inventory context menu ---
+    if (!HawkWindow.IsOpen)
+      return;
+
     // Base ID for Lumina lookups (vendor price, etc.) and HawkWindow selection
     var baseItemId = item.IsHq && itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
 
-    var isBanned = Configuration.BannedItemIds.Contains(itemId);
+    var isBannedHawk = Configuration.BannedItemIds.Contains(itemId);
     var isAlwaysVendor = Configuration.AlwaysVendorItemIds.Contains(itemId);
     var isSelected = HawkWindow.IsItemSelected(baseItemId, item.IsHq);
 
     // --- State: Banned ---
-    if (isBanned)
+    if (isBannedHawk)
     {
       args.AddMenuItem(new MenuItem
       {
-        Name = "Remove Hawk Ban",
+        Name = "Remove Scrooge Ban",
         PrefixChar = 'S',
         PrefixColor = 539,
         OnClicked = _ =>
@@ -234,10 +343,10 @@ public sealed class Plugin : IDalamudPlugin
       });
     }
 
-    // Ban from Hawk (red)
+    // Ban from Scrooge (red)
     args.AddMenuItem(new MenuItem
     {
-      Name = "Ban from Hawk",
+      Name = "Ban from Scrooge",
       PrefixChar = 'S',
       PrefixColor = 17, // red
       OnClicked = _ =>

@@ -427,6 +427,9 @@ public sealed class ConfigWindow : Window
       ImGui.SetTooltip("Detect and skip abnormally low price listings on the market board.\n\n" +
                        "Compares each listing to the next — if the price jump is too large,\n" +
                        "the cheap listing is treated as an outlier and skipped.\n\n" +
+                       "When an outlier is skipped and no valid listings remain, Scrooge\n" +
+                       "uses the median sale price from the last 14 days instead.\n" +
+                       "If the median also fails floor/minimum checks, the item goes to triage.\n\n" +
                        "Only applies to NQ items. HQ items skip outlier detection.");
       ImGui.EndTooltip();
     }
@@ -1100,7 +1103,7 @@ public sealed class ConfigWindow : Window
 
     if (bannedIds.Count == 0)
     {
-      ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window to add items you never want to list.");
+      ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window or right-click context menu to add items Scrooge should never reprice or list.");
     }
     else
     {

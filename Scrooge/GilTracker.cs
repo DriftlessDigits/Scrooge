@@ -197,6 +197,28 @@ internal static class GilTracker
         $"{_finalListingValue:N0}g on market, {playerGil:N0}g player");
   }
 
+  // --- Passive Balance Snapshots (called from GilTrackEventListener) ---
+
+  /// <summary>
+  /// Takes a player-only balance snapshot if tracking is enabled and dedup passes.
+  /// Retainer balances are NOT captured (only available at the summoning bell).
+  /// </summary>
+  public static unsafe void TakeBalanceSnapshot(string source)
+  {
+    if (!Plugin.Configuration.EnableGilTracking) return;
+
+    var playerGil = (long)InventoryManager.Instance()->GetGil();
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    // Dedup: skip if last snapshot < 60s ago and balance unchanged
+    var last = GilStorage.GetLatestPlayerGilAndTimestamp();
+    if (last.HasValue && (now - last.Value.Timestamp) < 60 && last.Value.Gil == playerGil)
+      return;
+
+    GilStorage.InsertGilSnapshot(now, playerGil, source);
+    Svc.Log.Debug($"[GilTrack] Balance snapshot ({source}): {playerGil:N0}g");
+  }
+
   // --- Sale History Processing (called from hook) ---
 
   /// <summary>

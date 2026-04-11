@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Added Hawk Run vendor selling — Always Vendor list, auto-vendor for below-floor items, inventory overlays, and Hawk Settings config tab. Refactored AutoPinch into 5 focused classes."
+  "Changelog": "Added Triage UI — review, reprice, and vendor-sell retainer items with history-based recommendations. Ban items from Scrooge via retainer sell list context menu. GilTrack passive transaction capture from chat."
 }

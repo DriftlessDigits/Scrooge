@@ -15,7 +15,8 @@ namespace Scrooge.Windows
     Skipped,     // red — rule blocked, no price set
     NoData,      // yellow — no competition, player decides
     Outlier,     // normal — system handled it, got a price
-    VendorSold   // green — vendor-sold through retainer
+    VendorSold,  // green — vendor-sold through retainer
+    Banned       // blue — on ban list, observed but not changed
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
@@ -184,6 +185,10 @@ namespace Scrooge.Windows
         ? $"{run.TotalListingGil:N0} gil put on market"
         : $"{run.TotalListingGil:N0} gil on market");
 
+      // Hand off triage data to the triage window
+      if (run.TriageItems.Count > 0)
+        Plugin.TriageWindow.SetRun(run);
+
       // Stop timer and mark run complete
       run.IsComplete = true;
       run.RunStopwatch.Stop();
@@ -342,6 +347,7 @@ namespace Scrooge.Windows
                 ItemOutcome.Skipped => new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f),
                 ItemOutcome.NoData => new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f),
                 ItemOutcome.VendorSold => new System.Numerics.Vector4(0.4f, 0.9f, 0.4f, 1f),
+                ItemOutcome.Banned => new System.Numerics.Vector4(0.4f, 0.6f, 1f, 1f),
                 _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
               };
 
@@ -356,6 +362,20 @@ namespace Scrooge.Windows
       }
 
       if (treeOpen) ImGui.TreePop();
+
+      // --- Triage summary + launch button ---
+      if (run.IsComplete && run.TriageItems.Count > 0)
+      {
+        ImGui.Spacing();
+        ImGui.Indent(16);
+        ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f));
+        ImGui.Text($"{run.TriageItems.Count} {(run.TriageItems.Count == 1 ? "item needs" : "items need")} triage");
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Open Triage"))
+          Plugin.TriageWindow.IsOpen = true;
+        ImGui.Unindent(16);
+      }
 
       // Auto-scroll to bottom when new entries appear
       if (_autoScroll && ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 20)
@@ -463,6 +483,7 @@ namespace Scrooge.Windows
                   ItemOutcome.Skipped => "Skipped",
                   ItemOutcome.NoData => "No data",
                   ItemOutcome.VendorSold => "Vendor-sold",
+                  ItemOutcome.Banned => "Banned",
                   _ => "Entry"
                 };
                 sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");
@@ -470,6 +491,11 @@ namespace Scrooge.Windows
               break;
           }
         }
+
+        // Triage summary
+        if (run.IsComplete && run.TriageItems.Count > 0)
+          sb.AppendLine().AppendLine($"{run.TriageItems.Count} {(run.TriageItems.Count == 1 ? "item needs" : "items need")} triage");
+
         ImGui.SetClipboardText(sb.ToString());
       }
     }

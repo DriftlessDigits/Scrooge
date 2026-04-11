@@ -265,6 +265,39 @@ internal sealed class ItemPricingPipeline : IDisposable
       if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ItemSearchResult", out var searchAddon))
         searchAddon->Close(true);
 
+      if (!GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell)
+          || !GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
+        return false;
+
+      var itemName = PopulateItemFromAddon(retainerSell, currentItem, out itemPayload, out listingQuantity);
+
+      // Always populate 14-day history stats for triage context
+      // Must run after PopulateItemFromAddon which sets ItemId
+      if (currentItem != null)
+        _mbHandler.PopulateHistoryStats(currentItem);
+
+      // Ban check — item goes through MB lookup but price is never changed
+      if (itemPayload != null)
+      {
+        var banId = itemPayload.IsHQ ? itemPayload.ItemId + 1_000_000u : itemPayload.ItemId;
+        if (Plugin.Configuration.BannedItemIds.Contains(banId))
+        {
+          var cleanName = Communicator.CleanItemName(itemName, out _);
+          var listed = currentItem?.CurrentListingPrice;
+          var mb = currentItem?.MbPrice;
+          var detail = mb.HasValue
+            ? $"Listed at {listed:N0}, MB at {mb:N0}"
+            : $"Listed at {listed:N0}, no MB data";
+          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Banned, cleanName, detail);
+          if (currentItem != null) currentItem.Result = PricingResult.Banned;
+
+          // Confirm without changing (keeps original price)
+          ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, 0);
+          retainerSell->AtkUnitBase.Close(true);
+          return true;
+        }
+      }
+
       // History fallback — history data arrives for free with Compare Prices.
       // If outliers were detected and no valid price, try the sale history median.
       // Skip if price failed floor/min checks — those are definitive answers.
@@ -287,12 +320,6 @@ internal sealed class ItemPricingPipeline : IDisposable
         }
         _mbHandler.ClearHistory();
       }
-
-      if (!GenericHelpers.TryGetAddonByName<AddonRetainerSell>("RetainerSell", out var retainerSell)
-          || !GenericHelpers.IsAddonReady(&retainerSell->AtkUnitBase))
-        return false;
-
-      var itemName = PopulateItemFromAddon(retainerSell, currentItem, out itemPayload, out listingQuantity);
       var newPrice = currentItem?.FinalPrice ?? _hotKeyPrice;
       var confirmed = ApplyPriceDecision(retainerSell, currentItem, itemName, newPrice);
 
@@ -393,10 +420,12 @@ internal sealed class ItemPricingPipeline : IDisposable
         var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
         var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
 
-        if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage)
+        if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage
+            || currentItem?.BypassPriceGuards == true)
         {
           if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap
-              && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage)
+              && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage
+              && currentItem?.BypassPriceGuards != true)
           {
             Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
             Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
