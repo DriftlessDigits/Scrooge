@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Sale history fallback now triggers on zero listings and HQ items with only NQ on the market board, not just outlier detection."
+  "Changelog": "Fix FOREIGN KEY error in gil tracking pruner that disabled GilTrack on startup once snapshots aged past 30 days."
 }
