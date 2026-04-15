@@ -572,27 +572,29 @@ internal static class GilStorage
       cmd.ExecuteNonQuery();
     }
 
-    // Thin old gil snapshots: keep one per day for entries older than 30 days
-    using (var cmd = new SqliteCommand(
-      @"DELETE FROM gil_snapshots
-      WHERE timestamp < @cutoff
+    // Thin old gil snapshots: keep one per day for entries older than 30 days.
+    // Delete child retainer_snapshots first — FK constraint blocks parent delete otherwise.
+    const string thinFilter = @"timestamp < @cutoff
       AND id NOT IN (
         SELECT MAX(id) FROM gil_snapshots
         WHERE timestamp < @cutoff
         GROUP BY DATE(timestamp, 'unixepoch')
-      )",
+      )";
+
+    using (var cmd = new SqliteCommand(
+      $@"DELETE FROM retainer_snapshots
+      WHERE snapshot_id IN (SELECT id FROM gil_snapshots WHERE {thinFilter})",
       _connection))
     {
       cmd.Parameters.AddWithValue("@cutoff", thirtyDays);
       cmd.ExecuteNonQuery();
     }
 
-    // Delete orphaned retainer snapshots
     using (var cmd = new SqliteCommand(
-      @"DELETE FROM retainer_snapshots
-      WHERE snapshot_id NOT IN (SELECT id FROM gil_snapshots)",
+      $"DELETE FROM gil_snapshots WHERE {thinFilter}",
       _connection))
     {
+      cmd.Parameters.AddWithValue("@cutoff", thirtyDays);
       cmd.ExecuteNonQuery();
     }
 
