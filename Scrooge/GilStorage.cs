@@ -299,6 +299,33 @@ internal static class GilStorage
     return (reader.GetInt64(0), reader.GetInt64(1));
   }
 
+  /// <summary>
+  /// Returns per-snapshot player gil and (optional) retainer gil sum, ordered by timestamp ascending.
+  /// RetainerGil is null when the snapshot has no retainer_snapshots rows (e.g. zone_change captures).
+  /// Caller decides how to handle gaps (carry-forward, filter, etc.).
+  /// </summary>
+  internal static IReadOnlyList<(long Timestamp, long PlayerGil, long? RetainerGil)> GetTotalGilHistory()
+  {
+    var rows = new List<(long, long, long?)>();
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    using var cmd = new SqliteCommand(
+      @"SELECT s.timestamp, s.player_gil, SUM(r.gil) AS retainer_gil
+        FROM gil_snapshots s
+        LEFT JOIN retainer_snapshots r ON r.snapshot_id = s.id
+        GROUP BY s.id
+        ORDER BY s.timestamp ASC",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      long? retainer = reader.IsDBNull(2) ? null : reader.GetInt64(2);
+      rows.Add((reader.GetInt64(0), reader.GetInt64(1), retainer));
+    }
+    sw.Stop();
+    Svc.Log.Debug($"[GilHistory] GetTotalGilHistory returned {rows.Count} rows in {sw.ElapsedMilliseconds}ms");
+    return rows;
+  }
+
   /// <summary>Gets the N most recent retainer sales as SaleRecord objects.</summary>
   internal static List<SaleRecord> GetRecentSales(int limit)
   {
