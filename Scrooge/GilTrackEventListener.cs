@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Dalamud.Game.Addon.Lifecycle;
@@ -6,8 +7,12 @@ using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
+using ECommons;
 using ECommons.DalamudServices;
+using ECommons.ExcelServices;
+using ECommons.GameHelpers;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace Scrooge;
 
@@ -19,9 +24,29 @@ namespace Scrooge;
 /// </summary>
 internal sealed class GilTrackEventListener : IDisposable
 {
+  /// <summary>
+  /// When true, the future catch-all chat tracker should stand down.
+  /// Set by specific trackers (quest/duty/FATE) to prevent double-counting.
+  /// </summary>
+  internal bool IsBlocked { get; private set; }
+
   // MB purchase tracking — snapshot gil on open, diff on close
   private long _mbOpenGil;
   private int _mbPurchaseCount;
+
+  // Tier 1 tracker state
+  private long _questSnapshotGil;
+  private long _dutySnapshotGil;
+  private bool _inDuty;
+  private string _dutyName = "";
+  private long _fateSnapshotGil;
+
+  private static readonly HashSet<TerritoryIntendedUseEnum> DutyExclusions =
+  [
+    TerritoryIntendedUseEnum.Eureka,
+    TerritoryIntendedUseEnum.Bozja,
+    TerritoryIntendedUseEnum.Occult_Crescent,
+  ];
 
   internal GilTrackEventListener()
   {
@@ -31,10 +56,20 @@ internal sealed class GilTrackEventListener : IDisposable
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "ItemSearch", OnMarketBoardOpen);
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, "ItemSearch", OnMarketBoardClose);
     Svc.Chat.ChatMessage += OnChatMessage;
+
+    // Tier 1 capture points
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "JournalResult", OnQuestRewardSetup);
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PreFinalize, "JournalResult", OnQuestRewardFinalize);
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PreSetup, "FateReward", OnFateRewardPreSetup);
+    Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "FateReward", OnFateRewardPostSetup);
   }
 
   public void Dispose()
   {
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "FateReward", OnFateRewardPostSetup);
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreSetup, "FateReward", OnFateRewardPreSetup);
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "JournalResult", OnQuestRewardFinalize);
+    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "JournalResult", OnQuestRewardSetup);
     Svc.Chat.ChatMessage -= OnChatMessage;
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PreFinalize, "ItemSearch", OnMarketBoardClose);
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "ItemSearch", OnMarketBoardOpen);
@@ -43,9 +78,40 @@ internal sealed class GilTrackEventListener : IDisposable
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerList", OnRetainerListSetup);
   }
 
-  private void OnTerritoryChanged(ushort territoryId)
+  private unsafe void OnTerritoryChanged(ushort territoryId)
   {
     GilTracker.TakeBalanceSnapshot("zone_change");
+
+    if (!Plugin.Configuration.EnableGilTracking) return;
+
+    var cfcId = Content.ContentFinderConditionRowId;
+    var intendedUse = Content.TerritoryIntendedUse;
+    var isExcluded = intendedUse.HasValue && DutyExclusions.Contains(intendedUse.Value);
+
+    if (cfcId is > 0 && !isExcluded && !_inDuty)
+    {
+      // Entering a duty — snapshot
+      _inDuty = true;
+      _dutySnapshotGil = (long)InventoryManager.Instance()->GetGil();
+      _dutyName = Content.ContentName ?? $"Duty {cfcId}";
+      IsBlocked = true;
+      Svc.Log.Debug($"[GilTrack] Entered duty: {_dutyName} (CFC {cfcId}), snapshot {_dutySnapshotGil:N0}g");
+    }
+    else if (_inDuty && (cfcId is null or 0 || isExcluded))
+    {
+      // Leaving a duty — diff and record
+      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      var diff = currentGil - _dutySnapshotGil;
+      if (diff > 0)
+        RecordGilTransaction("earned", "duty_reward", diff, _dutyName);
+      else if (diff < 0)
+        RecordGilTransaction("spent", "duty_reward", -diff, _dutyName);
+
+      Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
+      _inDuty = false;
+      _dutyName = "";
+      IsBlocked = false;
+    }
   }
 
   private void OnLogout(int type, int code)
@@ -183,6 +249,89 @@ internal sealed class GilTrackEventListener : IDisposable
       itemId, itemName, category, quantity, unitPrice, isHq, "", "NPC");
 
     Svc.Log.Debug($"[GilTrack] {source}: {itemName} x{quantity} = {amount:N0}g");
+  }
+
+  // --- Tier 1: Quest Rewards (JournalResult addon) ---
+
+  private unsafe void OnQuestRewardSetup(AddonEvent type, AddonArgs args)
+  {
+    if (!Plugin.Configuration.EnableGilTracking) return;
+    _questSnapshotGil = (long)InventoryManager.Instance()->GetGil();
+    IsBlocked = true;
+    Svc.Log.Debug($"[GilTrack] Quest reward window opened, snapshot {_questSnapshotGil:N0}g");
+  }
+
+  private unsafe void OnQuestRewardFinalize(AddonEvent type, AddonArgs args)
+  {
+    if (!Plugin.Configuration.EnableGilTracking) return;
+
+    var questName = "";
+    try
+    {
+      var addon = (AtkUnitBase*)args.Addon.Address;
+      if (addon->AtkValues[1].Type != 0)
+        questName = addon->AtkValues[1].GetValueAsString();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning($"[GilTrack] Failed to read quest name: {ex.Message}");
+    }
+
+    var currentGil = (long)InventoryManager.Instance()->GetGil();
+    var diff = currentGil - _questSnapshotGil;
+    if (diff > 0)
+      RecordGilTransaction("earned", "quest_reward", diff, questName);
+
+    Svc.Log.Debug($"[GilTrack] Quest reward finalized: '{questName}', diff {diff:N0}g");
+    IsBlocked = false;
+  }
+
+  // --- Tier 1: FATE Rewards (FateReward addon) ---
+
+  private unsafe void OnFateRewardPreSetup(AddonEvent type, AddonArgs args)
+  {
+    if (!Plugin.Configuration.EnableGilTracking) return;
+    _fateSnapshotGil = (long)InventoryManager.Instance()->GetGil();
+    IsBlocked = true;
+    Svc.Log.Debug($"[GilTrack] FATE reward window opening, snapshot {_fateSnapshotGil:N0}g");
+  }
+
+  private unsafe void OnFateRewardPostSetup(AddonEvent type, AddonArgs args)
+  {
+    if (!Plugin.Configuration.EnableGilTracking) return;
+
+    var fateName = "";
+    try
+    {
+      var addon = (AtkUnitBase*)args.Addon.Address;
+      if (GenericHelpers.IsAddonReady(addon))
+      {
+        var textNode = addon->GetTextNodeById(6);
+        if (textNode != null)
+          fateName = textNode->NodeText.ToString();
+      }
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning($"[GilTrack] Failed to read FATE name: {ex.Message}");
+    }
+
+    var currentGil = (long)InventoryManager.Instance()->GetGil();
+    var diff = currentGil - _fateSnapshotGil;
+    if (diff > 0)
+      RecordGilTransaction("earned", "fate_reward", diff, fateName);
+
+    Svc.Log.Debug($"[GilTrack] FATE reward: '{fateName}', diff {diff:N0}g");
+    IsBlocked = false;
+  }
+
+  // --- Shared helpers ---
+
+  private static void RecordGilTransaction(string direction, string source, long amount, string name)
+  {
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    GilStorage.InsertTransaction(now, direction, source, amount,
+      0, name, "", 1, (int)amount, false, "", "");
   }
 
   /// <summary>
