@@ -359,6 +359,81 @@ internal static class GilStorage
   }
 
   /// <summary>
+  /// Returns all transactions with optional direction/source filters, most recent first.
+  /// </summary>
+  internal static List<TransactionRecord> GetTransactions(string? direction = null, string? source = null,
+      long? since = null, int limit = -1, int offset = 0)
+  {
+    var results = new List<TransactionRecord>();
+    var where = BuildTransactionWhere(direction, source, since);
+    var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+    var limitClause = limit > 0 ? $"LIMIT {limit} OFFSET {offset}" : "";
+
+    using var cmd = new SqliteCommand(
+      $@"SELECT timestamp, direction, source, amount, item_name, quantity, unit_price
+         FROM transactions {whereClause}
+         ORDER BY timestamp DESC
+         {limitClause}",
+      _connection);
+    AddTransactionParams(cmd, direction, source, since);
+
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      results.Add(new TransactionRecord
+      {
+        Timestamp = reader.GetInt64(0),
+        Direction = reader.GetString(1),
+        Source = reader.GetString(2),
+        Amount = reader.GetInt64(3),
+        ItemName = reader.GetString(4),
+        Quantity = reader.GetInt32(5),
+        UnitPrice = reader.GetInt32(6),
+      });
+    }
+    return results;
+  }
+
+  /// <summary>Returns total count of transactions matching the given filters.</summary>
+  internal static int GetTransactionCount(string? direction = null, string? source = null, long? since = null)
+  {
+    var where = BuildTransactionWhere(direction, source, since);
+    var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+
+    using var cmd = new SqliteCommand(
+      $"SELECT COUNT(*) FROM transactions {whereClause}", _connection);
+    AddTransactionParams(cmd, direction, source, since);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+  }
+
+  private static List<string> BuildTransactionWhere(string? direction, string? source, long? since)
+  {
+    var where = new List<string>();
+    if (direction != null) where.Add("direction = @dir");
+    if (source != null) where.Add("source = @src");
+    if (since != null) where.Add("timestamp >= @since");
+    return where;
+  }
+
+  private static void AddTransactionParams(SqliteCommand cmd, string? direction, string? source, long? since)
+  {
+    if (direction != null) cmd.Parameters.AddWithValue("@dir", direction);
+    if (source != null) cmd.Parameters.AddWithValue("@src", source);
+    if (since != null) cmd.Parameters.AddWithValue("@since", since.Value);
+  }
+
+  /// <summary>Returns distinct source values from the transactions table.</summary>
+  internal static List<string> GetDistinctSources()
+  {
+    var sources = new List<string>();
+    using var cmd = new SqliteCommand("SELECT DISTINCT source FROM transactions ORDER BY source", _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      sources.Add(reader.GetString(0));
+    return sources;
+  }
+
+  /// <summary>
   /// Gets sales grouped by macro_group, display_group, and raw ui_category
   /// for the 3-level category tree in the Gil Dashboard.
   /// </summary>

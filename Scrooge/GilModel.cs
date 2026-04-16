@@ -25,6 +25,23 @@ public record SaleRecord
 }
 
 /// <summary>
+/// A unified gil movement record from the transactions table.
+/// Covers all sources: retainer sales, vendor sales, NPC buy/sell, teleport,
+/// quest/duty/FATE rewards, MB purchases, etc.
+/// </summary>
+public record TransactionRecord
+{
+  public long Timestamp { get; init; }
+  public string Direction { get; init; } = string.Empty;
+  public string Source { get; init; } = string.Empty;
+  public long Amount { get; init; }
+  public string ItemName { get; init; } = string.Empty;
+  public int Quantity { get; init; }
+  public int UnitPrice { get; init; }
+  public DateTime LocalTime => DateTimeOffset.FromUnixTimeSeconds(Timestamp).LocalDateTime;
+}
+
+/// <summary>
 /// A listing snapshot captured during a pinch run.
 /// Tracks time-on-market via FirstSeenTimestamp.
 /// </summary>

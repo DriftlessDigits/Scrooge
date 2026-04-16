@@ -47,6 +47,19 @@ internal sealed class GilWindow: Window
   private bool _historyShowBreakdown;
   private const int HistoryTickCount = 6;
 
+  // Transactions tab
+  private List<TransactionRecord>? _cachedTransactions;
+  private List<string>? _cachedSources;
+  private int _txnDirectionFilter; // 0=All, 1=Earned, 2=Spent
+  private int _txnSourceFilter;    // 0=All, 1+=source index
+  private int _prevDirectionFilter = -1;
+  private int _prevSourceFilter = -1;
+  private int _txnPage;
+  private int _txnTotalCount;
+  private int _txnTimeFilter; // 0=7d, 1=30d, 2=90d, 3=All
+  private int _prevTimeFilter = -1;
+  private const int TxnPageSize = 25;
+
   public override void Draw()
   {
     // --- Portfolio Summary ---
@@ -102,6 +115,12 @@ internal sealed class GilWindow: Window
       if (ImGui.BeginTabItem("Gil History"))
       {
         DrawGilHistoryTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Transactions"))
+      {
+        DrawTransactionsTab();
         ImGui.EndTabItem();
       }
 
@@ -560,6 +579,140 @@ internal sealed class GilWindow: Window
     {
       ImGui.TextDisabled("No slow movers — everything is moving!");
     }
+  }
+
+  private void DrawTransactionsTab()
+  {
+    // Source list — refresh once
+    _cachedSources ??= GilStorage.GetDistinctSources();
+
+    // Filters
+    var directionLabels = new[] { "All", "Earned", "Spent" };
+    ImGui.SetNextItemWidth(100);
+    ImGui.Combo("##Direction", ref _txnDirectionFilter, directionLabels, directionLabels.Length);
+    ImGui.SameLine();
+
+    var sourceLabels = new string[_cachedSources.Count + 1];
+    sourceLabels[0] = "All Sources";
+    for (int i = 0; i < _cachedSources.Count; i++)
+      sourceLabels[i + 1] = FormatSourceLabel(_cachedSources[i]);
+    ImGui.SetNextItemWidth(150);
+    ImGui.Combo("##Source", ref _txnSourceFilter, sourceLabels, sourceLabels.Length);
+    ImGui.SameLine();
+
+    var timeLabels = new[] { "7 days", "30 days", "90 days", "All time" };
+    ImGui.SetNextItemWidth(100);
+    ImGui.Combo("##Time", ref _txnTimeFilter, timeLabels, timeLabels.Length);
+
+    // Reset page on filter change
+    if (_txnDirectionFilter != _prevDirectionFilter
+        || _txnSourceFilter != _prevSourceFilter
+        || _txnTimeFilter != _prevTimeFilter)
+    {
+      _txnPage = 0;
+      _cachedTransactions = null;
+    }
+
+    // Refresh on filter change or page change
+    if (_cachedTransactions == null)
+    {
+      var dir = _txnDirectionFilter switch { 1 => "earned", 2 => "spent", _ => null };
+      var src = _txnSourceFilter > 0 ? _cachedSources[_txnSourceFilter - 1] : null;
+      long? since = _txnTimeFilter switch
+      {
+        0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+        1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+        2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+        _ => null,
+      };
+      _txnTotalCount = GilStorage.GetTransactionCount(dir, src, since);
+      _cachedTransactions = GilStorage.GetTransactions(dir, src, since, TxnPageSize, _txnPage * TxnPageSize);
+      _prevDirectionFilter = _txnDirectionFilter;
+      _prevSourceFilter = _txnSourceFilter;
+      _prevTimeFilter = _txnTimeFilter;
+    }
+
+    if (_cachedTransactions.Count == 0)
+    {
+      ImGui.TextDisabled("No transactions found.");
+      return;
+    }
+
+    var culture = System.Globalization.CultureInfo.CurrentCulture;
+    var tableHeight = ImGui.GetContentRegionAvail().Y - 30; // leave room for pagination row
+    if (ImGui.BeginTable("Transactions", 5,
+        ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable | ImGuiTableFlags.ScrollY,
+        new Vector2(-1, tableHeight)))
+    {
+      ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 110);
+      ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.None, 150);
+      ImGui.TableSetupColumn("Amount", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.None, 40);
+      ImGui.TableSetupScrollFreeze(0, 1);
+      ImGui.TableHeadersRow();
+
+      var (col, asc) = GetSortSpec();
+      var sorted = col switch
+      {
+        1 => Order(_cachedTransactions, t => t.Source, asc),
+        2 => Order(_cachedTransactions, t => t.ItemName, asc),
+        3 => Order(_cachedTransactions, t => t.Amount, asc),
+        4 => Order(_cachedTransactions, t => t.Quantity, asc),
+        _ => Order(_cachedTransactions, t => t.Timestamp, asc),
+      };
+
+      foreach (var txn in sorted)
+      {
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        ImGui.Text(txn.LocalTime.ToString("g", culture));
+        ImGui.TableNextColumn();
+        ImGui.Text(FormatSourceLabel(txn.Source));
+        ImGui.TableNextColumn();
+        var name = string.IsNullOrEmpty(txn.ItemName) ? "—" : txn.ItemName;
+        ImGui.Text(name);
+        ImGui.TableNextColumn();
+        var sign = txn.Direction == "earned" ? "+" : "-";
+        var color = txn.Direction == "earned"
+          ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
+          : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
+        ImGui.TextColored(color, $"{sign}{txn.Amount:N0}");
+        ImGui.TableNextColumn();
+        ImGui.Text(txn.Quantity > 1 ? $"x{txn.Quantity}" : "");
+      }
+
+      ImGui.EndTable();
+    }
+
+    var totalPages = Math.Max(1, (_txnTotalCount + TxnPageSize - 1) / TxnPageSize);
+    if (ImGui.ArrowButton("##TxnPrev", ImGuiDir.Left) && _txnPage > 0)
+    { _txnPage--; _cachedTransactions = null; }
+    ImGui.SameLine();
+    ImGui.Text($"Page {_txnPage + 1} of {totalPages}");
+    ImGui.SameLine();
+    if (ImGui.ArrowButton("##TxnNext", ImGuiDir.Right) && _txnPage < totalPages - 1)
+    { _txnPage++; _cachedTransactions = null; }
+    ImGui.SameLine();
+    ImGui.TextDisabled($"({_txnTotalCount:N0} total)");
+  }
+
+  private static string FormatSourceLabel(string source)
+  {
+    return source switch
+    {
+      "retainer_sale" => "Retainer Sale",
+      "vendor_sale" => "Vendor Sale",
+      "npc_purchase" => "NPC Purchase",
+      "npc_sale" => "NPC Sale",
+      "npc_buyback" => "NPC Buyback",
+      "mb_purchase" => "MB Purchase",
+      "teleport" => "Teleport",
+      "quest_reward" => "Quest Reward",
+      "duty_reward" => "Duty Reward",
+      "fate_reward" => "FATE Reward",
+      _ => source,
+    };
   }
 
   private static string FormatAge(long unixTimestamp)
