@@ -82,6 +82,15 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     GilTracker.TakeBalanceSnapshot("zone_change");
 
+    // Debug: log untracked gap between the last two snapshots
+    var gap = GilStorage.GetLatestSnapshotGap();
+    if (gap.HasValue && gap.Value.Untracked != 0)
+    {
+      Svc.Log.Debug(
+        $"[GilTrack] Untracked change: {gap.Value.Untracked:N0}g " +
+        $"(snapshot diff: {gap.Value.SnapshotDiff:N0}g, tracked net: {gap.Value.TrackedNet:N0}g)");
+    }
+
     if (!Plugin.Configuration.EnableGilTracking) return;
 
     var cfcId = Content.ContentFinderConditionRowId;

@@ -490,6 +490,125 @@ internal static class GilStorage
     return daily;
   }
 
+  /// <summary>
+  /// Computes untracked gil changes over a time range. Compares total snapshot diffs
+  /// against sum of tracked transactions. The gap is what we can't account for.
+  /// Returns (earned untracked, spent untracked) — both positive values.
+  /// </summary>
+  internal static (long UntrackedEarned, long UntrackedSpent) GetUntrackedDeltas(long? since = null)
+  {
+    var whereClause = since.HasValue ? "WHERE timestamp >= @since" : "";
+
+    // Get first and last snapshots in the range (player_gil + retainer carry-forward)
+    var history = GetTotalGilHistory();
+    if (history.Count < 2) return (0, 0);
+
+    // Find range boundaries
+    int startIdx = 0;
+    if (since.HasValue)
+    {
+      for (int i = 0; i < history.Count; i++)
+        if (history[i].Timestamp >= since.Value) { startIdx = i; break; }
+    }
+
+    // Walk through with carry-forward to get first and last total
+    long lastRetainer = 0;
+    bool hasRetainer = false;
+    long firstTotal = 0, lastTotal = 0;
+    bool firstSet = false;
+
+    for (int i = 0; i < history.Count; i++)
+    {
+      if (history[i].RetainerGil.HasValue)
+      {
+        lastRetainer = history[i].RetainerGil!.Value;
+        hasRetainer = true;
+      }
+      if (!hasRetainer) continue;
+
+      var total = history[i].PlayerGil + lastRetainer;
+      if (i >= startIdx && !firstSet) { firstTotal = total; firstSet = true; }
+      lastTotal = total;
+    }
+
+    if (!firstSet) return (0, 0);
+    var snapshotDelta = lastTotal - firstTotal;
+
+    // Sum tracked transactions in the range
+    using var cmd = new SqliteCommand(
+      $@"SELECT
+           COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
+         FROM transactions {whereClause}",
+      _connection);
+    if (since.HasValue) cmd.Parameters.AddWithValue("@since", since.Value);
+    using var reader = cmd.ExecuteReader();
+    reader.Read();
+    var trackedEarned = reader.GetInt64(0);
+    var trackedSpent = reader.GetInt64(1);
+
+    var trackedNet = trackedEarned - trackedSpent;
+    var untracked = snapshotDelta - trackedNet;
+
+    if (untracked > 0)
+      return (untracked, 0);
+    if (untracked < 0)
+      return (0, -untracked);
+    return (0, 0);
+  }
+
+  /// <summary>
+  /// Computes untracked delta between the two most recent snapshots.
+  /// Used for debug logging on zone change.
+  /// </summary>
+  internal static (long SnapshotDiff, long TrackedNet, long Untracked)? GetLatestSnapshotGap()
+  {
+    var history = GetTotalGilHistory();
+    if (history.Count < 2) return null;
+
+    // Find the last two snapshots with retainer data (carry-forward)
+    long lastRetainer = 0;
+    bool hasRetainer = false;
+    long prevTotal = 0, currentTotal = 0;
+    long prevTs = 0;
+
+    for (int i = 0; i < history.Count; i++)
+    {
+      if (history[i].RetainerGil.HasValue)
+      {
+        lastRetainer = history[i].RetainerGil!.Value;
+        hasRetainer = true;
+      }
+      if (!hasRetainer) continue;
+
+      prevTotal = currentTotal;
+      prevTs = i > 0 ? history[i - 1].Timestamp : history[i].Timestamp;
+      currentTotal = history[i].PlayerGil + lastRetainer;
+    }
+
+    if (prevTotal == 0) return null;
+    var snapshotDiff = currentTotal - prevTotal;
+    if (snapshotDiff == 0) return null;
+
+    // Sum tracked transactions between the two most recent snapshots
+    var lastTs = history[history.Count - 1].Timestamp;
+    var secondLastTs = history[history.Count - 2].Timestamp;
+
+    using var cmd = new SqliteCommand(
+      @"SELECT
+          COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0) -
+          COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
+        FROM transactions WHERE timestamp >= @from AND timestamp <= @to",
+      _connection);
+    cmd.Parameters.AddWithValue("@from", secondLastTs);
+    cmd.Parameters.AddWithValue("@to", lastTs);
+    using var reader = cmd.ExecuteReader();
+    reader.Read();
+    var trackedNet = reader.GetInt64(0);
+
+    return (snapshotDiff, trackedNet, snapshotDiff - trackedNet);
+  }
+
   /// <summary>Returns the timestamp of the earliest transaction, or null if none exist.</summary>
   internal static long? GetEarliestTransactionTimestamp()
   {

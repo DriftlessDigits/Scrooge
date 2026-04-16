@@ -793,6 +793,14 @@ internal sealed class GilWindow: Window
         _ => null,
       };
       _cachedEarnedVsSpent = GilStorage.GetEarnedVsSpent(since);
+
+      // Append "Other" rows from untracked deltas
+      var (untrackedEarned, untrackedSpent) = GilStorage.GetUntrackedDeltas(since);
+      if (untrackedEarned > 0)
+        _cachedEarnedVsSpent.Add(("earned", "other", untrackedEarned, 0));
+      if (untrackedSpent > 0)
+        _cachedEarnedVsSpent.Add(("spent", "other", untrackedSpent, 0));
+
       _prevEvsTimeFilter = _evsTimeFilter;
     }
 
@@ -906,6 +914,7 @@ internal sealed class GilWindow: Window
       "quest_reward" => "Quest Reward",
       "duty_reward" => "Duty Reward",
       "fate_reward" => "FATE Reward",
+      "other" => "Other (untracked)",
       _ => source,
     };
   }
