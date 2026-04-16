@@ -65,6 +65,10 @@ internal sealed class GilWindow: Window
   private int _evsTimeFilter;  // 0=7d, 1=30d, 2=90d, 3=All
   private int _prevEvsTimeFilter = -1;
 
+  // Daily Change
+  private List<(string Date, long TotalGil, long Delta)>? _cachedDaily;
+  private DateTime _dailyLastRefresh = DateTime.MinValue;
+
   public override void Draw()
   {
     // --- Portfolio Summary ---
@@ -123,6 +127,12 @@ internal sealed class GilWindow: Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Daily"))
+      {
+        DrawDailyChangeTab();
+        ImGui.EndTabItem();
+      }
+
       if (ImGui.BeginTabItem("Transactions"))
       {
         DrawTransactionsTab();
@@ -168,6 +178,57 @@ internal sealed class GilWindow: Window
 
     var refreshLabel = _historyLastRefresh.ToString("t", System.Globalization.CultureInfo.CurrentCulture);
     ImGui.TextDisabled($"{_historyX.Length} snapshots plotted. Last refresh: {refreshLabel}");
+  }
+
+  private void DrawDailyChangeTab()
+  {
+    if (_cachedDaily == null || DateTime.Now - _dailyLastRefresh > TimeSpan.FromSeconds(30))
+    {
+      _cachedDaily = GilStorage.GetDailyChanges();
+      _dailyLastRefresh = DateTime.Now;
+    }
+    var daily = _cachedDaily;
+    if (daily.Count == 0)
+    {
+      ImGui.TextDisabled("Not enough data for daily view.");
+      return;
+    }
+
+    var culture = System.Globalization.CultureInfo.CurrentCulture;
+    var tableHeight = ImGui.GetContentRegionAvail().Y;
+    if (ImGui.BeginTable("DailyChange", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.ScrollY,
+        new Vector2(-1, tableHeight)))
+    {
+      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.None, 120);
+      ImGui.TableSetupColumn("Change", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupScrollFreeze(0, 1);
+      ImGui.TableHeadersRow();
+
+      for (int i = daily.Count - 1; i >= 0; i--)
+      {
+        var (date, total, delta) = daily[i];
+        var dt = DateTime.Parse(date);
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn(); ImGui.Text(dt.ToString("d", culture));
+        ImGui.TableNextColumn(); ImGui.Text($"{total:N0}");
+        ImGui.TableNextColumn();
+        if (i == 0)
+        {
+          ImGui.TextDisabled("—");
+        }
+        else
+        {
+          var sign = delta >= 0 ? "+" : "";
+          var color = delta >= 0
+            ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
+            : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
+          ImGui.TextColored(color, $"{sign}{delta:N0}");
+        }
+      }
+
+      ImGui.EndTable();
+    }
   }
 
   private void DrawSinglePlot(string id, string title, double[] y, long[] raw, string yFormat, float height)

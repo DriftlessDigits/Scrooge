@@ -322,7 +322,7 @@ internal static class GilStorage
       rows.Add((reader.GetInt64(0), reader.GetInt64(1), retainer));
     }
     sw.Stop();
-    Svc.Log.Debug($"[GilHistory] GetTotalGilHistory returned {rows.Count} rows in {sw.ElapsedMilliseconds}ms");
+    Svc.Log.Verbose($"[GilHistory] GetTotalGilHistory returned {rows.Count} rows in {sw.ElapsedMilliseconds}ms");
     return rows;
   }
 
@@ -443,6 +443,51 @@ internal static class GilStorage
     while (reader.Read())
       results.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3)));
     return results;
+  }
+
+  /// <summary>
+  /// Returns daily gil totals (player + retainers) from the last snapshot of each day.
+  /// Retainer balances carried forward from the most recent snapshot that has them.
+  /// </summary>
+  internal static List<(string Date, long TotalGil, long Delta)> GetDailyChanges()
+  {
+    var rows = GetTotalGilHistory();
+    var daily = new List<(string Date, long TotalGil, long Delta)>();
+    if (rows.Count == 0) return daily;
+
+    // Walk through snapshots, carry forward retainer balance, track last total per day
+    int firstWithRetainer = -1;
+    for (int i = 0; i < rows.Count; i++)
+      if (rows[i].RetainerGil.HasValue) { firstWithRetainer = i; break; }
+    if (firstWithRetainer < 0) return daily;
+
+    long lastRetainer = rows[firstWithRetainer].RetainerGil!.Value;
+    string? currentDay = null;
+    long dayTotal = 0;
+
+    for (int i = firstWithRetainer; i < rows.Count; i++)
+    {
+      var r = rows[i];
+      if (r.RetainerGil.HasValue) lastRetainer = r.RetainerGil.Value;
+      var total = r.PlayerGil + lastRetainer;
+      var day = DateTimeOffset.FromUnixTimeSeconds(r.Timestamp).LocalDateTime.ToString("yyyy-MM-dd");
+
+      if (day != currentDay)
+      {
+        if (currentDay != null)
+          daily.Add((currentDay, dayTotal, 0));
+        currentDay = day;
+      }
+      dayTotal = total;
+    }
+    if (currentDay != null)
+      daily.Add((currentDay, dayTotal, 0));
+
+    // Compute deltas
+    for (int i = daily.Count - 1; i > 0; i--)
+      daily[i] = (daily[i].Date, daily[i].TotalGil, daily[i].TotalGil - daily[i - 1].TotalGil);
+
+    return daily;
   }
 
   /// <summary>Returns the timestamp of the earliest transaction, or null if none exist.</summary>
