@@ -60,6 +60,11 @@ internal sealed class GilWindow: Window
   private int _prevTimeFilter = -1;
   private const int TxnPageSize = 25;
 
+  // Earned vs Spent
+  private List<(string Direction, string Source, long Total, int Count)>? _cachedEarnedVsSpent;
+  private int _evsTimeFilter;  // 0=7d, 1=30d, 2=90d, 3=All
+  private int _prevEvsTimeFilter = -1;
+
   public override void Draw()
   {
     // --- Portfolio Summary ---
@@ -121,6 +126,12 @@ internal sealed class GilWindow: Window
       if (ImGui.BeginTabItem("Transactions"))
       {
         DrawTransactionsTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Earned vs Spent"))
+      {
+        DrawEarnedVsSpentTab();
         ImGui.EndTabItem();
       }
 
@@ -685,6 +696,14 @@ internal sealed class GilWindow: Window
       ImGui.EndTable();
     }
 
+    DrawDataRangeDisclaimer(_txnTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    });
+
     var totalPages = Math.Max(1, (_txnTotalCount + TxnPageSize - 1) / TxnPageSize);
     if (ImGui.ArrowButton("##TxnPrev", ImGuiDir.Left) && _txnPage > 0)
     { _txnPage--; _cachedTransactions = null; }
@@ -695,6 +714,121 @@ internal sealed class GilWindow: Window
     { _txnPage++; _cachedTransactions = null; }
     ImGui.SameLine();
     ImGui.TextDisabled($"({_txnTotalCount:N0} total)");
+  }
+
+  private void DrawEarnedVsSpentTab()
+  {
+    var timeLabels = new[] { "7 days", "30 days", "90 days", "All time" };
+    ImGui.SetNextItemWidth(120);
+    ImGui.Combo("##EvsTime", ref _evsTimeFilter, timeLabels, timeLabels.Length);
+
+    if (_evsTimeFilter != _prevEvsTimeFilter || _cachedEarnedVsSpent == null)
+    {
+      long? since = _evsTimeFilter switch
+      {
+        0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+        1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+        2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+        _ => null,
+      };
+      _cachedEarnedVsSpent = GilStorage.GetEarnedVsSpent(since);
+      _prevEvsTimeFilter = _evsTimeFilter;
+    }
+
+    DrawEarnedVsSpentContent(_cachedEarnedVsSpent);
+    ImGui.Spacing();
+    DrawDataRangeDisclaimer(_evsTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    });
+  }
+
+  private void DrawEarnedVsSpentSection()
+  {
+    long? since = _evsTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    };
+    var data = GilStorage.GetEarnedVsSpent(since);
+    DrawEarnedVsSpentContent(data);
+  }
+
+  private static void DrawEarnedVsSpentContent(List<(string Direction, string Source, long Total, int Count)> data)
+  {
+    if (data.Count == 0)
+    {
+      ImGui.TextDisabled("No transaction data yet.");
+      return;
+    }
+
+    var earned = data.Where(d => d.Direction == "earned").ToList();
+    var spent = data.Where(d => d.Direction == "spent").ToList();
+    var totalEarned = earned.Sum(e => e.Total);
+    var totalSpent = spent.Sum(s => s.Total);
+    var net = totalEarned - totalSpent;
+
+    var netColor = net >= 0
+      ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
+      : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
+    var netSign = net >= 0 ? "+" : "";
+
+    ImGui.Spacing();
+    ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"Earned: {totalEarned:N0}");
+    ImGui.SameLine(200);
+    ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), $"Spent: {totalSpent:N0}");
+    ImGui.SameLine(400);
+    ImGui.TextColored(netColor, $"Net: {netSign}{net:N0}");
+    ImGui.Separator();
+
+    if (earned.Count > 0)
+    {
+      ImGui.Spacing();
+      ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), "Income");
+      if (ImGui.BeginTable("EvsEarned", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      {
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 120);
+        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableHeadersRow();
+
+        foreach (var row in earned)
+        {
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn(); ImGui.Text(FormatSourceLabel(row.Source));
+          ImGui.TableNextColumn(); ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"+{row.Total:N0}");
+          ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
+        }
+        ImGui.EndTable();
+      }
+    }
+
+    if (spent.Count > 0)
+    {
+      ImGui.Spacing();
+      ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), "Expenses");
+      if (ImGui.BeginTable("EvsSpent", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      {
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 120);
+        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableHeadersRow();
+
+        foreach (var row in spent)
+        {
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn(); ImGui.Text(FormatSourceLabel(row.Source));
+          ImGui.TableNextColumn(); ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), $"-{row.Total:N0}");
+          ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
+        }
+        ImGui.EndTable();
+      }
+    }
   }
 
   private static string FormatSourceLabel(string source)
@@ -713,6 +847,21 @@ internal sealed class GilWindow: Window
       "fate_reward" => "FATE Reward",
       _ => source,
     };
+  }
+
+  private static void DrawDataRangeDisclaimer(long? since)
+  {
+    var earliest = GilStorage.GetEarliestTransactionTimestamp();
+    if (!earliest.HasValue) return;
+
+    // Show disclaimer when "All time" is selected or when the time window
+    // extends before the earliest data we have.
+    if (since == null || since.Value < earliest.Value)
+    {
+      var from = DateTimeOffset.FromUnixTimeSeconds(earliest.Value).LocalDateTime;
+      var days = (int)((DateTimeOffset.UtcNow.ToUnixTimeSeconds() - earliest.Value) / 86400);
+      ImGui.TextDisabled($"Data only available from {from.ToString("d", System.Globalization.CultureInfo.CurrentCulture)} ({days} days)");
+    }
   }
 
   private static string FormatAge(long unixTimestamp)

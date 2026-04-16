@@ -422,6 +422,38 @@ internal static class GilStorage
     if (since != null) cmd.Parameters.AddWithValue("@since", since.Value);
   }
 
+  /// <summary>
+  /// Returns earned/spent totals grouped by source for a given time range.
+  /// </summary>
+  internal static List<(string Direction, string Source, long Total, int Count)>
+      GetEarnedVsSpent(long? since = null)
+  {
+    var results = new List<(string, string, long, int)>();
+    var whereClause = since.HasValue ? "WHERE timestamp >= @since" : "";
+
+    using var cmd = new SqliteCommand(
+      $@"SELECT direction, source, SUM(amount) AS total, COUNT(*) AS cnt
+         FROM transactions {whereClause}
+         GROUP BY direction, source
+         ORDER BY direction, total DESC",
+      _connection);
+    if (since.HasValue) cmd.Parameters.AddWithValue("@since", since.Value);
+
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      results.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3)));
+    return results;
+  }
+
+  /// <summary>Returns the timestamp of the earliest transaction, or null if none exist.</summary>
+  internal static long? GetEarliestTransactionTimestamp()
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT MIN(timestamp) FROM transactions", _connection);
+    var result = cmd.ExecuteScalar();
+    return result is DBNull or null ? null : (long)result;
+  }
+
   /// <summary>Returns distinct source values from the transactions table.</summary>
   internal static List<string> GetDistinctSources()
   {
