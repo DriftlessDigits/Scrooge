@@ -497,8 +497,6 @@ internal static class GilStorage
   /// </summary>
   internal static (long UntrackedEarned, long UntrackedSpent) GetUntrackedDeltas(long? since = null)
   {
-    var whereClause = since.HasValue ? "WHERE timestamp >= @since" : "";
-
     // Get first and last snapshots in the range (player_gil + retainer carry-forward)
     var history = GetTotalGilHistory();
     if (history.Count < 2) return (0, 0);
@@ -515,6 +513,7 @@ internal static class GilStorage
     long lastRetainer = 0;
     bool hasRetainer = false;
     long firstTotal = 0, lastTotal = 0;
+    long firstTotalTs = 0;
     bool firstSet = false;
 
     for (int i = 0; i < history.Count; i++)
@@ -527,21 +526,28 @@ internal static class GilStorage
       if (!hasRetainer) continue;
 
       var total = history[i].PlayerGil + lastRetainer;
-      if (i >= startIdx && !firstSet) { firstTotal = total; firstSet = true; }
+      if (i >= startIdx && !firstSet)
+      {
+        firstTotal = total;
+        firstTotalTs = history[i].Timestamp;
+        firstSet = true;
+      }
       lastTotal = total;
     }
 
     if (!firstSet) return (0, 0);
     var snapshotDelta = lastTotal - firstTotal;
 
-    // Sum tracked transactions in the range
+    // Sum tracked transactions within the snapshot window only.
+    // Using the user's `since` would include transactions before the first snapshot,
+    // whose gil is already baked into firstTotal — causing phantom untracked spend.
     using var cmd = new SqliteCommand(
-      $@"SELECT
+      @"SELECT
            COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0),
            COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
-         FROM transactions {whereClause}",
+         FROM transactions WHERE timestamp >= @since",
       _connection);
-    if (since.HasValue) cmd.Parameters.AddWithValue("@since", since.Value);
+    cmd.Parameters.AddWithValue("@since", firstTotalTs);
     using var reader = cmd.ExecuteReader();
     reader.Read();
     var trackedEarned = reader.GetInt64(0);

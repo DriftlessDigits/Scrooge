@@ -711,7 +711,17 @@ internal sealed class GilWindow: Window
     }
 
     var culture = System.Globalization.CultureInfo.CurrentCulture;
-    var tableHeight = ImGui.GetContentRegionAvail().Y - 30; // leave room for pagination row
+    long? sinceForDisclaimer = _txnTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    };
+    var earliest = GilStorage.GetEarliestTransactionTimestamp();
+    var showDisclaimer = HasDataRangeDisclaimer(sinceForDisclaimer, earliest);
+    var reservedHeight = showDisclaimer ? 50f : 30f;
+    var tableHeight = ImGui.GetContentRegionAvail().Y - reservedHeight;
     if (ImGui.BeginTable("Transactions", 5,
         ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable | ImGuiTableFlags.ScrollY,
         new Vector2(-1, tableHeight)))
@@ -757,22 +767,20 @@ internal sealed class GilWindow: Window
       ImGui.EndTable();
     }
 
-    DrawDataRangeDisclaimer(_txnTimeFilter switch
-    {
-      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
-      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
-      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
-      _ => null,
-    });
+    DrawDataRangeDisclaimer(sinceForDisclaimer, earliest);
 
     var totalPages = Math.Max(1, (_txnTotalCount + TxnPageSize - 1) / TxnPageSize);
-    if (ImGui.ArrowButton("##TxnPrev", ImGuiDir.Left) && _txnPage > 0)
+    ImGui.BeginDisabled(_txnPage <= 0);
+    if (ImGui.ArrowButton("##TxnPrev", ImGuiDir.Left))
     { _txnPage--; _cachedTransactions = null; }
+    ImGui.EndDisabled();
     ImGui.SameLine();
     ImGui.Text($"Page {_txnPage + 1} of {totalPages}");
     ImGui.SameLine();
-    if (ImGui.ArrowButton("##TxnNext", ImGuiDir.Right) && _txnPage < totalPages - 1)
+    ImGui.BeginDisabled(_txnPage >= totalPages - 1);
+    if (ImGui.ArrowButton("##TxnNext", ImGuiDir.Right))
     { _txnPage++; _cachedTransactions = null; }
+    ImGui.EndDisabled();
     ImGui.SameLine();
     ImGui.TextDisabled($"({_txnTotalCount:N0} total)");
   }
@@ -806,13 +814,14 @@ internal sealed class GilWindow: Window
 
     DrawEarnedVsSpentContent(_cachedEarnedVsSpent);
     ImGui.Spacing();
-    DrawDataRangeDisclaimer(_evsTimeFilter switch
+    long? sinceForDisclaimer = _evsTimeFilter switch
     {
       0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
       1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
       2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
       _ => null,
-    });
+    };
+    DrawDataRangeDisclaimer(sinceForDisclaimer, GilStorage.GetEarliestTransactionTimestamp());
   }
 
   private void DrawEarnedVsSpentSection()
@@ -919,19 +928,16 @@ internal sealed class GilWindow: Window
     };
   }
 
-  private static void DrawDataRangeDisclaimer(long? since)
-  {
-    var earliest = GilStorage.GetEarliestTransactionTimestamp();
-    if (!earliest.HasValue) return;
+  private static bool HasDataRangeDisclaimer(long? since, long? earliest)
+    => earliest.HasValue && (since == null || since.Value < earliest.Value);
 
-    // Show disclaimer when "All time" is selected or when the time window
-    // extends before the earliest data we have.
-    if (since == null || since.Value < earliest.Value)
-    {
-      var from = DateTimeOffset.FromUnixTimeSeconds(earliest.Value).LocalDateTime;
-      var days = (int)((DateTimeOffset.UtcNow.ToUnixTimeSeconds() - earliest.Value) / 86400);
-      ImGui.TextDisabled($"Data only available from {from.ToString("d", System.Globalization.CultureInfo.CurrentCulture)} ({days} days)");
-    }
+  private static void DrawDataRangeDisclaimer(long? since, long? earliest)
+  {
+    if (!HasDataRangeDisclaimer(since, earliest)) return;
+
+    var from = DateTimeOffset.FromUnixTimeSeconds(earliest!.Value).LocalDateTime;
+    var days = (int)((DateTimeOffset.UtcNow.ToUnixTimeSeconds() - earliest.Value) / 86400);
+    ImGui.TextDisabled($"Data only available from {from.ToString("d", System.Globalization.CultureInfo.CurrentCulture)} ({days} days)");
   }
 
   private static string FormatAge(long unixTimestamp)
