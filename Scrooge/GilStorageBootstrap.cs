@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 4;
+  private const int CurrentSchemaVersion = 7;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -60,6 +60,12 @@ internal class GilStorageBootstrap
     {
       MigrateV6(connection);
       SetSchemaVersion(connection, 6);
+    }
+
+    if (version < 7)
+    {
+      MigrateV7(connection);
+      SetSchemaVersion(connection, 7);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -638,6 +644,25 @@ internal class GilStorageBootstrap
     fixLsp.ExecuteNonQuery();
 
     Svc.Log.Info($"[GilTrack] V6 migration: fixed {affected} retainer_sale amounts (UnitPrice was total, not per-unit)");
+  }
+
+  /// <summary>
+  /// V7: Add is_pending column to transactions. Rows from chat-parsed retainer sale
+  /// messages insert with is_pending = 1 and get promoted to 0 when the RetainerHistoryHook
+  /// later reconciles them with authoritative server data (retainer name, buyer, real
+  /// timestamp). Partial index keeps the promotion lookup fast without indexing the common case.
+  /// </summary>
+  private static void MigrateV7(SqliteConnection connection)
+  {
+    using var addCol = new SqliteCommand(
+      "ALTER TABLE transactions ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0",
+      connection);
+    addCol.ExecuteNonQuery();
+
+    using var addIdx = new SqliteCommand(
+      "CREATE INDEX IF NOT EXISTS idx_txn_pending ON transactions(is_pending, item_id, quantity, amount) WHERE is_pending = 1",
+      connection);
+    addIdx.ExecuteNonQuery();
   }
 
   // =========================================================================

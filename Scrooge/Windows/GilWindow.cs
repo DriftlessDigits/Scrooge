@@ -408,6 +408,13 @@ internal sealed class GilWindow: Window
 
   private static void DrawSalesTab()
   {
+    var pendingCount = GilStorage.GetPendingSaleCount();
+    if (pendingCount > 0)
+    {
+      ImGui.TextDisabled($"{pendingCount} pending — visit a summoning bell to confirm retainer/buyer details.");
+      ImGui.Spacing();
+    }
+
     var recentSales = GilStorage.GetRecentSales(20);
 
     if (recentSales.Count > 0)
@@ -434,11 +441,16 @@ internal sealed class GilWindow: Window
         foreach (var sale in recentSales)
         {
           ImGui.TableNextRow();
-          ImGui.TableNextColumn(); ImGui.Text(sale.ItemName + (sale.IsHQ ? " " + (char)SeIconChar.HighQuality : ""));
-          ImGui.TableNextColumn(); ImGui.Text($"x{sale.Quantity}");
-          ImGui.TableNextColumn(); ImGui.Text($"{sale.UnitPrice:N0}");
-          ImGui.TableNextColumn(); ImGui.Text($"{sale.TotalGil:N0}");
-          ImGui.TableNextColumn(); ImGui.Text(FormatAge(sale.SaleTimestamp));
+          var itemLabel = sale.ItemName + (sale.IsHQ ? " " + (char)SeIconChar.HighQuality : "");
+          if (sale.IsPending) itemLabel += " *";
+
+          void RowText(string s) { if (sale.IsPending) ImGui.TextDisabled(s); else ImGui.Text(s); }
+
+          ImGui.TableNextColumn(); RowText(itemLabel);
+          ImGui.TableNextColumn(); RowText($"x{sale.Quantity}");
+          ImGui.TableNextColumn(); RowText($"{sale.UnitPrice:N0}");
+          ImGui.TableNextColumn(); RowText($"{sale.TotalGil:N0}");
+          ImGui.TableNextColumn(); RowText(FormatAge(sale.SaleTimestamp));
         }
 
         ImGui.EndTable();

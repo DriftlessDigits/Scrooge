@@ -117,11 +117,11 @@ internal static class GilStorage
   internal static void InsertTransaction(long timestamp, string direction, string source,
       long amount, uint itemId, string itemName, string category, int quantity,
       int unitPrice, bool isHq, string retainerName, string counterparty,
-      SqliteTransaction? transaction = null)
+      SqliteTransaction? transaction = null, bool isPending = false)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO transactions (timestamp, direction, source, amount, item_id, item_name, category, quantity, unit_price, is_hq, retainer_name, counterparty)
-      VALUES (@ts, @dir, @src, @amt, @iid, @iname, @cat, @qty, @up, @hq, @ret, @cpty)",
+      @"INSERT INTO transactions (timestamp, direction, source, amount, item_id, item_name, category, quantity, unit_price, is_hq, retainer_name, counterparty, is_pending)
+      VALUES (@ts, @dir, @src, @amt, @iid, @iname, @cat, @qty, @up, @hq, @ret, @cpty, @pending)",
       _connection);
     cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
@@ -136,6 +136,7 @@ internal static class GilStorage
     cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     cmd.Parameters.AddWithValue("@ret", retainerName);
     cmd.Parameters.AddWithValue("@cpty", counterparty);
+    cmd.Parameters.AddWithValue("@pending", isPending ? 1 : 0);
     cmd.ExecuteNonQuery();
   }
 
@@ -150,6 +151,72 @@ internal static class GilStorage
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@ret", retainerName);
     return (long)cmd.ExecuteScalar()! > 0;
+  }
+
+  /// <summary>
+  /// Deletes one pending retainer_sale row that duplicates an already-finalized sale.
+  /// Called when a hook entry matches an existing finalized row — the oldest pending
+  /// row with the same (item_id, quantity, amount) is the chat-captured twin of that
+  /// finalized sale and should be dropped rather than left as an orphan.
+  /// FIFO to match TryPromotePendingSale's 1:1 semantics: one hook entry resolves
+  /// exactly one pending row, whether by promotion or deduplication. Returns true
+  /// if a row was removed.
+  /// </summary>
+  internal static bool DeleteDuplicatePendingSale(uint itemId, int quantity, long amount)
+  {
+    using var cmd = new SqliteCommand(
+      @"DELETE FROM transactions
+        WHERE id = (
+          SELECT id FROM transactions
+          WHERE is_pending = 1
+            AND direction  = 'earned'
+            AND source     = 'retainer_sale'
+            AND item_id    = @iid
+            AND quantity   = @qty
+            AND amount     = @amt
+          ORDER BY timestamp ASC
+          LIMIT 1
+        )",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@qty", quantity);
+    cmd.Parameters.AddWithValue("@amt", amount);
+    return cmd.ExecuteNonQuery() > 0;
+  }
+
+  /// <summary>
+  /// Tries to promote a pending retainer_sale row (inserted by the chat parser)
+  /// to a finalized row using authoritative data from RetainerHistoryHook.
+  /// Match key: (item_id, quantity, amount). FIFO on collision — oldest pending
+  /// promotes first. Returns true if a pending row was promoted, false if none matched.
+  /// </summary>
+  internal static bool TryPromotePendingSale(
+    uint itemId, int quantity, long amount,
+    long serverTimestamp, string retainerName, string buyerName)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE transactions
+        SET timestamp     = @ts,
+            retainer_name = @ret,
+            counterparty  = @buyer,
+            is_pending    = 0
+        WHERE id = (
+          SELECT id FROM transactions
+          WHERE is_pending = 1
+            AND item_id  = @iid
+            AND quantity = @qty
+            AND amount   = @amt
+          ORDER BY timestamp ASC
+          LIMIT 1
+        )",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@qty", quantity);
+    cmd.Parameters.AddWithValue("@amt", amount);
+    cmd.Parameters.AddWithValue("@ts", serverTimestamp);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    cmd.Parameters.AddWithValue("@buyer", buyerName);
+    return cmd.ExecuteNonQuery() > 0;
   }
 
   /// <summary>
@@ -332,11 +399,11 @@ internal static class GilStorage
     var sales = new List<SaleRecord>();
     using var cmd = new SqliteCommand(
       @"SELECT item_id, item_name, category, unit_price, quantity, is_hq,
-      retainer_name, counterparty, timestamp
+      retainer_name, counterparty, timestamp, is_pending
       FROM transactions
       WHERE direction = 'earned' AND source = 'retainer_sale'
       ORDER BY timestamp DESC
-      LIMIT @limit", 
+      LIMIT @limit",
       _connection);
     cmd.Parameters.AddWithValue("@limit", limit);
     using var reader = cmd.ExecuteReader();
@@ -352,10 +419,27 @@ internal static class GilStorage
         IsHQ = reader.GetInt32(5) != 0,
         RetainerName = reader.GetString(6),
         BuyerName = reader.GetString(7),
-        SaleTimestamp = reader.GetInt64(8)
+        SaleTimestamp = reader.GetInt64(8),
+        IsPending = reader.GetInt32(9) != 0
       });
     }
     return sales;
+  }
+
+  /// <summary>
+  /// Count of retainer_sale rows still marked pending (not yet reconciled).
+  /// Safe to call from draw loops: returns 0 if the connection isn't open yet
+  /// (plugin startup race) or has been closed (teardown).
+  /// </summary>
+  internal static int GetPendingSaleCount()
+  {
+    if (_connection is null || _connection.State != System.Data.ConnectionState.Open)
+      return 0;
+    using var cmd = new SqliteCommand(
+      @"SELECT COUNT(*) FROM transactions
+        WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 1",
+      _connection);
+    return Convert.ToInt32(cmd.ExecuteScalar());
   }
 
   /// <summary>
@@ -678,6 +762,8 @@ internal static class GilStorage
     var results = new List<RetainerSummary>();
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+    // Pending rows (is_pending=1) have no retainer attribution yet — exclude them
+    // from the per-retainer summary so they don't show up under a blank row.
     using var cmd = new SqliteCommand(
       @"SELECT
       r.retainer_name,
@@ -686,7 +772,8 @@ internal static class GilStorage
       COALESCE(t.total_gil, 0) as total_gil,
       COALESCE(la.avg_age, 0) as avg_age_days
       FROM (
-        SELECT retainer_name FROM transactions WHERE direction = 'earned' AND source = 'retainer_sale'
+        SELECT retainer_name FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 0
         UNION
         SELECT retainer_name FROM listings
       ) r
@@ -696,7 +783,7 @@ internal static class GilStorage
           COUNT(*) as sale_count,
           SUM(amount) as total_gil
         FROM transactions
-        WHERE direction = 'earned' AND source = 'retainer_sale' AND timestamp > @since
+        WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 0 AND timestamp > @since
         GROUP BY retainer_name
       ) t ON r.retainer_name = t.retainer_name
       LEFT JOIN (

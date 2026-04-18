@@ -120,18 +120,28 @@ internal sealed class AutoPinch : Window, IDisposable
         if (node == null)
           return;
 
-        // Auto Pinch button — anchored to node, stays in original position
-        var oldSize = AutoPinchOverlay.ImGuiSetup(node);
-        DrawAutoPinchButton(PinchAllRetainers);
-        AutoPinchOverlay.ImGuiPostSetup(oldSize);
-
-        // Hawk Wares button — separate overlay, positioned to the left
+        // Each overlay is wrapped in try/finally so an exception inside the
+        // button draw can never orphan ImGui style pushes — a leak here
+        // affects every other Dalamud window in the process.
         var position = AutoPinchOverlay.GetNodePosition(node);
         var scale = AutoPinchOverlay.GetNodeScale(node);
+
+        // Auto Pinch button — anchored to node, stays in original position
+        var oldSize = AutoPinchOverlay.ImGuiSetup(node);
+        try { DrawAutoPinchButton(PinchAllRetainers); }
+        finally { AutoPinchOverlay.ImGuiPostSetup(oldSize); }
+
+        // Hawk Wares button — separate overlay, positioned to the left
         var hawkPos = new Vector2(position.X - 90f * scale.X, position.Y);
         var hawkOldSize = AutoPinchOverlay.ImGuiSetup(node, "###HawkWares", hawkPos);
-        DrawHawkButton();
-        AutoPinchOverlay.ImGuiPostSetup(hawkOldSize);
+        try { DrawHawkButton(); }
+        finally { AutoPinchOverlay.ImGuiPostSetup(hawkOldSize); }
+
+        // Tally Sales button — further left, reconciles pending chat-captured sales
+        var tallyPos = new Vector2(position.X - 180f * scale.X, position.Y);
+        var tallyOldSize = AutoPinchOverlay.ImGuiSetup(node, "###TallySales", tallyPos);
+        try { DrawTallySalesButton(); }
+        finally { AutoPinchOverlay.ImGuiPostSetup(tallyOldSize); }
       }
     }
   }
@@ -309,6 +319,32 @@ internal sealed class AutoPinch : Window, IDisposable
   }
 
   /// <summary>
+  /// Draws the Tally Sales button. Walks each enabled retainer to open their
+  /// Sale History — fires the RetainerHistoryHook so chat-captured pending
+  /// rows reconcile with authoritative server data. Also refreshes listings
+  /// snapshots while we're at each retainer. Disabled when task manager is
+  /// busy or there are no pending sales to reconcile.
+  /// </summary>
+  private unsafe void DrawTallySalesButton()
+  {
+    var pendingCount = GilStorage.GetPendingSaleCount();
+    ImGui.BeginDisabled(_taskManager.IsBusy || pendingCount == 0);
+    // Size-match "Hawk Wares" so the three overlays (Tally/Hawk/Auto) space uniformly;
+    // "Tally Sales" renders narrower by default and leaves a gap at the 90px stride.
+    var buttonWidth = ImGui.CalcTextSize("Hawk Wares").X + ImGui.GetStyle().FramePadding.X * 2;
+    if (ImGui.Button("Tally Sales", new Vector2(buttonWidth, 0)))
+      TallySalesAllRetainers();
+    ImGui.EndDisabled();
+    if (ImGui.IsItemHovered())
+    {
+      if (pendingCount == 0)
+        ImGui.SetTooltip("No pending sales to reconcile.");
+      else
+        ImGui.SetTooltip($"Visit each retainer's Sale History to reconcile {pendingCount} pending sale(s).");
+    }
+  }
+
+  /// <summary>
   /// Entry point for "pinch all retainers": iterates every enabled retainer,
   /// opens their sell list, and queues price adjustments for all their items.
   /// Registers Talk dialog listeners to auto-dismiss retainer greeting dialogs.
@@ -431,6 +467,99 @@ internal sealed class AutoPinch : Window, IDisposable
 
     _taskManager.Enqueue(GameNavigation.CloseRetainer, $"CloseRetainer{index}");
     _taskManager.DelayNext(100);
+  }
+
+  /// <summary>
+  /// Entry point for "tally sales": walks every enabled retainer, opening their
+  /// Sale History to fire the RetainerHistoryHook and reconcile chat-captured
+  /// pending rows. Also refreshes listing snapshots. No pricing work — this is
+  /// the gil-tracking subset of a pinch run, with generous delays so it doesn't
+  /// look automated and tolerates lag.
+  /// </summary>
+  private unsafe void TallySalesAllRetainers()
+  {
+    if (_taskManager.IsBusy)
+      return;
+
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))
+    {
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
+      Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
+
+      var retainerList = new AddonMaster.RetainerList(addon);
+      var retainers = retainerList.Retainers;
+      var num = retainers.Length;
+
+      bool allDisabled = Plugin.Configuration.EnabledRetainerNames.Contains(Configuration.ALL_DISABLED_SENTINEL);
+      if (allDisabled)
+      {
+        Communicator.PrintAllRetainersDisabled();
+        return;
+      }
+
+      bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
+
+      if (Plugin.Configuration.EnableGilTracking)
+        GilTracker.StartRun();
+
+      for (int i = 0; i < num; i++)
+      {
+        var retainerName = retainers[i].Name;
+        if (!allEnabled && !Plugin.Configuration.EnabledRetainerNames.Contains(retainerName))
+        {
+          Svc.Log.Debug($"Skipping retainer '{retainerName}' for tally (excluded by user configuration)");
+          continue;
+        }
+        EnqueueSingleRetainerTally(i);
+      }
+
+      _taskManager.Enqueue(RemoveTalkAddonListeners);
+      _taskManager.Enqueue(() =>
+      {
+        if (Plugin.Configuration.EnableGilTracking)
+          GilTracker.FinalizeRun();
+        Util.FlashWindow();
+        return true;
+      }, "EndTallyRun");
+    }
+  }
+
+  /// <summary>
+  /// Queues the tally sequence for one retainer: click retainer → open sell list
+  /// → snapshot listings → close sell list → view sale history → close history →
+  /// close retainer. Delays are intentionally generous (6s+ per retainer) to
+  /// tolerate server lag and avoid looking suspiciously automated.
+  /// </summary>
+  private void EnqueueSingleRetainerTally(int index)
+  {
+    _taskManager.Enqueue(() => GameNavigation.ClickRetainer(index), $"TallyClickRetainer{index}");
+    _taskManager.DelayNext(800);
+    _taskManager.Enqueue(GameNavigation.ClickSellItems, $"TallyClickSellItems{index}");
+    _taskManager.DelayNext(800);
+
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      _taskManager.Enqueue(() =>
+      {
+        unsafe
+        {
+          var rm = RetainerManager.Instance();
+          GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+        }
+        GilTracker.SnapshotListings();
+        return true;
+      }, $"TallySnapshotListings{index}");
+      _taskManager.DelayNext(500);
+    }
+
+    _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, $"TallyCloseSellList{index}");
+    _taskManager.DelayNext(600);
+    _taskManager.Enqueue(GameNavigation.ClickSaleHistory, $"TallyClickSaleHistory{index}");
+    _taskManager.DelayNext(2000); // give hook + server response room
+    _taskManager.Enqueue(GameNavigation.CloseSaleHistory, $"TallyCloseSaleHistory{index}");
+    _taskManager.DelayNext(600);
+    _taskManager.Enqueue(GameNavigation.CloseRetainer, $"TallyCloseRetainer{index}");
+    _taskManager.DelayNext(1000);
   }
 
   private unsafe void PinchAllRetainerItems()
