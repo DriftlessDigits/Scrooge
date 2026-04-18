@@ -159,24 +159,32 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     _mbOpenGil = (long)InventoryManager.Instance()->GetGil();
     _mbPurchaseCount = 0;
+    GilTrackingState.Block();
   }
 
   private unsafe void OnMarketBoardClose(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking || _mbPurchaseCount == 0) return;
+    try
+    {
+      if (!Plugin.Configuration.EnableGilTracking || _mbPurchaseCount == 0) return;
 
-    var currentGil = (long)InventoryManager.Instance()->GetGil();
-    var spent = _mbOpenGil - currentGil;
-    if (spent <= 0) return;
+      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      var spent = _mbOpenGil - currentGil;
+      if (spent <= 0) return;
 
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-    var label = _mbPurchaseCount == 1 ? "item" : "items";
-    GilStorage.InsertTransaction(now, "spent", "mb_purchase", spent,
-      0, $"{_mbPurchaseCount} {label}", "", _mbPurchaseCount, (int)(spent / _mbPurchaseCount),
-      false, "", "Market Board");
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      var label = _mbPurchaseCount == 1 ? "item" : "items";
+      GilStorage.InsertTransaction(now, "spent", "mb_purchase", spent,
+        0, $"{_mbPurchaseCount} {label}", "", _mbPurchaseCount, (int)(spent / _mbPurchaseCount),
+        false, "", "Market Board");
 
-    Svc.Log.Debug($"[GilTrack] mb_purchase: {spent:N0}g on {_mbPurchaseCount} {label}");
-    _mbPurchaseCount = 0;
+      Svc.Log.Debug($"[GilTrack] mb_purchase: {spent:N0}g on {_mbPurchaseCount} {label}");
+      _mbPurchaseCount = 0;
+    }
+    finally
+    {
+      GilTrackingState.Unblock();
+    }
   }
 
   // --- Chat message transaction capture ---
@@ -256,6 +264,7 @@ internal sealed class GilTrackEventListener : IDisposable
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     GilStorage.InsertTransaction(now, direction, source, amount,
       itemId, itemName, category, quantity, unitPrice, isHq, "", "NPC");
+    GilTrackingState.NotifyHandled();
 
     Svc.Log.Debug($"[GilTrack] {source}: {itemName} x{quantity} = {amount:N0}g");
   }
@@ -310,6 +319,9 @@ internal sealed class GilTrackEventListener : IDisposable
     GilStorage.InsertTransaction(now, "earned", "retainer_sale", totalGil,
       itemId, itemName, category, quantity, unitPrice, isHq, "", "",
       transaction: null, isPending: true);
+    // Retainer sale doesn't move player gil, but refresh the catch-all
+    // baseline for parity with every other chat-driven parser.
+    GilTrackingState.NotifyHandled();
 
     Svc.Log.Debug($"[GilTrack] retainer_sale (pending): {itemName} x{quantity} = {totalGil:N0}g");
     return true;
@@ -414,6 +426,7 @@ internal sealed class GilTrackEventListener : IDisposable
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     GilStorage.InsertTransaction(now, "spent", "teleport", amount,
       0, "", "", 1, amount, false, "", "");
+    GilTrackingState.NotifyHandled();
 
     Svc.Log.Debug($"[GilTrack] teleport: {amount:N0}g");
   }
