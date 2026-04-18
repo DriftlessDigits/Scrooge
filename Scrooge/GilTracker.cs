@@ -223,11 +223,14 @@ internal static class GilTracker
 
   /// <summary>
   /// Process sale history entries from the RetainerHistory hook.
-  /// Deduplicates against existing sales and appends new ones.
+  /// For each entry: skip if already finalized; else try to promote a matching
+  /// pending row (from chat parsing); else insert fresh. UpsertLastSalePrice runs
+  /// on both paths since both produce authoritative unit_price + timestamp data.
   /// </summary>
   public static void ProcessSaleHistory(List<RetainerHistoryHook.RetainerHistoryData> entries, string retainerName)
   {
     var newCount = 0;
+    var promotedCount = 0;
 
     foreach (var entry in entries)
     {
@@ -238,26 +241,41 @@ internal static class GilTracker
       var totalGil = (long)entry.UnitPrice;
       var realUnitPrice = entry.Quantity > 0 ? (int)(entry.UnitPrice / entry.Quantity) : (int)entry.UnitPrice;
 
-      GilStorage.InsertTransaction(
-        (long)entry.UnixTimeSeconds,
-        "earned",
-        "retainer_sale",
-        totalGil,
+      var promoted = GilStorage.TryPromotePendingSale(
         entry.ItemID,
-        GetItemName(entry.ItemID),
-        GetItemCategory(entry.ItemID),
         (int)entry.Quantity,
-        realUnitPrice,
-        entry.IsHQ,
+        totalGil,
+        (long)entry.UnixTimeSeconds,
         retainerName,
         entry.BuyerName);
 
-      GilStorage.UpsertLastSalePrice(entry.ItemID, realUnitPrice, (long)entry.UnixTimeSeconds);
+      if (promoted)
+      {
+        promotedCount++;
+      }
+      else
+      {
+        GilStorage.InsertTransaction(
+          (long)entry.UnixTimeSeconds,
+          "earned",
+          "retainer_sale",
+          totalGil,
+          entry.ItemID,
+          GetItemName(entry.ItemID),
+          GetItemCategory(entry.ItemID),
+          (int)entry.Quantity,
+          realUnitPrice,
+          entry.IsHQ,
+          retainerName,
+          entry.BuyerName);
 
-      newCount++;
+        newCount++;
+      }
+
+      GilStorage.UpsertLastSalePrice(entry.ItemID, realUnitPrice, (long)entry.UnixTimeSeconds);
     }
 
-    if (newCount > 0)
-      Svc.Log.Info($"[GilTrack] {newCount} new sale(s) from {retainerName}");
+    if (newCount > 0 || promotedCount > 0)
+      Svc.Log.Info($"[GilTrack] {newCount} new / {promotedCount} reconciled sale(s) from {retainerName}");
   }
 }

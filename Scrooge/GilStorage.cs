@@ -154,6 +154,42 @@ internal static class GilStorage
   }
 
   /// <summary>
+  /// Tries to promote a pending retainer_sale row (inserted by the chat parser)
+  /// to a finalized row using authoritative data from RetainerHistoryHook.
+  /// Match key: (item_id, quantity, amount). FIFO on collision — oldest pending
+  /// promotes first. Returns true if a pending row was promoted, false if none matched.
+  /// </summary>
+  internal static bool TryPromotePendingSale(
+    uint itemId, int quantity, long amount,
+    long serverTimestamp, string retainerName, string buyerName)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE transactions
+        SET timestamp     = @ts,
+            retainer_name = @ret,
+            counterparty  = @buyer,
+            is_pending    = 0
+        WHERE id = (
+          SELECT id FROM transactions
+          WHERE is_pending = 1
+            AND item_id  = @iid
+            AND quantity = @qty
+            AND amount   = @amt
+            AND timestamp < @ts
+          ORDER BY timestamp ASC
+          LIMIT 1
+        )",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@qty", quantity);
+    cmd.Parameters.AddWithValue("@amt", amount);
+    cmd.Parameters.AddWithValue("@ts", serverTimestamp);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    cmd.Parameters.AddWithValue("@buyer", buyerName);
+    return cmd.ExecuteNonQuery() > 0;
+  }
+
+  /// <summary>
   /// Looks up the first_seen timestamp for a listing. Returns null if not found.
   /// Called from GilTracker.SnapshotListings() to preserve existing timestamps.
   /// </summary>
