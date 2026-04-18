@@ -56,6 +56,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 5);
     }
 
+    if (version < 6)
+    {
+      MigrateV6(connection);
+      SetSchemaVersion(connection, 6);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -597,6 +603,41 @@ internal class GilStorageBootstrap
         "CREATE INDEX IF NOT EXISTS idx_txn_ts_dir ON transactions(timestamp, direction)",
         connection);
     idx2.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// V6: Fix retainer_sale amounts. UnitPrice from RetainerHistoryHook is the total
+  /// sale price, not per-unit. Existing records with qty > 1 have inflated amounts.
+  /// Corrects: amount = old unit_price (which was actually the total),
+  ///           unit_price = old unit_price / quantity (real per-unit price).
+  /// Also fixes last_sale_prices which stored the inflated "unit" price.
+  /// </summary>
+  private static void MigrateV6(SqliteConnection connection)
+  {
+    using var fix = new SqliteCommand(
+      @"UPDATE transactions
+        SET amount = unit_price,
+            unit_price = unit_price / quantity
+        WHERE source = 'retainer_sale' AND quantity > 1",
+      connection);
+    var affected = fix.ExecuteNonQuery();
+
+    using var fixLsp = new SqliteCommand(
+      @"UPDATE last_sale_prices
+        SET unit_price = (
+          SELECT t.unit_price FROM transactions t
+          WHERE t.source = 'retainer_sale'
+            AND t.item_id = last_sale_prices.item_id
+          ORDER BY t.timestamp DESC LIMIT 1
+        )
+        WHERE item_id IN (
+          SELECT DISTINCT item_id FROM transactions
+          WHERE source = 'retainer_sale' AND quantity > 1
+        )",
+      connection);
+    fixLsp.ExecuteNonQuery();
+
+    Svc.Log.Info($"[GilTrack] V6 migration: fixed {affected} retainer_sale amounts (UnitPrice was total, not per-unit)");
   }
 
   // =========================================================================

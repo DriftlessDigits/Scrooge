@@ -299,6 +299,33 @@ internal static class GilStorage
     return (reader.GetInt64(0), reader.GetInt64(1));
   }
 
+  /// <summary>
+  /// Returns per-snapshot player gil and (optional) retainer gil sum, ordered by timestamp ascending.
+  /// RetainerGil is null when the snapshot has no retainer_snapshots rows (e.g. zone_change captures).
+  /// Caller decides how to handle gaps (carry-forward, filter, etc.).
+  /// </summary>
+  internal static IReadOnlyList<(long Timestamp, long PlayerGil, long? RetainerGil)> GetTotalGilHistory()
+  {
+    var rows = new List<(long, long, long?)>();
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    using var cmd = new SqliteCommand(
+      @"SELECT s.timestamp, s.player_gil, SUM(r.gil) AS retainer_gil
+        FROM gil_snapshots s
+        LEFT JOIN retainer_snapshots r ON r.snapshot_id = s.id
+        GROUP BY s.id
+        ORDER BY s.timestamp ASC",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      long? retainer = reader.IsDBNull(2) ? null : reader.GetInt64(2);
+      rows.Add((reader.GetInt64(0), reader.GetInt64(1), retainer));
+    }
+    sw.Stop();
+    Svc.Log.Verbose($"[GilHistory] GetTotalGilHistory returned {rows.Count} rows in {sw.ElapsedMilliseconds}ms");
+    return rows;
+  }
+
   /// <summary>Gets the N most recent retainer sales as SaleRecord objects.</summary>
   internal static List<SaleRecord> GetRecentSales(int limit)
   {
@@ -329,6 +356,283 @@ internal static class GilStorage
       });
     }
     return sales;
+  }
+
+  /// <summary>
+  /// Returns all transactions with optional direction/source filters, most recent first.
+  /// </summary>
+  internal static List<TransactionRecord> GetTransactions(string? direction = null, string? source = null,
+      long? since = null, int limit = -1, int offset = 0)
+  {
+    var results = new List<TransactionRecord>();
+    var where = BuildTransactionWhere(direction, source, since);
+    var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+    var limitClause = limit > 0 ? $"LIMIT {limit} OFFSET {offset}" : "";
+
+    using var cmd = new SqliteCommand(
+      $@"SELECT timestamp, direction, source, amount, item_name, quantity, unit_price
+         FROM transactions {whereClause}
+         ORDER BY timestamp DESC
+         {limitClause}",
+      _connection);
+    AddTransactionParams(cmd, direction, source, since);
+
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      results.Add(new TransactionRecord
+      {
+        Timestamp = reader.GetInt64(0),
+        Direction = reader.GetString(1),
+        Source = reader.GetString(2),
+        Amount = reader.GetInt64(3),
+        ItemName = reader.GetString(4),
+        Quantity = reader.GetInt32(5),
+        UnitPrice = reader.GetInt32(6),
+      });
+    }
+    return results;
+  }
+
+  /// <summary>Returns total count of transactions matching the given filters.</summary>
+  internal static int GetTransactionCount(string? direction = null, string? source = null, long? since = null)
+  {
+    var where = BuildTransactionWhere(direction, source, since);
+    var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+
+    using var cmd = new SqliteCommand(
+      $"SELECT COUNT(*) FROM transactions {whereClause}", _connection);
+    AddTransactionParams(cmd, direction, source, since);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+  }
+
+  private static List<string> BuildTransactionWhere(string? direction, string? source, long? since)
+  {
+    var where = new List<string>();
+    if (direction != null) where.Add("direction = @dir");
+    if (source != null) where.Add("source = @src");
+    if (since != null) where.Add("timestamp >= @since");
+    return where;
+  }
+
+  private static void AddTransactionParams(SqliteCommand cmd, string? direction, string? source, long? since)
+  {
+    if (direction != null) cmd.Parameters.AddWithValue("@dir", direction);
+    if (source != null) cmd.Parameters.AddWithValue("@src", source);
+    if (since != null) cmd.Parameters.AddWithValue("@since", since.Value);
+  }
+
+  /// <summary>
+  /// Returns earned/spent totals grouped by source for a given time range.
+  /// </summary>
+  internal static List<(string Direction, string Source, long Total, int Count)>
+      GetEarnedVsSpent(long? since = null)
+  {
+    var results = new List<(string, string, long, int)>();
+    var whereClause = since.HasValue ? "WHERE timestamp >= @since" : "";
+
+    using var cmd = new SqliteCommand(
+      $@"SELECT direction, source, SUM(amount) AS total, COUNT(*) AS cnt
+         FROM transactions {whereClause}
+         GROUP BY direction, source
+         ORDER BY direction, total DESC",
+      _connection);
+    if (since.HasValue) cmd.Parameters.AddWithValue("@since", since.Value);
+
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      results.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3)));
+    return results;
+  }
+
+  /// <summary>
+  /// Returns daily gil totals (player + retainers) from the last snapshot of each day.
+  /// Retainer balances carried forward from the most recent snapshot that has them.
+  /// </summary>
+  internal static List<(string Date, long TotalGil, long Delta)> GetDailyChanges()
+  {
+    var rows = GetTotalGilHistory();
+    var daily = new List<(string Date, long TotalGil, long Delta)>();
+    if (rows.Count == 0) return daily;
+
+    // Walk through snapshots, carry forward retainer balance, track last total per day
+    int firstWithRetainer = -1;
+    for (int i = 0; i < rows.Count; i++)
+      if (rows[i].RetainerGil.HasValue) { firstWithRetainer = i; break; }
+    if (firstWithRetainer < 0) return daily;
+
+    long lastRetainer = rows[firstWithRetainer].RetainerGil!.Value;
+    string? currentDay = null;
+    long dayTotal = 0;
+
+    for (int i = firstWithRetainer; i < rows.Count; i++)
+    {
+      var r = rows[i];
+      if (r.RetainerGil.HasValue) lastRetainer = r.RetainerGil.Value;
+      var total = r.PlayerGil + lastRetainer;
+      var day = DateTimeOffset.FromUnixTimeSeconds(r.Timestamp).LocalDateTime.ToString("yyyy-MM-dd");
+
+      if (day != currentDay)
+      {
+        if (currentDay != null)
+          daily.Add((currentDay, dayTotal, 0));
+        currentDay = day;
+      }
+      dayTotal = total;
+    }
+    if (currentDay != null)
+      daily.Add((currentDay, dayTotal, 0));
+
+    // Compute deltas
+    for (int i = daily.Count - 1; i > 0; i--)
+      daily[i] = (daily[i].Date, daily[i].TotalGil, daily[i].TotalGil - daily[i - 1].TotalGil);
+
+    return daily;
+  }
+
+  /// <summary>
+  /// Computes untracked gil changes over a time range. Compares total snapshot diffs
+  /// against sum of tracked transactions. The gap is what we can't account for.
+  /// Returns (earned untracked, spent untracked) — both positive values.
+  /// </summary>
+  internal static (long UntrackedEarned, long UntrackedSpent) GetUntrackedDeltas(long? since = null)
+  {
+    // Get first and last snapshots in the range (player_gil + retainer carry-forward)
+    var history = GetTotalGilHistory();
+    if (history.Count < 2) return (0, 0);
+
+    // Find range boundaries
+    int startIdx = 0;
+    if (since.HasValue)
+    {
+      for (int i = 0; i < history.Count; i++)
+        if (history[i].Timestamp >= since.Value) { startIdx = i; break; }
+    }
+
+    // Walk through with carry-forward to get first and last total
+    long lastRetainer = 0;
+    bool hasRetainer = false;
+    long firstTotal = 0, lastTotal = 0;
+    long firstTotalTs = 0;
+    bool firstSet = false;
+
+    for (int i = 0; i < history.Count; i++)
+    {
+      if (history[i].RetainerGil.HasValue)
+      {
+        lastRetainer = history[i].RetainerGil!.Value;
+        hasRetainer = true;
+      }
+      if (!hasRetainer) continue;
+
+      var total = history[i].PlayerGil + lastRetainer;
+      if (i >= startIdx && !firstSet)
+      {
+        firstTotal = total;
+        firstTotalTs = history[i].Timestamp;
+        firstSet = true;
+      }
+      lastTotal = total;
+    }
+
+    if (!firstSet) return (0, 0);
+    var snapshotDelta = lastTotal - firstTotal;
+
+    // Sum tracked transactions within the snapshot window only.
+    // Using the user's `since` would include transactions before the first snapshot,
+    // whose gil is already baked into firstTotal — causing phantom untracked spend.
+    using var cmd = new SqliteCommand(
+      @"SELECT
+           COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
+         FROM transactions WHERE timestamp >= @since",
+      _connection);
+    cmd.Parameters.AddWithValue("@since", firstTotalTs);
+    using var reader = cmd.ExecuteReader();
+    reader.Read();
+    var trackedEarned = reader.GetInt64(0);
+    var trackedSpent = reader.GetInt64(1);
+
+    var trackedNet = trackedEarned - trackedSpent;
+    var untracked = snapshotDelta - trackedNet;
+
+    if (untracked > 0)
+      return (untracked, 0);
+    if (untracked < 0)
+      return (0, -untracked);
+    return (0, 0);
+  }
+
+  /// <summary>
+  /// Computes untracked delta between the two most recent snapshots.
+  /// Used for debug logging on zone change.
+  /// </summary>
+  internal static (long SnapshotDiff, long TrackedNet, long Untracked)? GetLatestSnapshotGap()
+  {
+    var history = GetTotalGilHistory();
+    if (history.Count < 2) return null;
+
+    // Find the last two snapshots with retainer data (carry-forward)
+    long lastRetainer = 0;
+    bool hasRetainer = false;
+    long prevTotal = 0, currentTotal = 0;
+    long prevTs = 0;
+
+    for (int i = 0; i < history.Count; i++)
+    {
+      if (history[i].RetainerGil.HasValue)
+      {
+        lastRetainer = history[i].RetainerGil!.Value;
+        hasRetainer = true;
+      }
+      if (!hasRetainer) continue;
+
+      prevTotal = currentTotal;
+      prevTs = i > 0 ? history[i - 1].Timestamp : history[i].Timestamp;
+      currentTotal = history[i].PlayerGil + lastRetainer;
+    }
+
+    if (prevTotal == 0) return null;
+    var snapshotDiff = currentTotal - prevTotal;
+    if (snapshotDiff == 0) return null;
+
+    // Sum tracked transactions between the two most recent snapshots
+    var lastTs = history[history.Count - 1].Timestamp;
+    var secondLastTs = history[history.Count - 2].Timestamp;
+
+    using var cmd = new SqliteCommand(
+      @"SELECT
+          COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0) -
+          COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
+        FROM transactions WHERE timestamp >= @from AND timestamp <= @to",
+      _connection);
+    cmd.Parameters.AddWithValue("@from", secondLastTs);
+    cmd.Parameters.AddWithValue("@to", lastTs);
+    using var reader = cmd.ExecuteReader();
+    reader.Read();
+    var trackedNet = reader.GetInt64(0);
+
+    return (snapshotDiff, trackedNet, snapshotDiff - trackedNet);
+  }
+
+  /// <summary>Returns the timestamp of the earliest transaction, or null if none exist.</summary>
+  internal static long? GetEarliestTransactionTimestamp()
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT MIN(timestamp) FROM transactions", _connection);
+    var result = cmd.ExecuteScalar();
+    return result is DBNull or null ? null : (long)result;
+  }
+
+  /// <summary>Returns distinct source values from the transactions table.</summary>
+  internal static List<string> GetDistinctSources()
+  {
+    var sources = new List<string>();
+    using var cmd = new SqliteCommand("SELECT DISTINCT source FROM transactions ORDER BY source", _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      sources.Add(reader.GetString(0));
+    return sources;
   }
 
   /// <summary>

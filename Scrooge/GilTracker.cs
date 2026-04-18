@@ -234,21 +234,25 @@ internal static class GilTracker
       if (GilStorage.TransactionExists(entry.ItemID, entry.UnixTimeSeconds, retainerName))
         continue;
 
+      // UnitPrice from the hook is the TOTAL sale price, not per-unit.
+      var totalGil = (long)entry.UnitPrice;
+      var realUnitPrice = entry.Quantity > 0 ? (int)(entry.UnitPrice / entry.Quantity) : (int)entry.UnitPrice;
+
       GilStorage.InsertTransaction(
         (long)entry.UnixTimeSeconds,
         "earned",
         "retainer_sale",
-        (long)entry.UnitPrice * entry.Quantity,  // amount = total gil
+        totalGil,
         entry.ItemID,
         GetItemName(entry.ItemID),
         GetItemCategory(entry.ItemID),
         (int)entry.Quantity,
-        (int)entry.UnitPrice,
+        realUnitPrice,
         entry.IsHQ,
         retainerName,
         entry.BuyerName);
 
-      GilStorage.UpsertLastSalePrice(entry.ItemID, (int)entry.UnitPrice, (long)entry.UnixTimeSeconds);
+      GilStorage.UpsertLastSalePrice(entry.ItemID, realUnitPrice, (long)entry.UnixTimeSeconds);
 
       newCount++;
     }

@@ -5,6 +5,8 @@ using System.Numerics;
 using Dalamud.Game.Text;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Bindings.ImPlot;
+using ECommons.DalamudServices;
 
 namespace Scrooge.Windows;
 
@@ -19,13 +21,53 @@ internal sealed class GilWindow: Window
     SizeConstraints = new WindowSizeConstraints
     {
       MinimumSize = new Vector2(400, 300),
-      MaximumSize = new Vector2(800, 1000)
+      MaximumSize = new Vector2(1200, 1800)
     };
   }
 
   private GilSnapshot? _cachedSnapshot;
   private DateTime _lastRefresh = DateTime.MinValue;
   private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+
+  // Gil History (ImPlot validation spike)
+  private double[]? _historyX;
+  private long[]? _totalRaw;
+  private long[]? _playerRaw;
+  private long[]? _retainerRaw;
+  private double[]? _totalY;
+  private double[]? _playerY;
+  private double[]? _retainerY;
+  private string _totalFormat = "";
+  private string _playerFormat = "";
+  private string _retainerFormat = "";
+  private double[]? _historyTickPositions;
+  private string[]? _historyTickLabels;
+  private DateTime _historyLastRefresh = DateTime.MinValue;
+  private bool _historyTabWasOpen;
+  private bool _historyShowBreakdown;
+  private const int HistoryTickCount = 6;
+
+  // Transactions tab
+  private List<TransactionRecord>? _cachedTransactions;
+  private List<string>? _cachedSources;
+  private int _txnDirectionFilter; // 0=All, 1=Earned, 2=Spent
+  private int _txnSourceFilter;    // 0=All, 1+=source index
+  private int _prevDirectionFilter = -1;
+  private int _prevSourceFilter = -1;
+  private int _txnPage;
+  private int _txnTotalCount;
+  private int _txnTimeFilter; // 0=7d, 1=30d, 2=90d, 3=All
+  private int _prevTimeFilter = -1;
+  private const int TxnPageSize = 25;
+
+  // Earned vs Spent
+  private List<(string Direction, string Source, long Total, int Count)>? _cachedEarnedVsSpent;
+  private int _evsTimeFilter;  // 0=7d, 1=30d, 2=90d, 3=All
+  private int _prevEvsTimeFilter = -1;
+
+  // Daily Change
+  private List<(string Date, long TotalGil, long Delta)>? _cachedDaily;
+  private DateTime _dailyLastRefresh = DateTime.MinValue;
 
   public override void Draw()
   {
@@ -79,7 +121,288 @@ internal sealed class GilWindow: Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Gil History"))
+      {
+        DrawGilHistoryTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Daily"))
+      {
+        DrawDailyChangeTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Transactions"))
+      {
+        DrawTransactionsTab();
+        ImGui.EndTabItem();
+      }
+
+      if (ImGui.BeginTabItem("Earned vs Spent"))
+      {
+        DrawEarnedVsSpentTab();
+        ImGui.EndTabItem();
+      }
+
       ImGui.EndTabBar();
+    }
+  }
+
+  private void DrawGilHistoryTab()
+  {
+    // Refresh on first open or every 30s thereafter
+    if (!_historyTabWasOpen || DateTime.Now - _historyLastRefresh > TimeSpan.FromSeconds(30))
+      RefreshGilHistory();
+
+    ImGui.Checkbox("Show player + retainer breakdown", ref _historyShowBreakdown);
+
+    if (_historyX == null || _totalY == null || _historyX.Length < 2)
+    {
+      ImGui.TextDisabled($"Not enough snapshots yet to draw a chart (have {_historyX?.Length ?? 0}, need 2+).");
+      return;
+    }
+
+    if (_historyShowBreakdown
+        && _playerY != null && _retainerY != null
+        && _totalRaw != null && _playerRaw != null && _retainerRaw != null)
+    {
+      DrawSinglePlot("##GilHistoryTotal",    "Total Gil",    _totalY,    _totalRaw,    _totalFormat,    300);
+      DrawSinglePlot("##GilHistoryPlayer",   "Player Gil",   _playerY,   _playerRaw,   _playerFormat,   300);
+      DrawSinglePlot("##GilHistoryRetainer", "Retainer Gil", _retainerY, _retainerRaw, _retainerFormat, 300);
+    }
+    else if (_totalRaw != null)
+    {
+      DrawSinglePlot("##GilHistoryTotal", "Total Gil", _totalY, _totalRaw, _totalFormat, 300);
+    }
+
+    var refreshLabel = _historyLastRefresh.ToString("t", System.Globalization.CultureInfo.CurrentCulture);
+    ImGui.TextDisabled($"{_historyX.Length} snapshots plotted. Last refresh: {refreshLabel}");
+  }
+
+  private void DrawDailyChangeTab()
+  {
+    if (_cachedDaily == null || DateTime.Now - _dailyLastRefresh > TimeSpan.FromSeconds(30))
+    {
+      _cachedDaily = GilStorage.GetDailyChanges();
+      _dailyLastRefresh = DateTime.Now;
+    }
+    var daily = _cachedDaily;
+    if (daily.Count == 0)
+    {
+      ImGui.TextDisabled("Not enough data for daily view.");
+      return;
+    }
+
+    var culture = System.Globalization.CultureInfo.CurrentCulture;
+    var tableHeight = ImGui.GetContentRegionAvail().Y;
+    if (ImGui.BeginTable("DailyChange", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.ScrollY,
+        new Vector2(-1, tableHeight)))
+    {
+      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.None, 120);
+      ImGui.TableSetupColumn("Change", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupScrollFreeze(0, 1);
+      ImGui.TableHeadersRow();
+
+      for (int i = daily.Count - 1; i >= 0; i--)
+      {
+        var (date, total, delta) = daily[i];
+        var dt = DateTime.Parse(date);
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn(); ImGui.Text(dt.ToString("d", culture));
+        ImGui.TableNextColumn(); ImGui.Text($"{total:N0}");
+        ImGui.TableNextColumn();
+        if (i == 0)
+        {
+          ImGui.TextDisabled("—");
+        }
+        else
+        {
+          var sign = delta >= 0 ? "+" : "";
+          var color = delta >= 0
+            ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
+            : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
+          ImGui.TextColored(color, $"{sign}{delta:N0}");
+        }
+      }
+
+      ImGui.EndTable();
+    }
+  }
+
+  private void DrawSinglePlot(string id, string title, double[] y, long[] raw, string yFormat, float height)
+  {
+    if (ImPlot.BeginPlot(id, new Vector2(-1, height), ImPlotFlags.NoMouseText))
+    {
+      ImPlot.SetupAxis(ImAxis.X1, "");
+      ImPlot.SetupAxis(ImAxis.Y1, "", ImPlotAxisFlags.NoGridLines);
+      ImPlot.SetupAxisFormat(ImAxis.Y1, yFormat);
+      if (_historyTickPositions != null && _historyTickLabels != null && _historyTickPositions.Length > 0)
+        ImPlot.SetupAxisTicks(ImAxis.X1, ref _historyTickPositions[0], _historyTickPositions.Length, _historyTickLabels);
+      ImPlot.SetNextAxesToFit();
+      ImPlot.PlotLine(title, ref _historyX![0], ref y[0], _historyX.Length);
+
+      if (ImPlot.IsPlotHovered())
+      {
+        var mouse = ImPlot.GetPlotMousePos();
+        var nearest = FindNearestIndex(_historyX, mouse.X);
+        if (nearest >= 0)
+        {
+          var ts = (long)_historyX[nearest];
+          var dt = DateTimeOffset.FromUnixTimeSeconds(ts).LocalDateTime;
+          ImGui.BeginTooltip();
+          ImGui.Text(dt.ToString("g", System.Globalization.CultureInfo.CurrentCulture));
+          ImGui.Separator();
+          ImGui.Text($"{title}: {raw[nearest]:N0} gil");
+          ImGui.EndTooltip();
+        }
+      }
+
+      ImPlot.EndPlot();
+    }
+    else
+    {
+      Svc.Log.Warning($"[GilHistory] ImPlot.BeginPlot returned false for {id}");
+    }
+  }
+
+  private void RefreshGilHistory()
+  {
+    Svc.Log.Debug("[GilHistory] Refreshing history data");
+    var rows = GilStorage.GetTotalGilHistory();
+
+    // Find first snapshot with retainer data — that's our baseline for carry-forward.
+    int firstWithRetainer = -1;
+    for (int i = 0; i < rows.Count; i++)
+    {
+      if (rows[i].RetainerGil.HasValue) { firstWithRetainer = i; break; }
+    }
+
+    int carried = 0;
+    if (firstWithRetainer >= 0)
+    {
+      var count = rows.Count - firstWithRetainer;
+      _historyX = new double[count];
+      _totalRaw = new long[count];
+      _playerRaw = new long[count];
+      _retainerRaw = new long[count];
+
+      long lastRetainer = rows[firstWithRetainer].RetainerGil!.Value;
+      for (int i = 0; i < count; i++)
+      {
+        var r = rows[firstWithRetainer + i];
+        long retainer;
+        if (r.RetainerGil.HasValue)
+          retainer = r.RetainerGil.Value;
+        else { retainer = lastRetainer; carried++; }
+        lastRetainer = retainer;
+
+        _historyX[i] = r.Timestamp;
+        _playerRaw[i] = r.PlayerGil;
+        _retainerRaw[i] = retainer;
+        _totalRaw[i] = r.PlayerGil + retainer;
+      }
+
+      // Each line gets its own scale so player gil (~10M) and retainer gil (~140M)
+      // both look right when plotted independently.
+      BuildScaled(_totalRaw,    out _totalY,    out _totalFormat);
+      BuildScaled(_playerRaw,   out _playerY,   out _playerFormat);
+      BuildScaled(_retainerRaw, out _retainerY, out _retainerFormat);
+    }
+    else
+    {
+      _historyX = Array.Empty<double>();
+      _totalRaw = _playerRaw = _retainerRaw = Array.Empty<long>();
+      _totalY = _playerY = _retainerY = Array.Empty<double>();
+      _totalFormat = _playerFormat = _retainerFormat = "%.0f";
+    }
+
+    BuildXAxisTicks();
+
+    _historyLastRefresh = DateTime.Now;
+    _historyTabWasOpen = true;
+    Svc.Log.Information(
+      $"[GilHistory] Loaded {rows.Count} rows; first-with-retainer={firstWithRetainer}; " +
+      $"carried-forward={carried}; plotted={_historyX.Length}; " +
+      $"formats: total={_totalFormat}, player={_playerFormat}, retainer={_retainerFormat}");
+  }
+
+  private static void BuildScaled(long[] raw, out double[] scaled, out string format)
+  {
+    long max = 0, min = long.MaxValue;
+    foreach (var v in raw) { if (v > max) max = v; if (v < min) min = v; }
+    var (factor, suffix) = PickScale(max);
+    scaled = new double[raw.Length];
+    for (int i = 0; i < raw.Length; i++) scaled[i] = raw[i] / factor;
+
+    // Narrow range needs more precision so tick labels differentiate.
+    // e.g. 10.4M→11.1M (range 0.7) needs .1f; 126M→140M (range 14) doesn't.
+    var scaledRange = (max - min) / factor;
+    var decimals = scaledRange < 5 ? 1 : 0;
+    format = suffix switch
+    {
+      "B" => $"%.{decimals + 1}fB",
+      "M" => $"%.{decimals}fM",
+      "K" => $"%.{decimals}fK",
+      _   => $"%.{decimals}f",
+    };
+  }
+
+  private static int FindNearestIndex(double[] xs, double target)
+  {
+    if (xs.Length == 0) return -1;
+    // Binary search for insertion point, then compare neighbors
+    int lo = 0, hi = xs.Length - 1;
+    while (lo < hi)
+    {
+      int mid = (lo + hi) / 2;
+      if (xs[mid] < target) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0 && Math.Abs(xs[lo - 1] - target) < Math.Abs(xs[lo] - target))
+      return lo - 1;
+    return lo;
+  }
+
+  private static (double Factor, string Suffix) PickScale(long maxValue)
+  {
+    if (maxValue >= 1_000_000_000) return (1_000_000_000.0, "B");
+    if (maxValue >= 1_000_000)     return (1_000_000.0,     "M");
+    if (maxValue >= 1_000)         return (1_000.0,         "K");
+    return (1.0, "");
+  }
+
+  private void BuildXAxisTicks()
+  {
+    if (_historyX == null || _historyX.Length < 2)
+    {
+      _historyTickPositions = null;
+      _historyTickLabels = null;
+      return;
+    }
+
+    var first = _historyX[0];
+    var last = _historyX[_historyX.Length - 1];
+    var span = last - first;
+    var culture = System.Globalization.CultureInfo.CurrentCulture;
+    // Use date-only for spans > 2 days, otherwise include time. "t" respects 12/24h per culture.
+    var dateOnly = span > 2 * 24 * 3600;
+
+    // Inset ticks 4% from each edge so labels don't clip against the plot border
+    var inset = span * 0.04;
+    var tickFirst = first + inset;
+    var tickLast = last - inset;
+
+    _historyTickPositions = new double[HistoryTickCount];
+    _historyTickLabels = new string[HistoryTickCount];
+    for (int i = 0; i < HistoryTickCount; i++)
+    {
+      var ts = tickFirst + (tickLast - tickFirst) * i / (HistoryTickCount - 1);
+      _historyTickPositions[i] = ts;
+      var dt = DateTimeOffset.FromUnixTimeSeconds((long)ts).LocalDateTime;
+      _historyTickLabels[i] = dateOnly
+        ? dt.ToString("M/d", culture)
+        : dt.ToString("M/d ", culture) + dt.ToString("t", culture);
     }
   }
 
@@ -328,6 +651,293 @@ internal sealed class GilWindow: Window
     {
       ImGui.TextDisabled("No slow movers — everything is moving!");
     }
+  }
+
+  private void DrawTransactionsTab()
+  {
+    // Source list — refresh once
+    _cachedSources ??= GilStorage.GetDistinctSources();
+
+    // Filters
+    var directionLabels = new[] { "All", "Earned", "Spent" };
+    ImGui.SetNextItemWidth(100);
+    ImGui.Combo("##Direction", ref _txnDirectionFilter, directionLabels, directionLabels.Length);
+    ImGui.SameLine();
+
+    var sourceLabels = new string[_cachedSources.Count + 1];
+    sourceLabels[0] = "All Sources";
+    for (int i = 0; i < _cachedSources.Count; i++)
+      sourceLabels[i + 1] = FormatSourceLabel(_cachedSources[i]);
+    ImGui.SetNextItemWidth(150);
+    ImGui.Combo("##Source", ref _txnSourceFilter, sourceLabels, sourceLabels.Length);
+    ImGui.SameLine();
+
+    var timeLabels = new[] { "7 days", "30 days", "90 days", "All time" };
+    ImGui.SetNextItemWidth(100);
+    ImGui.Combo("##Time", ref _txnTimeFilter, timeLabels, timeLabels.Length);
+
+    // Reset page on filter change
+    if (_txnDirectionFilter != _prevDirectionFilter
+        || _txnSourceFilter != _prevSourceFilter
+        || _txnTimeFilter != _prevTimeFilter)
+    {
+      _txnPage = 0;
+      _cachedTransactions = null;
+    }
+
+    // Refresh on filter change or page change
+    if (_cachedTransactions == null)
+    {
+      var dir = _txnDirectionFilter switch { 1 => "earned", 2 => "spent", _ => null };
+      var src = _txnSourceFilter > 0 ? _cachedSources[_txnSourceFilter - 1] : null;
+      long? since = _txnTimeFilter switch
+      {
+        0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+        1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+        2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+        _ => null,
+      };
+      _txnTotalCount = GilStorage.GetTransactionCount(dir, src, since);
+      _cachedTransactions = GilStorage.GetTransactions(dir, src, since, TxnPageSize, _txnPage * TxnPageSize);
+      _prevDirectionFilter = _txnDirectionFilter;
+      _prevSourceFilter = _txnSourceFilter;
+      _prevTimeFilter = _txnTimeFilter;
+    }
+
+    if (_cachedTransactions.Count == 0)
+    {
+      ImGui.TextDisabled("No transactions found.");
+      return;
+    }
+
+    var culture = System.Globalization.CultureInfo.CurrentCulture;
+    long? sinceForDisclaimer = _txnTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    };
+    var earliest = GilStorage.GetEarliestTransactionTimestamp();
+    var showDisclaimer = HasDataRangeDisclaimer(sinceForDisclaimer, earliest);
+    var reservedHeight = showDisclaimer ? 50f : 30f;
+    var tableHeight = ImGui.GetContentRegionAvail().Y - reservedHeight;
+    if (ImGui.BeginTable("Transactions", 5,
+        ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable | ImGuiTableFlags.ScrollY,
+        new Vector2(-1, tableHeight)))
+    {
+      ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 110);
+      ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.None, 150);
+      ImGui.TableSetupColumn("Amount", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.None, 40);
+      ImGui.TableSetupScrollFreeze(0, 1);
+      ImGui.TableHeadersRow();
+
+      var (col, asc) = GetSortSpec();
+      var sorted = col switch
+      {
+        1 => Order(_cachedTransactions, t => t.Source, asc),
+        2 => Order(_cachedTransactions, t => t.ItemName, asc),
+        3 => Order(_cachedTransactions, t => t.Amount, asc),
+        4 => Order(_cachedTransactions, t => t.Quantity, asc),
+        _ => Order(_cachedTransactions, t => t.Timestamp, asc),
+      };
+
+      foreach (var txn in sorted)
+      {
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        ImGui.Text(txn.LocalTime.ToString("g", culture));
+        ImGui.TableNextColumn();
+        ImGui.Text(FormatSourceLabel(txn.Source));
+        ImGui.TableNextColumn();
+        var name = string.IsNullOrEmpty(txn.ItemName) ? "—" : txn.ItemName;
+        ImGui.Text(name);
+        ImGui.TableNextColumn();
+        var sign = txn.Direction == "earned" ? "+" : "-";
+        var color = txn.Direction == "earned"
+          ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
+          : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
+        ImGui.TextColored(color, $"{sign}{txn.Amount:N0}");
+        ImGui.TableNextColumn();
+        ImGui.Text(txn.Quantity > 1 ? $"x{txn.Quantity}" : "");
+      }
+
+      ImGui.EndTable();
+    }
+
+    DrawDataRangeDisclaimer(sinceForDisclaimer, earliest);
+
+    var totalPages = Math.Max(1, (_txnTotalCount + TxnPageSize - 1) / TxnPageSize);
+    ImGui.BeginDisabled(_txnPage <= 0);
+    if (ImGui.ArrowButton("##TxnPrev", ImGuiDir.Left))
+    { _txnPage--; _cachedTransactions = null; }
+    ImGui.EndDisabled();
+    ImGui.SameLine();
+    ImGui.Text($"Page {_txnPage + 1} of {totalPages}");
+    ImGui.SameLine();
+    ImGui.BeginDisabled(_txnPage >= totalPages - 1);
+    if (ImGui.ArrowButton("##TxnNext", ImGuiDir.Right))
+    { _txnPage++; _cachedTransactions = null; }
+    ImGui.EndDisabled();
+    ImGui.SameLine();
+    ImGui.TextDisabled($"({_txnTotalCount:N0} total)");
+  }
+
+  private void DrawEarnedVsSpentTab()
+  {
+    var timeLabels = new[] { "7 days", "30 days", "90 days", "All time" };
+    ImGui.SetNextItemWidth(120);
+    ImGui.Combo("##EvsTime", ref _evsTimeFilter, timeLabels, timeLabels.Length);
+
+    if (_evsTimeFilter != _prevEvsTimeFilter || _cachedEarnedVsSpent == null)
+    {
+      long? since = _evsTimeFilter switch
+      {
+        0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+        1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+        2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+        _ => null,
+      };
+      _cachedEarnedVsSpent = GilStorage.GetEarnedVsSpent(since);
+
+      // Append "Other" rows from untracked deltas
+      var (untrackedEarned, untrackedSpent) = GilStorage.GetUntrackedDeltas(since);
+      if (untrackedEarned > 0)
+        _cachedEarnedVsSpent.Add(("earned", "other", untrackedEarned, 0));
+      if (untrackedSpent > 0)
+        _cachedEarnedVsSpent.Add(("spent", "other", untrackedSpent, 0));
+
+      _prevEvsTimeFilter = _evsTimeFilter;
+    }
+
+    DrawEarnedVsSpentContent(_cachedEarnedVsSpent);
+    ImGui.Spacing();
+    long? sinceForDisclaimer = _evsTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    };
+    DrawDataRangeDisclaimer(sinceForDisclaimer, GilStorage.GetEarliestTransactionTimestamp());
+  }
+
+  private void DrawEarnedVsSpentSection()
+  {
+    long? since = _evsTimeFilter switch
+    {
+      0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 7 * 86400L,
+      1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+      2 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+      _ => null,
+    };
+    var data = GilStorage.GetEarnedVsSpent(since);
+    DrawEarnedVsSpentContent(data);
+  }
+
+  private static void DrawEarnedVsSpentContent(List<(string Direction, string Source, long Total, int Count)> data)
+  {
+    if (data.Count == 0)
+    {
+      ImGui.TextDisabled("No transaction data yet.");
+      return;
+    }
+
+    var earned = data.Where(d => d.Direction == "earned").ToList();
+    var spent = data.Where(d => d.Direction == "spent").ToList();
+    var totalEarned = earned.Sum(e => e.Total);
+    var totalSpent = spent.Sum(s => s.Total);
+    var net = totalEarned - totalSpent;
+
+    var netColor = net >= 0
+      ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
+      : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
+    var netSign = net >= 0 ? "+" : "";
+
+    ImGui.Spacing();
+    ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"Earned: {totalEarned:N0}");
+    ImGui.SameLine(200);
+    ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), $"Spent: {totalSpent:N0}");
+    ImGui.SameLine(400);
+    ImGui.TextColored(netColor, $"Net: {netSign}{net:N0}");
+    ImGui.Separator();
+
+    if (earned.Count > 0)
+    {
+      ImGui.Spacing();
+      ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), "Income");
+      if (ImGui.BeginTable("EvsEarned", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      {
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 120);
+        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableHeadersRow();
+
+        foreach (var row in earned)
+        {
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn(); ImGui.Text(FormatSourceLabel(row.Source));
+          ImGui.TableNextColumn(); ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"+{row.Total:N0}");
+          ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
+        }
+        ImGui.EndTable();
+      }
+    }
+
+    if (spent.Count > 0)
+    {
+      ImGui.Spacing();
+      ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), "Expenses");
+      if (ImGui.BeginTable("EvsSpent", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      {
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 120);
+        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableHeadersRow();
+
+        foreach (var row in spent)
+        {
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn(); ImGui.Text(FormatSourceLabel(row.Source));
+          ImGui.TableNextColumn(); ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), $"-{row.Total:N0}");
+          ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
+        }
+        ImGui.EndTable();
+      }
+    }
+  }
+
+  private static string FormatSourceLabel(string source)
+  {
+    return source switch
+    {
+      "retainer_sale" => "Retainer Sale",
+      "vendor_sale" => "Vendor Sale",
+      "npc_purchase" => "NPC Purchase",
+      "npc_sale" => "NPC Sale",
+      "npc_buyback" => "NPC Buyback",
+      "mb_purchase" => "MB Purchase",
+      "teleport" => "Teleport",
+      "quest_reward" => "Quest Reward",
+      "duty_reward" => "Duty Reward",
+      "fate_reward" => "FATE Reward",
+      "other" => "Other (untracked)",
+      _ => source,
+    };
+  }
+
+  private static bool HasDataRangeDisclaimer(long? since, long? earliest)
+    => earliest.HasValue && (since == null || since.Value < earliest.Value);
+
+  private static void DrawDataRangeDisclaimer(long? since, long? earliest)
+  {
+    if (!HasDataRangeDisclaimer(since, earliest)) return;
+
+    var from = DateTimeOffset.FromUnixTimeSeconds(earliest!.Value).LocalDateTime;
+    var days = (int)((DateTimeOffset.UtcNow.ToUnixTimeSeconds() - earliest.Value) / 86400);
+    ImGui.TextDisabled($"Data only available from {from.ToString("d", System.Globalization.CultureInfo.CurrentCulture)} ({days} days)");
   }
 
   private static string FormatAge(long unixTimestamp)
