@@ -939,6 +939,8 @@ internal sealed class GilWindow: Window
       "glamour" => "Glamour",
       "dye" => "Dye",
       "fc_chest" => "FC Chest",
+      "custom_delivery" => "Custom Delivery",
+      "wondrous_tails" => "Wondrous Tails",
       "other" => "Other (untracked)",
       _ => source,
     };

@@ -52,6 +52,7 @@ public sealed class Plugin : IDalamudPlugin
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
+  private SpecialExchangeTracker? _specialExchangeTracker;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
@@ -118,6 +119,15 @@ public sealed class Plugin : IDalamudPlugin
       Svc.Log.Warning(ex, "ExchangeTracker failed — exchange-addon gil tracking disabled");
     }
 
+    try
+    {
+      _specialExchangeTracker = new SpecialExchangeTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "SpecialExchangeTracker failed — custom delivery / wondrous tails gil tracking disabled");
+    }
+
     GilDashboard = new GilWindow();
     WindowSystem.AddWindow(GilDashboard);
 
@@ -144,6 +154,7 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    _specialExchangeTracker?.Dispose();
     _exchangeTracker?.Dispose();
     _gilTrackListener?.Dispose();
     _retainerHistoryHook?.Dispose();
