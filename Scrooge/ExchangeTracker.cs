@@ -31,6 +31,7 @@ internal sealed class ExchangeTracker : IDisposable
   {
     { "Repair", "repair" },
     { "MiragePrism", "glamour" },
+    { "ColorantEquipment", "dye" },
   };
 
   private bool _active;

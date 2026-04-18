@@ -937,6 +937,7 @@ internal sealed class GilWindow: Window
       "fate_reward" => "FATE Reward",
       "repair" => "Repair",
       "glamour" => "Glamour",
+      "dye" => "Dye",
       "other" => "Other (untracked)",
       _ => source,
     };
