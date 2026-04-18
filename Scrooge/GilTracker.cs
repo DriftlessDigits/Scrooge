@@ -223,23 +223,32 @@ internal static class GilTracker
 
   /// <summary>
   /// Process sale history entries from the RetainerHistory hook.
-  /// For each entry: skip if already finalized; else try to promote a matching
-  /// pending row (from chat parsing); else insert fresh. UpsertLastSalePrice runs
-  /// on both paths since both produce authoritative unit_price + timestamp data.
+  /// For each entry:
+  /// - If already finalized, drop any duplicate pending twin (chat-captured row
+  ///   left orphaned by a race or prior bug) and move on.
+  /// - Else try to promote a matching pending row (from chat parsing).
+  /// - Else insert fresh.
+  /// UpsertLastSalePrice runs on the non-skip paths since both produce authoritative
+  /// unit_price + timestamp data.
   /// </summary>
   public static void ProcessSaleHistory(List<RetainerHistoryHook.RetainerHistoryData> entries, string retainerName)
   {
     var newCount = 0;
     var promotedCount = 0;
+    var dedupedCount = 0;
 
     foreach (var entry in entries)
     {
-      if (GilStorage.TransactionExists(entry.ItemID, entry.UnixTimeSeconds, retainerName))
-        continue;
-
       // UnitPrice from the hook is the TOTAL sale price, not per-unit.
       var totalGil = (long)entry.UnitPrice;
       var realUnitPrice = entry.Quantity > 0 ? (int)(entry.UnitPrice / entry.Quantity) : (int)entry.UnitPrice;
+
+      if (GilStorage.TransactionExists(entry.ItemID, entry.UnixTimeSeconds, retainerName))
+      {
+        if (GilStorage.DeleteDuplicatePendingSale(entry.ItemID, (int)entry.Quantity, totalGil))
+          dedupedCount++;
+        continue;
+      }
 
       var promoted = GilStorage.TryPromotePendingSale(
         entry.ItemID,
@@ -275,7 +284,7 @@ internal static class GilTracker
       GilStorage.UpsertLastSalePrice(entry.ItemID, realUnitPrice, (long)entry.UnixTimeSeconds);
     }
 
-    if (newCount > 0 || promotedCount > 0)
-      Svc.Log.Info($"[GilTrack] {newCount} new / {promotedCount} reconciled sale(s) from {retainerName}");
+    if (newCount > 0 || promotedCount > 0 || dedupedCount > 0)
+      Svc.Log.Info($"[GilTrack] {newCount} new / {promotedCount} reconciled / {dedupedCount} deduped sale(s) from {retainerName}");
   }
 }

@@ -154,6 +154,37 @@ internal static class GilStorage
   }
 
   /// <summary>
+  /// Deletes one pending retainer_sale row that duplicates an already-finalized sale.
+  /// Called when a hook entry matches an existing finalized row — the oldest pending
+  /// row with the same (item_id, quantity, amount) is the chat-captured twin of that
+  /// finalized sale and should be dropped rather than left as an orphan.
+  /// FIFO to match TryPromotePendingSale's 1:1 semantics: one hook entry resolves
+  /// exactly one pending row, whether by promotion or deduplication. Returns true
+  /// if a row was removed.
+  /// </summary>
+  internal static bool DeleteDuplicatePendingSale(uint itemId, int quantity, long amount)
+  {
+    using var cmd = new SqliteCommand(
+      @"DELETE FROM transactions
+        WHERE id = (
+          SELECT id FROM transactions
+          WHERE is_pending = 1
+            AND direction  = 'earned'
+            AND source     = 'retainer_sale'
+            AND item_id    = @iid
+            AND quantity   = @qty
+            AND amount     = @amt
+          ORDER BY timestamp ASC
+          LIMIT 1
+        )",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@qty", quantity);
+    cmd.Parameters.AddWithValue("@amt", amount);
+    return cmd.ExecuteNonQuery() > 0;
+  }
+
+  /// <summary>
   /// Tries to promote a pending retainer_sale row (inserted by the chat parser)
   /// to a finalized row using authoritative data from RetainerHistoryHook.
   /// Match key: (item_id, quantity, amount). FIFO on collision — oldest pending
@@ -175,7 +206,6 @@ internal static class GilStorage
             AND item_id  = @iid
             AND quantity = @qty
             AND amount   = @amt
-            AND timestamp < @ts
           ORDER BY timestamp ASC
           LIMIT 1
         )",
