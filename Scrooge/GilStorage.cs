@@ -756,6 +756,8 @@ internal static class GilStorage
     var results = new List<RetainerSummary>();
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+    // Pending rows (is_pending=1) have no retainer attribution yet — exclude them
+    // from the per-retainer summary so they don't show up under a blank row.
     using var cmd = new SqliteCommand(
       @"SELECT
       r.retainer_name,
@@ -764,7 +766,8 @@ internal static class GilStorage
       COALESCE(t.total_gil, 0) as total_gil,
       COALESCE(la.avg_age, 0) as avg_age_days
       FROM (
-        SELECT retainer_name FROM transactions WHERE direction = 'earned' AND source = 'retainer_sale'
+        SELECT retainer_name FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 0
         UNION
         SELECT retainer_name FROM listings
       ) r
@@ -774,7 +777,7 @@ internal static class GilStorage
           COUNT(*) as sale_count,
           SUM(amount) as total_gil
         FROM transactions
-        WHERE direction = 'earned' AND source = 'retainer_sale' AND timestamp > @since
+        WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 0 AND timestamp > @since
         GROUP BY retainer_name
       ) t ON r.retainer_name = t.retainer_name
       LEFT JOIN (
