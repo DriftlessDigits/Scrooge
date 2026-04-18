@@ -22,6 +22,12 @@ public record SaleRecord
   public long SaleTimestamp { get; init; }                     // Unix seconds from game server
   public DateTime SaleTime => DateTimeOffset.FromUnixTimeSeconds(SaleTimestamp).LocalDateTime;
 
+  /// <summary>
+  /// True when this sale was captured from a chat notification but not yet
+  /// reconciled with RetainerHistoryHook data. Retainer and buyer names and the
+  /// timestamp are provisional until the user opens Sale History at a summoning bell.
+  /// </summary>
+  public bool IsPending { get; init; }
 }
 
 /// <summary>

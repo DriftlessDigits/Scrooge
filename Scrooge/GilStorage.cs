@@ -369,11 +369,11 @@ internal static class GilStorage
     var sales = new List<SaleRecord>();
     using var cmd = new SqliteCommand(
       @"SELECT item_id, item_name, category, unit_price, quantity, is_hq,
-      retainer_name, counterparty, timestamp
+      retainer_name, counterparty, timestamp, is_pending
       FROM transactions
       WHERE direction = 'earned' AND source = 'retainer_sale'
       ORDER BY timestamp DESC
-      LIMIT @limit", 
+      LIMIT @limit",
       _connection);
     cmd.Parameters.AddWithValue("@limit", limit);
     using var reader = cmd.ExecuteReader();
@@ -389,10 +389,21 @@ internal static class GilStorage
         IsHQ = reader.GetInt32(5) != 0,
         RetainerName = reader.GetString(6),
         BuyerName = reader.GetString(7),
-        SaleTimestamp = reader.GetInt64(8)
+        SaleTimestamp = reader.GetInt64(8),
+        IsPending = reader.GetInt32(9) != 0
       });
     }
     return sales;
+  }
+
+  /// <summary>Count of retainer_sale rows still marked pending (not yet reconciled).</summary>
+  internal static int GetPendingSaleCount()
+  {
+    using var cmd = new SqliteCommand(
+      @"SELECT COUNT(*) FROM transactions
+        WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 1",
+      _connection);
+    return Convert.ToInt32(cmd.ExecuteScalar());
   }
 
   /// <summary>
