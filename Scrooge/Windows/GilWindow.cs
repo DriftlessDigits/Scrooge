@@ -567,7 +567,7 @@ internal sealed class GilWindow: Window
         {
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(row.Category);
-          DrawParentChainTooltipIfHovered(row.MacroGroup, row.MainGroup);
+          DrawParentChainTooltipIfHovered(row.MainGroup, row.MacroGroup);
           ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
           ImGui.TableNextColumn(); ImGui.Text($"{row.Gil:N0}");
         }
@@ -981,14 +981,13 @@ internal sealed class GilWindow: Window
     if (!ImGui.IsItemHovered()) return;
 
     var group = GilStorage.GetCategoryGroup(category);
-    var parts = new List<string>(3);
+    var parts = new List<string>(3) { category };
     if (group.HasValue)
     {
-      if (!string.IsNullOrEmpty(group.Value.Macro)) parts.Add(group.Value.Macro);
       if (!string.IsNullOrEmpty(group.Value.Display) && group.Value.Display != category)
         parts.Add(group.Value.Display);
+      if (!string.IsNullOrEmpty(group.Value.Macro)) parts.Add(group.Value.Macro);
     }
-    parts.Add(category);
 
     ImGui.BeginTooltip();
     ImGui.TextUnformatted(string.Join(" \u2192 ", parts));
