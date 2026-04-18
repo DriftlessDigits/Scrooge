@@ -935,6 +935,7 @@ internal sealed class GilWindow: Window
       "quest_reward" => "Quest Reward",
       "duty_reward" => "Duty Reward",
       "fate_reward" => "FATE Reward",
+      "exchange" => "Exchange",
       "other" => "Other (untracked)",
       _ => source,
     };
