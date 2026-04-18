@@ -938,6 +938,7 @@ internal sealed class GilWindow: Window
       "repair" => "Repair",
       "glamour" => "Glamour",
       "dye" => "Dye",
+      "fc_chest" => "FC Chest",
       "other" => "Other (untracked)",
       _ => source,
     };
