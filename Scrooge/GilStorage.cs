@@ -63,6 +63,7 @@ internal static class GilStorage
       File.Move(bakPath, jsonPath);
 
     GilStorageBootstrap.Run(_connection!);
+    _categoryGroupCache = null;
     Prune();
   }
 
@@ -454,7 +455,7 @@ internal static class GilStorage
     var limitClause = limit > 0 ? $"LIMIT {limit} OFFSET {offset}" : "";
 
     using var cmd = new SqliteCommand(
-      $@"SELECT timestamp, direction, source, amount, item_name, quantity, unit_price
+      $@"SELECT timestamp, direction, source, amount, item_name, category, quantity, unit_price
          FROM transactions {whereClause}
          ORDER BY timestamp DESC
          {limitClause}",
@@ -471,8 +472,9 @@ internal static class GilStorage
         Source = reader.GetString(2),
         Amount = reader.GetInt64(3),
         ItemName = reader.GetString(4),
-        Quantity = reader.GetInt32(5),
-        UnitPrice = reader.GetInt32(6),
+        Category = reader.GetString(5),
+        Quantity = reader.GetInt32(6),
+        UnitPrice = reader.GetInt32(7),
       });
     }
     return results;
@@ -819,6 +821,30 @@ internal static class GilStorage
     while (reader.Read())
       categories.Add(reader.GetString(0));
     return categories;
+  }
+
+  private static Dictionary<string, (string Macro, string Display)>? _categoryGroupCache;
+
+  /// <summary>
+  /// Returns the (macro_group, display_group) pair for a given raw ui_category,
+  /// or null if the category has no mapping. Cached on first access; cleared only
+  /// on database reset.
+  /// </summary>
+  internal static (string Macro, string Display)? GetCategoryGroup(string uiCategory)
+  {
+    if (_categoryGroupCache == null)
+    {
+      var map = new Dictionary<string, (string Macro, string Display)>();
+      using var cmd = new SqliteCommand(
+        "SELECT ui_category, macro_group, display_group FROM category_groups",
+        _connection);
+      using var reader = cmd.ExecuteReader();
+      while (reader.Read())
+        map[reader.GetString(0)] = (reader.GetString(1), reader.GetString(2));
+      _categoryGroupCache = map;
+    }
+
+    return _categoryGroupCache.TryGetValue(uiCategory, out var group) ? group : null;
   }
 
   /// <summary>

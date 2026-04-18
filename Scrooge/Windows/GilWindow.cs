@@ -447,6 +447,7 @@ internal sealed class GilWindow: Window
           void RowText(string s) { if (sale.IsPending) ImGui.TextDisabled(s); else ImGui.Text(s); }
 
           ImGui.TableNextColumn(); RowText(itemLabel);
+          DrawCategoryChainTooltipIfHovered(sale.Category);
           ImGui.TableNextColumn(); RowText($"x{sale.Quantity}");
           ImGui.TableNextColumn(); RowText($"{sale.UnitPrice:N0}");
           ImGui.TableNextColumn(); RowText($"{sale.TotalGil:N0}");
@@ -766,6 +767,7 @@ internal sealed class GilWindow: Window
         ImGui.TableNextColumn();
         var name = string.IsNullOrEmpty(txn.ItemName) ? "—" : txn.ItemName;
         ImGui.Text(name);
+        DrawCategoryChainTooltipIfHovered(txn.Category);
         ImGui.TableNextColumn();
         var sign = txn.Direction == "earned" ? "+" : "-";
         var color = txn.Direction == "earned"
@@ -962,6 +964,32 @@ internal sealed class GilWindow: Window
     if (age < 3600) return $"{age / 60}m ago";
     if (age < 86400) return $"{age / 3600}h ago";
     return $"{age / 86400}d ago";
+  }
+
+  /// <summary>
+  /// Renders a tooltip showing the macro → display → raw category chain for the
+  /// last-drawn item when hovered. No-op if the item isn't hovered or the
+  /// category string is empty (e.g. teleport, catch-all). If the category has
+  /// no mapping in category_groups, just shows the raw category.
+  /// </summary>
+  private static void DrawCategoryChainTooltipIfHovered(string category)
+  {
+    if (string.IsNullOrEmpty(category)) return;
+    if (!ImGui.IsItemHovered()) return;
+
+    var group = GilStorage.GetCategoryGroup(category);
+    var parts = new List<string>(3);
+    if (group.HasValue)
+    {
+      if (!string.IsNullOrEmpty(group.Value.Macro)) parts.Add(group.Value.Macro);
+      if (!string.IsNullOrEmpty(group.Value.Display) && group.Value.Display != category)
+        parts.Add(group.Value.Display);
+    }
+    parts.Add(category);
+
+    ImGui.BeginTooltip();
+    ImGui.TextUnformatted(string.Join(" \u2192 ", parts));
+    ImGui.EndTooltip();
   }
 
   private static (int Column, bool Ascending) GetSortSpec()

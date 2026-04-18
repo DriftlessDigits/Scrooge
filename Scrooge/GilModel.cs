@@ -42,6 +42,7 @@ public record TransactionRecord
   public string Source { get; init; } = string.Empty;
   public long Amount { get; init; }
   public string ItemName { get; init; } = string.Empty;
+  public string Category { get; init; } = string.Empty;     // ItemUICategory name
   public int Quantity { get; init; }
   public int UnitPrice { get; init; }
   public DateTime LocalTime => DateTimeOffset.FromUnixTimeSeconds(Timestamp).LocalDateTime;
