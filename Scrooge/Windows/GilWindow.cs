@@ -447,6 +447,7 @@ internal sealed class GilWindow: Window
           void RowText(string s) { if (sale.IsPending) ImGui.TextDisabled(s); else ImGui.Text(s); }
 
           ImGui.TableNextColumn(); RowText(itemLabel);
+          DrawCategoryChainTooltipIfHovered(sale.Category);
           ImGui.TableNextColumn(); RowText($"x{sale.Quantity}");
           ImGui.TableNextColumn(); RowText($"{sale.UnitPrice:N0}");
           ImGui.TableNextColumn(); RowText($"{sale.TotalGil:N0}");
@@ -537,8 +538,10 @@ internal sealed class GilWindow: Window
 
         foreach (var g in mainGroups)
         {
+          var macro = g.Select(r => r.MacroGroup).FirstOrDefault(m => !string.IsNullOrEmpty(m)) ?? "";
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(g.Key);
+          DrawParentChainTooltipIfHovered(macro);
           ImGui.TableNextColumn(); ImGui.Text($"{g.Sum(r => r.Count)}");
           ImGui.TableNextColumn(); ImGui.Text($"{g.Sum(r => r.Gil):N0}");
         }
@@ -564,6 +567,7 @@ internal sealed class GilWindow: Window
         {
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(row.Category);
+          DrawParentChainTooltipIfHovered(row.MainGroup, row.MacroGroup);
           ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
           ImGui.TableNextColumn(); ImGui.Text($"{row.Gil:N0}");
         }
@@ -766,6 +770,7 @@ internal sealed class GilWindow: Window
         ImGui.TableNextColumn();
         var name = string.IsNullOrEmpty(txn.ItemName) ? "—" : txn.ItemName;
         ImGui.Text(name);
+        DrawCategoryChainTooltipIfHovered(txn.Category);
         ImGui.TableNextColumn();
         var sign = txn.Direction == "earned" ? "+" : "-";
         var color = txn.Direction == "earned"
@@ -935,6 +940,10 @@ internal sealed class GilWindow: Window
       "quest_reward" => "Quest Reward",
       "duty_reward" => "Duty Reward",
       "fate_reward" => "FATE Reward",
+      "repair" => "Repair",
+      "fc_chest" => "FC Chest",
+      "custom_delivery" => "Custom Delivery",
+      "wondrous_tails" => "Wondrous Tails",
       "other" => "Other (untracked)",
       _ => source,
     };
@@ -958,6 +967,49 @@ internal sealed class GilWindow: Window
     if (age < 3600) return $"{age / 60}m ago";
     if (age < 86400) return $"{age / 3600}h ago";
     return $"{age / 86400}d ago";
+  }
+
+  /// <summary>
+  /// Renders a tooltip showing the macro → display → raw category chain for the
+  /// last-drawn item when hovered. No-op if the item isn't hovered or the
+  /// category string is empty (e.g. teleport, catch-all). If the category has
+  /// no mapping in category_groups, just shows the raw category.
+  /// </summary>
+  private static void DrawCategoryChainTooltipIfHovered(string category)
+  {
+    if (string.IsNullOrEmpty(category)) return;
+    if (!ImGui.IsItemHovered()) return;
+
+    var group = GilStorage.GetCategoryGroup(category);
+    var parts = new List<string>(3) { category };
+    if (group.HasValue)
+    {
+      if (!string.IsNullOrEmpty(group.Value.Display) && group.Value.Display != category)
+        parts.Add(group.Value.Display);
+      if (!string.IsNullOrEmpty(group.Value.Macro)) parts.Add(group.Value.Macro);
+    }
+
+    ImGui.BeginTooltip();
+    ImGui.TextUnformatted(string.Join(" \u2192 ", parts));
+    ImGui.EndTooltip();
+  }
+
+  /// <summary>
+  /// Tooltip variant for Categories-tab rows: shows the row's parent chain
+  /// (upward-looking). Empty parents are dropped, so "By Category" rows can
+  /// pass just the macro while "By Item Type" rows pass macro + display.
+  /// No tooltip when hovered row has no non-empty parents.
+  /// </summary>
+  private static void DrawParentChainTooltipIfHovered(params string[] parents)
+  {
+    if (!ImGui.IsItemHovered()) return;
+
+    var chain = string.Join(" \u2192 ", parents.Where(p => !string.IsNullOrEmpty(p)));
+    if (string.IsNullOrEmpty(chain)) return;
+
+    ImGui.BeginTooltip();
+    ImGui.TextUnformatted(chain);
+    ImGui.EndTooltip();
   }
 
   private static (int Column, bool Ascending) GetSortSpec()

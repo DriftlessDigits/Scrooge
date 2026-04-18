@@ -51,6 +51,9 @@ public sealed class Plugin : IDalamudPlugin
 
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
+  private ExchangeTracker? _exchangeTracker;
+  private SpecialExchangeTracker? _specialExchangeTracker;
+  private ChatCatchallTracker? _chatCatchallTracker;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
   private ConfigWindow ConfigWindow { get; init; }
@@ -108,6 +111,36 @@ public sealed class Plugin : IDalamudPlugin
       Svc.Log.Warning(ex, "GilTrackEventListener failed — passive snapshots disabled");
     }
 
+    try
+    {
+      _exchangeTracker = new ExchangeTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "ExchangeTracker failed — exchange-addon gil tracking disabled");
+    }
+
+    try
+    {
+      _specialExchangeTracker = new SpecialExchangeTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "SpecialExchangeTracker failed — custom delivery / wondrous tails gil tracking disabled");
+    }
+
+    // Instantiate last so its chat subscription runs after the specific
+    // parsers in GilTrackEventListener — the listener's NotifyHandled()
+    // calls need to fire before the catch-all's debounce is scheduled.
+    try
+    {
+      _chatCatchallTracker = new ChatCatchallTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "ChatCatchallTracker failed — catch-all gil tracking disabled");
+    }
+
     GilDashboard = new GilWindow();
     WindowSystem.AddWindow(GilDashboard);
 
@@ -134,6 +167,9 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    _chatCatchallTracker?.Dispose();
+    _specialExchangeTracker?.Dispose();
+    _exchangeTracker?.Dispose();
     _gilTrackListener?.Dispose();
     _retainerHistoryHook?.Dispose();
     GilStorage.Dispose();

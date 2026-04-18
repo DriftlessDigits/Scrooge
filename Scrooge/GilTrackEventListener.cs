@@ -24,12 +24,6 @@ namespace Scrooge;
 /// </summary>
 internal sealed class GilTrackEventListener : IDisposable
 {
-  /// <summary>
-  /// When true, the future catch-all chat tracker should stand down.
-  /// Set by specific trackers (quest/duty/FATE) to prevent double-counting.
-  /// </summary>
-  internal bool IsBlocked { get; private set; }
-
   // MB purchase tracking — snapshot gil on open, diff on close
   private long _mbOpenGil;
   private int _mbPurchaseCount;
@@ -103,7 +97,7 @@ internal sealed class GilTrackEventListener : IDisposable
       _inDuty = true;
       _dutySnapshotGil = (long)InventoryManager.Instance()->GetGil();
       _dutyName = Content.ContentName ?? $"Duty {cfcId}";
-      IsBlocked = true;
+      GilTrackingState.Block();
       Svc.Log.Debug($"[GilTrack] Entered duty: {_dutyName} (CFC {cfcId}), snapshot {_dutySnapshotGil:N0}g");
     }
     else if (_inDuty && (cfcId is null or 0 || isExcluded))
@@ -119,7 +113,7 @@ internal sealed class GilTrackEventListener : IDisposable
       Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
       _inDuty = false;
       _dutyName = "";
-      IsBlocked = false;
+      GilTrackingState.Unblock();
     }
   }
 
@@ -165,24 +159,32 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     _mbOpenGil = (long)InventoryManager.Instance()->GetGil();
     _mbPurchaseCount = 0;
+    GilTrackingState.Block();
   }
 
   private unsafe void OnMarketBoardClose(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking || _mbPurchaseCount == 0) return;
+    try
+    {
+      if (!Plugin.Configuration.EnableGilTracking || _mbPurchaseCount == 0) return;
 
-    var currentGil = (long)InventoryManager.Instance()->GetGil();
-    var spent = _mbOpenGil - currentGil;
-    if (spent <= 0) return;
+      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      var spent = _mbOpenGil - currentGil;
+      if (spent <= 0) return;
 
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-    var label = _mbPurchaseCount == 1 ? "item" : "items";
-    GilStorage.InsertTransaction(now, "spent", "mb_purchase", spent,
-      0, $"{_mbPurchaseCount} {label}", "", _mbPurchaseCount, (int)(spent / _mbPurchaseCount),
-      false, "", "Market Board");
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      var label = _mbPurchaseCount == 1 ? "item" : "items";
+      GilStorage.InsertTransaction(now, "spent", "mb_purchase", spent,
+        0, $"{_mbPurchaseCount} {label}", "", _mbPurchaseCount, (int)(spent / _mbPurchaseCount),
+        false, "", "Market Board");
 
-    Svc.Log.Debug($"[GilTrack] mb_purchase: {spent:N0}g on {_mbPurchaseCount} {label}");
-    _mbPurchaseCount = 0;
+      Svc.Log.Debug($"[GilTrack] mb_purchase: {spent:N0}g on {_mbPurchaseCount} {label}");
+      _mbPurchaseCount = 0;
+    }
+    finally
+    {
+      GilTrackingState.Unblock();
+    }
   }
 
   // --- Chat message transaction capture ---
@@ -262,6 +264,7 @@ internal sealed class GilTrackEventListener : IDisposable
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     GilStorage.InsertTransaction(now, direction, source, amount,
       itemId, itemName, category, quantity, unitPrice, isHq, "", "NPC");
+    GilTrackingState.NotifyHandled();
 
     Svc.Log.Debug($"[GilTrack] {source}: {itemName} x{quantity} = {amount:N0}g");
   }
@@ -316,6 +319,9 @@ internal sealed class GilTrackEventListener : IDisposable
     GilStorage.InsertTransaction(now, "earned", "retainer_sale", totalGil,
       itemId, itemName, category, quantity, unitPrice, isHq, "", "",
       transaction: null, isPending: true);
+    // Retainer sale doesn't move player gil, but refresh the catch-all
+    // baseline for parity with every other chat-driven parser.
+    GilTrackingState.NotifyHandled();
 
     Svc.Log.Debug($"[GilTrack] retainer_sale (pending): {itemName} x{quantity} = {totalGil:N0}g");
     return true;
@@ -327,7 +333,7 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     _questSnapshotGil = (long)InventoryManager.Instance()->GetGil();
-    IsBlocked = true;
+    GilTrackingState.Block();
     Svc.Log.Debug($"[GilTrack] Quest reward window opened, snapshot {_questSnapshotGil:N0}g");
   }
 
@@ -353,7 +359,7 @@ internal sealed class GilTrackEventListener : IDisposable
       RecordGilTransaction("earned", "quest_reward", diff, questName);
 
     Svc.Log.Debug($"[GilTrack] Quest reward finalized: '{questName}', diff {diff:N0}g");
-    IsBlocked = false;
+    GilTrackingState.Unblock();
   }
 
   // --- Tier 1: FATE Rewards (FateReward addon) ---
@@ -362,7 +368,7 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     _fateSnapshotGil = (long)InventoryManager.Instance()->GetGil();
-    IsBlocked = true;
+    GilTrackingState.Block();
     Svc.Log.Debug($"[GilTrack] FATE reward window opening, snapshot {_fateSnapshotGil:N0}g");
   }
 
@@ -392,7 +398,7 @@ internal sealed class GilTrackEventListener : IDisposable
       RecordGilTransaction("earned", "fate_reward", diff, fateName);
 
     Svc.Log.Debug($"[GilTrack] FATE reward: '{fateName}', diff {diff:N0}g");
-    IsBlocked = false;
+    GilTrackingState.Unblock();
   }
 
   // --- Shared helpers ---
@@ -420,6 +426,7 @@ internal sealed class GilTrackEventListener : IDisposable
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     GilStorage.InsertTransaction(now, "spent", "teleport", amount,
       0, "", "", 1, amount, false, "", "");
+    GilTrackingState.NotifyHandled();
 
     Svc.Log.Debug($"[GilTrack] teleport: {amount:N0}g");
   }
