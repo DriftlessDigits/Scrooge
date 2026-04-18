@@ -194,6 +194,13 @@ internal sealed class GilTrackEventListener : IDisposable
 
     var typeId = (int)type;
 
+    // DETECTION — identify which chat type carries retainer sale notifications.
+    // Expected pattern: "The [N ][item] you put up for sale in the [city] markets
+    // ha(s|ve) sold for X gil (after fees)."
+    // Remove once chat type is confirmed and wired into the parser below.
+    if (Regex.IsMatch(message.TextValue, @"sold for [\d,]+ gil \(after fees\)", RegexOptions.IgnoreCase))
+      Svc.Log.Info($"[GilTrack:DETECT] Retainer sale chat — type={typeId}: {message.TextValue}");
+
     if (typeId == 57)
       ParseSystemMessage(message);
     else if (typeId == 2105)
