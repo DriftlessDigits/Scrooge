@@ -936,8 +936,6 @@ internal sealed class GilWindow: Window
       "duty_reward" => "Duty Reward",
       "fate_reward" => "FATE Reward",
       "repair" => "Repair",
-      "glamour" => "Glamour",
-      "dye" => "Dye",
       "fc_chest" => "FC Chest",
       "custom_delivery" => "Custom Delivery",
       "wondrous_tails" => "Wondrous Tails",

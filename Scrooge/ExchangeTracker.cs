@@ -30,8 +30,6 @@ internal sealed class ExchangeTracker : IDisposable
   private static readonly Dictionary<string, string> AddonSources = new()
   {
     { "Repair", "repair" },
-    { "MiragePrism", "glamour" },
-    { "ColorantEquipment", "dye" },
     { "FreeCompanyChest", "fc_chest" },
   };
 
