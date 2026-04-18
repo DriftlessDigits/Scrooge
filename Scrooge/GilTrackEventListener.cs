@@ -24,12 +24,6 @@ namespace Scrooge;
 /// </summary>
 internal sealed class GilTrackEventListener : IDisposable
 {
-  /// <summary>
-  /// When true, the future catch-all chat tracker should stand down.
-  /// Set by specific trackers (quest/duty/FATE) to prevent double-counting.
-  /// </summary>
-  internal bool IsBlocked { get; private set; }
-
   // MB purchase tracking — snapshot gil on open, diff on close
   private long _mbOpenGil;
   private int _mbPurchaseCount;
@@ -103,7 +97,7 @@ internal sealed class GilTrackEventListener : IDisposable
       _inDuty = true;
       _dutySnapshotGil = (long)InventoryManager.Instance()->GetGil();
       _dutyName = Content.ContentName ?? $"Duty {cfcId}";
-      IsBlocked = true;
+      GilTrackingState.Block();
       Svc.Log.Debug($"[GilTrack] Entered duty: {_dutyName} (CFC {cfcId}), snapshot {_dutySnapshotGil:N0}g");
     }
     else if (_inDuty && (cfcId is null or 0 || isExcluded))
@@ -119,7 +113,7 @@ internal sealed class GilTrackEventListener : IDisposable
       Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
       _inDuty = false;
       _dutyName = "";
-      IsBlocked = false;
+      GilTrackingState.Unblock();
     }
   }
 
@@ -327,7 +321,7 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     _questSnapshotGil = (long)InventoryManager.Instance()->GetGil();
-    IsBlocked = true;
+    GilTrackingState.Block();
     Svc.Log.Debug($"[GilTrack] Quest reward window opened, snapshot {_questSnapshotGil:N0}g");
   }
 
@@ -353,7 +347,7 @@ internal sealed class GilTrackEventListener : IDisposable
       RecordGilTransaction("earned", "quest_reward", diff, questName);
 
     Svc.Log.Debug($"[GilTrack] Quest reward finalized: '{questName}', diff {diff:N0}g");
-    IsBlocked = false;
+    GilTrackingState.Unblock();
   }
 
   // --- Tier 1: FATE Rewards (FateReward addon) ---
@@ -362,7 +356,7 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     _fateSnapshotGil = (long)InventoryManager.Instance()->GetGil();
-    IsBlocked = true;
+    GilTrackingState.Block();
     Svc.Log.Debug($"[GilTrack] FATE reward window opening, snapshot {_fateSnapshotGil:N0}g");
   }
 
@@ -392,7 +386,7 @@ internal sealed class GilTrackEventListener : IDisposable
       RecordGilTransaction("earned", "fate_reward", diff, fateName);
 
     Svc.Log.Debug($"[GilTrack] FATE reward: '{fateName}', diff {diff:N0}g");
-    IsBlocked = false;
+    GilTrackingState.Unblock();
   }
 
   // --- Shared helpers ---
