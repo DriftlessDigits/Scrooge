@@ -426,9 +426,15 @@ internal static class GilStorage
     return sales;
   }
 
-  /// <summary>Count of retainer_sale rows still marked pending (not yet reconciled).</summary>
+  /// <summary>
+  /// Count of retainer_sale rows still marked pending (not yet reconciled).
+  /// Safe to call from draw loops: returns 0 if the connection isn't open yet
+  /// (plugin startup race) or has been closed (teardown).
+  /// </summary>
   internal static int GetPendingSaleCount()
   {
+    if (_connection is null || _connection.State != System.Data.ConnectionState.Open)
+      return 0;
     using var cmd = new SqliteCommand(
       @"SELECT COUNT(*) FROM transactions
         WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 1",
