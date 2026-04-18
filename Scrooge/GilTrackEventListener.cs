@@ -194,12 +194,11 @@ internal sealed class GilTrackEventListener : IDisposable
 
     var typeId = (int)type;
 
-    // DETECTION — identify which chat type carries retainer sale notifications.
-    // Expected pattern: "The [N ][item] you put up for sale in the [city] markets
-    // ha(s|ve) sold for X gil (after fees)."
-    // Remove once chat type is confirmed and wired into the parser below.
-    if (Regex.IsMatch(message.TextValue, @"sold for [\d,]+ gil \(after fees\)", RegexOptions.IgnoreCase))
-      Svc.Log.Info($"[GilTrack:DETECT] Retainer sale chat — type={typeId}: {message.TextValue}");
+    // Retainer sale notifications. Pattern match is the gate — chat type still TBD,
+    // but the "sold for X gil (after fees)" phrasing is unique enough to avoid
+    // false positives across all chat channels. Parser logs the observed chat type
+    // so we can tighten the filter later if needed.
+    if (ParseRetainerSale(message, typeId)) return;
 
     if (typeId == 57)
       ParseSystemMessage(message);
@@ -265,6 +264,61 @@ internal sealed class GilTrackEventListener : IDisposable
       itemId, itemName, category, quantity, unitPrice, isHq, "", "NPC");
 
     Svc.Log.Debug($"[GilTrack] {source}: {itemName} x{quantity} = {amount:N0}g");
+  }
+
+  private static readonly Regex RetainerSalePattern =
+    new(@"sold for ([\d,]+) gil \(after fees\)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+  private static readonly Regex RetainerSaleQuantityPattern =
+    new(@"^The\s+(\d+)\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+  /// <summary>
+  /// Parses a retainer sale notification from chat into a pending retainer_sale transaction.
+  /// Chat message format: "The [N ][item] you put up for sale in the [city] markets
+  /// ha(s|ve) sold for X gil (after fees)."
+  ///
+  /// Pending rows get enriched (retainer_name, buyer_name, real server timestamp) when
+  /// the RetainerHistoryHook later reconciles them via ProcessSaleHistory.
+  ///
+  /// Returns true if this message was a retainer sale (whether or not it parsed cleanly),
+  /// so the caller knows to skip other chat handlers.
+  /// </summary>
+  private bool ParseRetainerSale(SeString message, int typeId)
+  {
+    var text = message.TextValue;
+    var gilMatch = RetainerSalePattern.Match(text);
+    if (!gilMatch.Success) return false;
+
+    // Log observed chat type on every match until we've confirmed it's stable.
+    // Tighten to a typeId filter once we're sure the game only uses one channel.
+    Svc.Log.Info($"[GilTrack] retainer_sale chat type={typeId}: {text}");
+
+    var totalGil = int.Parse(gilMatch.Groups[1].Value.Replace(",", ""));
+    if (totalGil <= 0) return true;
+
+    var itemPayload = message.Payloads.OfType<ItemPayload>().FirstOrDefault();
+    if (itemPayload == null)
+    {
+      Svc.Log.Warning($"[GilTrack] retainer_sale: no ItemPayload in chat message — skipping. Text: {text}");
+      return true;
+    }
+
+    var itemId = itemPayload.ItemId;
+    var isHq = itemPayload.IsHQ;
+    var itemName = GilTracker.GetItemName(itemId);
+    var category = GilTracker.GetItemCategory(itemId);
+
+    var qtyMatch = RetainerSaleQuantityPattern.Match(text);
+    var quantity = qtyMatch.Success ? int.Parse(qtyMatch.Groups[1].Value) : 1;
+    var unitPrice = quantity > 0 ? totalGil / quantity : totalGil;
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    GilStorage.InsertTransaction(now, "earned", "retainer_sale", totalGil,
+      itemId, itemName, category, quantity, unitPrice, isHq, "", "",
+      transaction: null, isPending: true);
+
+    Svc.Log.Debug($"[GilTrack] retainer_sale (pending): {itemName} x{quantity} = {totalGil:N0}g");
+    return true;
   }
 
   // --- Tier 1: Quest Rewards (JournalResult addon) ---
