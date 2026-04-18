@@ -538,8 +538,10 @@ internal sealed class GilWindow: Window
 
         foreach (var g in mainGroups)
         {
+          var macro = g.Select(r => r.MacroGroup).FirstOrDefault(m => !string.IsNullOrEmpty(m)) ?? "";
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(g.Key);
+          DrawParentChainTooltipIfHovered(macro);
           ImGui.TableNextColumn(); ImGui.Text($"{g.Sum(r => r.Count)}");
           ImGui.TableNextColumn(); ImGui.Text($"{g.Sum(r => r.Gil):N0}");
         }
@@ -565,6 +567,7 @@ internal sealed class GilWindow: Window
         {
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(row.Category);
+          DrawParentChainTooltipIfHovered(row.MacroGroup, row.MainGroup);
           ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
           ImGui.TableNextColumn(); ImGui.Text($"{row.Gil:N0}");
         }
@@ -989,6 +992,24 @@ internal sealed class GilWindow: Window
 
     ImGui.BeginTooltip();
     ImGui.TextUnformatted(string.Join(" \u2192 ", parts));
+    ImGui.EndTooltip();
+  }
+
+  /// <summary>
+  /// Tooltip variant for Categories-tab rows: shows the row's parent chain
+  /// (upward-looking). Empty parents are dropped, so "By Category" rows can
+  /// pass just the macro while "By Item Type" rows pass macro + display.
+  /// No tooltip when hovered row has no non-empty parents.
+  /// </summary>
+  private static void DrawParentChainTooltipIfHovered(params string[] parents)
+  {
+    if (!ImGui.IsItemHovered()) return;
+
+    var chain = string.Join(" \u2192 ", parents.Where(p => !string.IsNullOrEmpty(p)));
+    if (string.IsNullOrEmpty(chain)) return;
+
+    ImGui.BeginTooltip();
+    ImGui.TextUnformatted(chain);
     ImGui.EndTooltip();
   }
 
