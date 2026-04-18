@@ -117,11 +117,11 @@ internal static class GilStorage
   internal static void InsertTransaction(long timestamp, string direction, string source,
       long amount, uint itemId, string itemName, string category, int quantity,
       int unitPrice, bool isHq, string retainerName, string counterparty,
-      SqliteTransaction? transaction = null)
+      SqliteTransaction? transaction = null, bool isPending = false)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO transactions (timestamp, direction, source, amount, item_id, item_name, category, quantity, unit_price, is_hq, retainer_name, counterparty)
-      VALUES (@ts, @dir, @src, @amt, @iid, @iname, @cat, @qty, @up, @hq, @ret, @cpty)",
+      @"INSERT INTO transactions (timestamp, direction, source, amount, item_id, item_name, category, quantity, unit_price, is_hq, retainer_name, counterparty, is_pending)
+      VALUES (@ts, @dir, @src, @amt, @iid, @iname, @cat, @qty, @up, @hq, @ret, @cpty, @pending)",
       _connection);
     cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
@@ -136,6 +136,7 @@ internal static class GilStorage
     cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     cmd.Parameters.AddWithValue("@ret", retainerName);
     cmd.Parameters.AddWithValue("@cpty", counterparty);
+    cmd.Parameters.AddWithValue("@pending", isPending ? 1 : 0);
     cmd.ExecuteNonQuery();
   }
 
