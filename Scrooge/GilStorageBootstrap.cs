@@ -68,6 +68,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 7);
     }
 
+    if (version < 8)
+    {
+      MigrateV8(connection);
+      SetSchemaVersion(connection, 8);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -663,6 +669,30 @@ internal class GilStorageBootstrap
       "CREATE INDEX IF NOT EXISTS idx_txn_pending ON transactions(is_pending, item_id, quantity, amount) WHERE is_pending = 1",
       connection);
     addIdx.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// V8: Delete catchall rows that duplicate a vendor_sale row. Pre-fix the vendor
+  /// sell orchestrators didn't Block the catchall around the sell action, so every
+  /// vendor sale got a paired (source='catchall', direction='earned') row at the
+  /// same amount and within ~1s of the vendor_sale row. One-shot cleanup.
+  /// </summary>
+  private static void MigrateV8(SqliteConnection connection)
+  {
+    using var fix = new SqliteCommand(
+      @"DELETE FROM transactions
+        WHERE source = 'catchall'
+          AND direction = 'earned'
+          AND EXISTS (
+            SELECT 1 FROM transactions v
+            WHERE v.source = 'vendor_sale'
+              AND v.amount = transactions.amount
+              AND ABS(v.timestamp - transactions.timestamp) <= 1
+          )",
+      connection);
+    var affected = fix.ExecuteNonQuery();
+
+    Svc.Log.Info($"[GilTrack] V8 migration: removed {affected} catchall rows duplicating vendor_sale");
   }
 
   // =========================================================================

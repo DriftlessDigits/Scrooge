@@ -316,32 +316,37 @@ internal static class GilStorage
   // =========================================================================
 
   /// <summary>
-  /// Gets the most recent gil snapshot with per-retainer balances.
-  /// Reconstructs the GilSnapshot record including the RetainerGil dictionary
-  /// by joining gil_snapshots + retainer_snapshots.
+  /// Returns the latest snapshot for the Portfolio summary: latest known player gil
+  /// paired with the latest known retainer balances. Player gil comes from the most
+  /// recent gil_snapshots row (including zone_change captures). Retainer balances come
+  /// from the most recent snapshot that actually has retainer_snapshots rows — zone
+  /// changes only record player gil, so the latest snapshot and the latest retainer
+  /// snapshot are not always the same row.
   /// </summary>
   internal static GilSnapshot? GetLatestSnapshot()
   {
-    // Get the latest snapshot row — read values and close reader
-    // before opening a second one (only one active reader per connection)
-    long snapshotId, timestamp, playerGil;
+    // Latest snapshot (any source) — may be a zone_change row with no retainer data.
+    long timestamp, playerGil;
     using (var snapCmd = new SqliteCommand(
-      "SELECT id, timestamp, player_gil FROM gil_snapshots ORDER BY timestamp DESC LIMIT 1",
+      "SELECT timestamp, player_gil FROM gil_snapshots ORDER BY timestamp DESC LIMIT 1",
       _connection))
     using (var snapReader = snapCmd.ExecuteReader())
     {
       if (!snapReader.Read()) return null;
-      snapshotId = snapReader.GetInt64(0);
-      timestamp = snapReader.GetInt64(1);
-      playerGil = snapReader.GetInt64(2);
+      timestamp = snapReader.GetInt64(0);
+      playerGil = snapReader.GetInt64(1);
     } // snapReader disposed here before opening retReader
 
-    // Get retainer balances for this snapshot
+    // Retainer balances from the most recent snapshot that has retainer rows.
     var retainerGil = new Dictionary<string, long>();
     using var retCmd = new SqliteCommand(
-      "SELECT retainer_name, gil FROM retainer_snapshots WHERE snapshot_id = @id",
+      @"SELECT retainer_name, gil FROM retainer_snapshots
+        WHERE snapshot_id = (
+          SELECT s.id FROM gil_snapshots s
+          WHERE EXISTS (SELECT 1 FROM retainer_snapshots r WHERE r.snapshot_id = s.id)
+          ORDER BY s.timestamp DESC LIMIT 1
+        )",
       _connection);
-    retCmd.Parameters.AddWithValue("@id", snapshotId);
     using var retReader = retCmd.ExecuteReader();
     while (retReader.Read())
     {

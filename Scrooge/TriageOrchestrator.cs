@@ -368,6 +368,8 @@ internal sealed class TriageOrchestrator : IDisposable
       _taskManager.Enqueue(() => GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
         $"TriageClickInv_{item.ItemName}");
       _taskManager.DelayNext(500);
+      _taskManager.Enqueue(() => { GilTrackingState.Block(); return true; },
+        $"TriageBlockCatchall_{item.ItemName}");
       _taskManager.Enqueue(GameNavigation.ClickVendorSellItem,
         $"TriageVendor_{item.ItemName}");
       _taskManager.DelayNext(500);
@@ -375,6 +377,8 @@ internal sealed class TriageOrchestrator : IDisposable
       // Track the sale
       _taskManager.Enqueue(() => { TrackVendorSale(item); return true; },
         $"TriageTrack_{item.ItemName}");
+      _taskManager.Enqueue(() => { GilTrackingState.Unblock(); return true; },
+        $"TriageUnblockCatchall_{item.ItemName}");
     }
     else
     {
