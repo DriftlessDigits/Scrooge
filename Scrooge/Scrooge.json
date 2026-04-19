@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Added Line Go Up — gil tracking expansion: quest/duty/FATE rewards, repair/FC chest/custom delivery/wondrous tails captures, passive retainer sale capture (no AutoPinch required), chat catch-all safety net, category hover tooltips, and a new dashboard with gil history chart, filterable transactions, daily changes, and earned-vs-spent breakdown."
+  "Changelog": "Bugfixes: vendor sales no longer double-log as catchall rows (Block/Unblock added around the sell action in both Hawk and Triage paths); a one-shot migration cleans up existing duplicate catchall rows. Retainer Gil in the Portfolio summary survives zone changes (carries forward from the last retainer-wallet snapshot instead of zeroing on teleport)."
 }
