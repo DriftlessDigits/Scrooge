@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game.Chat;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
@@ -72,7 +73,7 @@ internal sealed class GilTrackEventListener : IDisposable
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerList", OnRetainerListSetup);
   }
 
-  private unsafe void OnTerritoryChanged(ushort territoryId)
+  private unsafe void OnTerritoryChanged(uint territoryId)
   {
     GilTracker.TakeBalanceSnapshot("zone_change");
 
@@ -189,12 +190,12 @@ internal sealed class GilTrackEventListener : IDisposable
 
   // --- Chat message transaction capture ---
 
-  private void OnChatMessage(XivChatType type, int timestamp,
-    ref SeString sender, ref SeString message, ref bool isHandled)
+  private void OnChatMessage(IHandleableChatMessage chatMessage)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
 
-    var typeId = (int)type;
+    var typeId = (int)chatMessage.LogKind;
+    var message = chatMessage.Message;
 
     // Retainer sale notifications. Pattern match is the gate — chat type still TBD,
     // but the "sold for X gil (after fees)" phrasing is unique enough to avoid

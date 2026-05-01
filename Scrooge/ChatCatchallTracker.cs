@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
-using Dalamud.Game.Text;
-using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Chat;
 using Dalamud.Plugin.Services;
 using ECommons.DalamudServices;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -53,11 +52,10 @@ internal sealed class ChatCatchallTracker : IDisposable
     Svc.Chat.ChatMessage -= OnChatMessage;
   }
 
-  private unsafe void OnChatMessage(XivChatType type, int timestamp,
-    ref SeString sender, ref SeString message, ref bool isHandled)
+  private unsafe void OnChatMessage(IHandleableChatMessage message)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
-    if (!ValidChatTypes.Contains((int)type)) return;
+    if (!ValidChatTypes.Contains((int)message.LogKind)) return;
     if (GilTrackingState.IsBlocked) return;
 
     if (!_baselineInitialized)
