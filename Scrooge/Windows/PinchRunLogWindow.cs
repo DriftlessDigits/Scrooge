@@ -16,7 +16,8 @@ namespace Scrooge.Windows
     NoData,      // yellow — no competition, player decides
     Outlier,     // normal — system handled it, got a price
     VendorSold,  // green — vendor-sold through retainer
-    Banned       // blue — on ban list, observed but not changed
+    Banned,      // blue — on ban list, observed but not changed
+    Desynthed,   // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
