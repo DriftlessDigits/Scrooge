@@ -57,7 +57,50 @@ internal sealed class DesynthPreviewWindow : Window
       return;
     }
 
+    DrawControlsRow();
+    ImGui.Separator();
     DrawTable();
+  }
+
+  private void DrawControlsRow()
+  {
+    int checkedCount = 0;
+    int protectedChecked = 0;
+    foreach (var it in _items)
+    {
+      if (!it.Selected) continue;
+      checkedCount++;
+      if (it.IsProtected) protectedChecked++;
+    }
+
+    ImGui.Text($"{checkedCount} selected");
+    if (protectedChecked > 0)
+    {
+      ImGui.SameLine();
+      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.45f, 0.45f, 1f));
+      ImGui.Text($"({protectedChecked} protected)");
+      ImGui.PopStyleColor();
+    }
+
+    if (ImGui.Button("Select Skillup-Eligible"))
+    {
+      foreach (var it in _items)
+        it.Selected = !it.IsProtected && DesynthSkillup.IsSkillupEligible(it.Color);
+    }
+    ImGui.SameLine();
+
+    if (ImGui.Button("Select All"))
+    {
+      foreach (var it in _items)
+        it.Selected = !it.IsProtected;
+    }
+    ImGui.SameLine();
+
+    if (ImGui.Button("Deselect All"))
+    {
+      foreach (var it in _items)
+        it.Selected = false;
+    }
   }
 
   private static readonly System.Numerics.Vector4 RedTag    = new(0.95f, 0.35f, 0.35f, 1f);
