@@ -1,6 +1,7 @@
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using ECommons;
+using ECommons.DalamudServices;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
 
@@ -17,6 +18,8 @@ namespace Scrooge.Windows;
 internal sealed class DesynthPreviewWindow : Window
 {
   private List<DesynthItem> _items = [];
+  private bool _confirmModalOpen;
+  private List<DesynthItem> _pendingProtected = [];
 
   public DesynthPreviewWindow()
     : base("Desynth Preview###DesynthPreview", ImGuiWindowFlags.None)
@@ -101,6 +104,84 @@ internal sealed class DesynthPreviewWindow : Window
       foreach (var it in _items)
         it.Selected = false;
     }
+
+    ImGui.Separator();
+
+    ImGui.BeginDisabled(checkedCount == 0);
+    if (ImGui.Button($"Run Desynth ({checkedCount})"))
+      OnRunClicked();
+    ImGui.EndDisabled();
+
+    DrawConfirmModal();
+  }
+
+  private void OnRunClicked()
+  {
+    var selected = _items.FindAll(i => i.Selected);
+    if (selected.Count == 0) return;
+
+    _pendingProtected = selected.FindAll(i => i.IsProtected);
+    if (_pendingProtected.Count > 0)
+    {
+      _confirmModalOpen = true;
+      ImGui.OpenPopup("Confirm protected desynth###DesynthConfirm");
+      return;
+    }
+
+    StartRun(selected);
+  }
+
+  private void DrawConfirmModal()
+  {
+    if (!_confirmModalOpen) return;
+
+    var center = ImGui.GetMainViewport().GetCenter();
+    ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new System.Numerics.Vector2(0.5f, 0.5f));
+
+    if (ImGui.BeginPopupModal("Confirm protected desynth###DesynthConfirm",
+        ref _confirmModalOpen, ImGuiWindowFlags.AlwaysAutoResize))
+    {
+      ImGui.TextWrapped($"You've checked {_pendingProtected.Count} protected items:");
+      ImGui.Separator();
+
+      foreach (var it in _pendingProtected)
+      {
+        string tag = it.IsInGearset ? "[gearset]"
+                    : it.IsSpiritbond100 ? "[SB100]"
+                    : it.HasMateria ? "[materia]"
+                    : "[?]";
+        ImGui.BulletText($"{tag}  {it.Name}");
+      }
+
+      ImGui.Separator();
+      ImGui.TextWrapped("Confirm desynth? These will be destroyed.");
+
+      if (ImGui.Button("Cancel"))
+      {
+        _confirmModalOpen = false;
+        _pendingProtected.Clear();
+        ImGui.CloseCurrentPopup();
+      }
+      ImGui.SameLine();
+      if (ImGui.Button("Confirm"))
+      {
+        _confirmModalOpen = false;
+        var selected = _items.FindAll(i => i.Selected);
+        _pendingProtected.Clear();
+        ImGui.CloseCurrentPopup();
+        StartRun(selected);
+      }
+
+      ImGui.EndPopup();
+    }
+  }
+
+  private void StartRun(List<DesynthItem> items)
+  {
+    // Orchestrator wires in Task 12. Until then, debug-print so we can
+    // verify the gate flow without a real run.
+    Svc.Chat.Print($"[Scrooge] DEBUG: Run requested for {items.Count} items. Orchestrator wires in Task 12.");
+    IsOpen = false;
   }
 
   private static readonly System.Numerics.Vector4 RedTag    = new(0.95f, 0.35f, 0.35f, 1f);
