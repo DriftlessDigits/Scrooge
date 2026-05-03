@@ -60,6 +60,48 @@ internal sealed class DesynthPreviewWindow : Window
     DrawTable();
   }
 
+  private static readonly System.Numerics.Vector4 RedTag    = new(0.95f, 0.35f, 0.35f, 1f);
+  private static readonly System.Numerics.Vector4 YellowTag = new(0.95f, 0.85f, 0.30f, 1f);
+  private static readonly System.Numerics.Vector4 GreenTag  = new(0.45f, 0.85f, 0.45f, 1f);
+  private static readonly System.Numerics.Vector4 FlagTag   = new(0.85f, 0.65f, 0.30f, 1f);
+
+  private static void DrawColorTag(DesynthSkillupColor color)
+  {
+    var (text, tint) = color switch
+    {
+      DesynthSkillupColor.Red    => ("Red",    RedTag),
+      DesynthSkillupColor.Yellow => ("Yellow", YellowTag),
+      DesynthSkillupColor.Green  => ("Green",  GreenTag),
+      _                          => ("?",      GreenTag),
+    };
+    ImGui.PushStyleColor(ImGuiCol.Text, tint);
+    ImGui.Text(text);
+    ImGui.PopStyleColor();
+  }
+
+  private static void DrawFlagIcons(DesynthItem item)
+  {
+    ImGui.PushStyleColor(ImGuiCol.Text, FlagTag);
+    if (item.IsInGearset)
+    {
+      ImGui.Text("GS");
+      if (ImGui.IsItemHovered()) ImGui.SetTooltip("In a saved gearset");
+      ImGui.SameLine();
+    }
+    if (item.IsSpiritbond100)
+    {
+      ImGui.Text("SB");
+      if (ImGui.IsItemHovered()) ImGui.SetTooltip("Spiritbond 100% — extracting yields materia");
+      ImGui.SameLine();
+    }
+    if (item.HasMateria)
+    {
+      ImGui.Text("M");
+      if (ImGui.IsItemHovered()) ImGui.SetTooltip("Has equipped materia — desynth destroys it");
+    }
+    ImGui.PopStyleColor();
+  }
+
   private void DrawTable()
   {
     if (!ImGui.BeginTable("DesynthItems", 6,
@@ -95,12 +137,10 @@ internal sealed class DesynthPreviewWindow : Window
       ImGui.Text(item.ClassAbbrev);
 
       ImGui.TableNextColumn();
-      // Color tag — Task 7 expands this.
-      ImGui.Text(item.Color.ToString());
+      DrawColorTag(item.Color);
 
       ImGui.TableNextColumn();
-      // Flags — Task 7 expands this.
-      ImGui.Text(item.IsProtected ? "P" : "");
+      DrawFlagIcons(item);
     }
 
     ImGui.EndTable();
