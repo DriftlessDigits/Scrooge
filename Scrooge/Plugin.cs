@@ -53,6 +53,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static DesynthOrchestrator DesynthOrchestrator { get; private set; } = null!;
 
+  internal static DesynthLauncher DesynthLauncher { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
@@ -161,6 +163,9 @@ public sealed class Plugin : IDalamudPlugin
 
     DesynthOrchestrator = new DesynthOrchestrator();
 
+    DesynthLauncher = new DesynthLauncher();
+    WindowSystem.AddWindow(DesynthLauncher);
+
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 
     CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
@@ -168,10 +173,6 @@ public sealed class Plugin : IDalamudPlugin
       HelpMessage = "Opens the Scrooge gil dashboard"
     });
 
-    CommandManager.AddHandler("/desynthpreview", new CommandInfo(OnDesynthPreviewCommand)
-    {
-      HelpMessage = "DEBUG: opens the Scrooge desynth preview window"
-    });
   }
 
   public void Dispose()
@@ -189,7 +190,6 @@ public sealed class Plugin : IDalamudPlugin
     _retainerHistoryHook?.Dispose();
     GilStorage.Dispose();
     CommandManager.RemoveHandler("/giltrack");
-    CommandManager.RemoveHandler("/desynthpreview");
     ECommonsMain.Dispose();
   }
 
@@ -200,11 +200,6 @@ public sealed class Plugin : IDalamudPlugin
   }
 
   private void OnGilTrackCommand(string command, string args) => GilDashboard.Toggle();
-
-  private void OnDesynthPreviewCommand(string command, string args)
-  {
-    DesynthPreview.OpenAndScan();
-  }
 
   /// <summary>
   /// Adds Scrooge context menu options:
