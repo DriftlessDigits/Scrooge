@@ -51,6 +51,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static DesynthPreviewWindow DesynthPreview { get; private set; } = null!;
 
+  internal static DesynthOrchestrator DesynthOrchestrator { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
@@ -157,6 +159,8 @@ public sealed class Plugin : IDalamudPlugin
     DesynthPreview = new DesynthPreviewWindow();
     WindowSystem.AddWindow(DesynthPreview);
 
+    DesynthOrchestrator = new DesynthOrchestrator();
+
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 
     CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
@@ -174,6 +178,7 @@ public sealed class Plugin : IDalamudPlugin
   {
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
     TriageOrchestrator.Dispose();
+    DesynthOrchestrator.Dispose();
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");

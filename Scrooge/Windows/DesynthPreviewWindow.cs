@@ -178,9 +178,7 @@ internal sealed class DesynthPreviewWindow : Window
 
   private void StartRun(List<DesynthItem> items)
   {
-    // Orchestrator wires in Task 12. Until then, debug-print so we can
-    // verify the gate flow without a real run.
-    Svc.Chat.Print($"[Scrooge] DEBUG: Run requested for {items.Count} items. Orchestrator wires in Task 12.");
+    Plugin.DesynthOrchestrator.StartRun(items);
     IsOpen = false;
   }
 
