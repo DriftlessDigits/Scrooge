@@ -49,6 +49,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
 
+  internal static DesynthPreviewWindow DesynthPreview { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
@@ -152,11 +154,19 @@ public sealed class Plugin : IDalamudPlugin
 
     TriageOrchestrator = new TriageOrchestrator();
 
+    DesynthPreview = new DesynthPreviewWindow();
+    WindowSystem.AddWindow(DesynthPreview);
+
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 
     CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
     {
       HelpMessage = "Opens the Scrooge gil dashboard"
+    });
+
+    CommandManager.AddHandler("/desynthpreview", new CommandInfo(OnDesynthPreviewCommand)
+    {
+      HelpMessage = "DEBUG: opens the Scrooge desynth preview window"
     });
   }
 
@@ -174,6 +184,7 @@ public sealed class Plugin : IDalamudPlugin
     _retainerHistoryHook?.Dispose();
     GilStorage.Dispose();
     CommandManager.RemoveHandler("/giltrack");
+    CommandManager.RemoveHandler("/desynthpreview");
     ECommonsMain.Dispose();
   }
 
@@ -184,6 +195,11 @@ public sealed class Plugin : IDalamudPlugin
   }
 
   private void OnGilTrackCommand(string command, string args) => GilDashboard.Toggle();
+
+  private void OnDesynthPreviewCommand(string command, string args)
+  {
+    DesynthPreview.OpenAndScan();
+  }
 
   /// <summary>
   /// Adds Scrooge context menu options:
