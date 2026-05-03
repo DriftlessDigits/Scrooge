@@ -105,7 +105,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     _processed = 0;
     _itemsUntilNextLongPause = NextPauseInterval();
 
-    Plugin.PinchRunLog.StartNewRun(); // Task 13 widens the signature to take a desynth flag
+    Plugin.PinchRunLog.StartNewRun(isDesynthRun: true);
     Plugin.PinchRunLog.SetTotalItems(items.Count);
 
     _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
