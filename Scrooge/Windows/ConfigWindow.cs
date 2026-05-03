@@ -110,6 +110,12 @@ public sealed class ConfigWindow : Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Desynth"))
+      {
+        DrawDesynthTab();
+        ImGui.EndTabItem();
+      }
+
       ImGui.EndTabBar();
     }
     
@@ -1126,5 +1132,40 @@ public sealed class ConfigWindow : Window
         Plugin.Configuration.Save();
       }
     }
+  }
+
+  private void DrawDesynthTab()
+  {
+    ImGui.TextWrapped("Hands-off desynthesis automation. Open Mutamix's Desynthesis menu in-game and the \"Desynth Preview\" overlay button will appear.");
+    ImGui.Spacing();
+
+    var enable = Plugin.Configuration.EnableDesynthPreview;
+    if (ImGui.Checkbox("Show Desynth Preview launcher overlay", ref enable))
+    {
+      Plugin.Configuration.EnableDesynthPreview = enable;
+      Plugin.Configuration.Save();
+    }
+
+    var yellow = Plugin.Configuration.YellowForSkillGain;
+    if (ImGui.Checkbox("Yellow tag for items still in skillup range", ref yellow))
+    {
+      Plugin.Configuration.YellowForSkillGain = yellow;
+      Plugin.Configuration.Save();
+    }
+
+    var pauses = Plugin.Configuration.DesynthHumanPauses;
+    if (ImGui.Checkbox("Inject random 3-8s pauses every 8-15 items (humanization)", ref pauses))
+    {
+      Plugin.Configuration.DesynthHumanPauses = pauses;
+      Plugin.Configuration.Save();
+    }
+
+    var baseMs = Plugin.Configuration.DesynthPerActionBaseMs;
+    if (ImGui.SliderInt("Base inter-item delay (ms)", ref baseMs, 800, 4000))
+    {
+      Plugin.Configuration.DesynthPerActionBaseMs = baseMs;
+      Plugin.Configuration.Save();
+    }
+    ImGui.TextDisabled("Floor: 1500 ms recommended. Lower values look more bot-like.");
   }
 }
