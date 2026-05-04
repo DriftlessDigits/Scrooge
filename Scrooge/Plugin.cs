@@ -49,6 +49,12 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
 
+  internal static DesynthPreviewWindow DesynthPreview { get; private set; } = null!;
+
+  internal static DesynthOrchestrator DesynthOrchestrator { get; private set; } = null!;
+
+  internal static DesynthLauncher DesynthLauncher { get; private set; } = null!;
+
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
@@ -152,18 +158,28 @@ public sealed class Plugin : IDalamudPlugin
 
     TriageOrchestrator = new TriageOrchestrator();
 
+    DesynthPreview = new DesynthPreviewWindow();
+    WindowSystem.AddWindow(DesynthPreview);
+
+    DesynthOrchestrator = new DesynthOrchestrator();
+
+    DesynthLauncher = new DesynthLauncher();
+    WindowSystem.AddWindow(DesynthLauncher);
+
     ContextMenu.OnMenuOpened += OnContextMenuOpened;
 
     CommandManager.AddHandler("/giltrack", new CommandInfo(OnGilTrackCommand)
     {
       HelpMessage = "Opens the Scrooge gil dashboard"
     });
+
   }
 
   public void Dispose()
   {
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
     TriageOrchestrator.Dispose();
+    DesynthOrchestrator.Dispose();
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");

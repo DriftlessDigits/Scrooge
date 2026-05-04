@@ -14,6 +14,8 @@ public enum RunMode
   Pinch,
   /// <summary>Listing new items from inventory onto retainers.</summary>
   Hawk,
+  /// <summary>Hands-off desynthesis automation over the SalvageItemSelector addon.</summary>
+  Desynth,
 }
 
 /// <summary>

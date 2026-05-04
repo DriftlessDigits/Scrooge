@@ -138,6 +138,29 @@ public sealed class Configuration : IPluginConfiguration
   /// <summary>How long to keep the MB open when fetching prices.</summary>
   public int MarketBoardKeepOpenMS { get; set; } = 3000;
 
+  // --- Desynth automation ---
+
+  /// <summary>Master toggle for the desynth preview launcher overlay.</summary>
+  public bool EnableDesynthPreview { get; set; } = true;
+
+  /// <summary>
+  /// Highlight items as yellow when the player's desynth level is above the item's
+  /// level but still within the +50 skillup range. Matches the SimpleTweaks default.
+  /// </summary>
+  public bool YellowForSkillGain { get; set; } = true;
+
+  /// <summary>
+  /// Inject randomized 3–8s pauses every 8–15 items during a desynth run.
+  /// Highest-value humanization tactic — bots almost never pause spontaneously.
+  /// </summary>
+  public bool DesynthHumanPauses { get; set; } = true;
+
+  /// <summary>
+  /// Base delay between item selections in a desynth run, in ms. Jittered ±400ms.
+  /// 1500ms is the floor; raise if a run still feels too fast.
+  /// </summary>
+  public int DesynthPerActionBaseMs { get; set; } = 1500;
+
   // --- Hotkeys ---
 
   /// <summary>Enable hotkey to start auto-pinch from the retainer sell list.</summary>

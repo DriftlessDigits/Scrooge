@@ -16,7 +16,8 @@ namespace Scrooge.Windows
     NoData,      // yellow — no competition, player decides
     Outlier,     // normal — system handled it, got a price
     VendorSold,  // green — vendor-sold through retainer
-    Banned       // blue — on ban list, observed but not changed
+    Banned,      // blue — on ban list, observed but not changed
+    Desynthed,   // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
@@ -56,7 +57,7 @@ namespace Scrooge.Windows
     /// <summary>
     /// Clears the log and opens the window. Called at the start of each pinch run.
     /// </summary>
-    public void StartNewRun(bool isHawkRun = false)
+    public void StartNewRun(bool isHawkRun = false, bool isDesynthRun = false)
     {
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
@@ -67,8 +68,24 @@ namespace Scrooge.Windows
       _lastRun = run;
       run.RunStopwatch.Restart();
       run.EtaStopwatch.Restart();
-      var label = isHawkRun ? "Hawk Run" : "Run";
-      WindowName = isHawkRun ? "Scrooge - Hawk Run Log" : "Scrooge - Pinch Run Log";
+
+      string label;
+      if (isDesynthRun)
+      {
+        label = "Desynth Run";
+        WindowName = "Scrooge - Desynth Run Log";
+      }
+      else if (isHawkRun)
+      {
+        label = "Hawk Run";
+        WindowName = "Scrooge - Hawk Run Log";
+      }
+      else
+      {
+        label = "Run";
+        WindowName = "Scrooge - Pinch Run Log";
+      }
+
       run.AddRunEntry(RunEvent.Start, $"{label} Started — {DateTime.Now:h:mm tt}");
       IsOpen = true;
     }
@@ -164,26 +181,37 @@ namespace Scrooge.Windows
       if (run == null) return;
 
       var isHawkRun = run.Mode == RunMode.Hawk;
-      var label = isHawkRun ? "Hawk Run" : "Run";
+      var isDesynthRun = run.Mode == RunMode.Desynth;
+      var label = isDesynthRun ? "Desynth Run"
+                : isHawkRun ? "Hawk Run"
+                : "Run";
 
       run.AddRunEntry(RunEvent.End, $"{label} Complete — {DateTime.Now:h:mm tt}");
-      run.AddRunEntry(RunEvent.Summary, isHawkRun
-        ? $"{run.ItemsAdjusted} listed"
-        : $"{run.ItemsAdjusted} adjusted");
-      if (run.SkippedCount > 0)
-        run.AddRunEntry(RunEvent.Summary, $"{run.SkippedCount} skipped");
-      if (run.NoDataCount > 0)
-        run.AddRunEntry(RunEvent.Summary, $"{run.NoDataCount} no data");
+      run.AddRunEntry(RunEvent.Summary, isDesynthRun
+        ? $"{run.ItemsProcessed} desynthed"
+        : isHawkRun
+          ? $"{run.ItemsAdjusted} listed"
+          : $"{run.ItemsAdjusted} adjusted");
 
-      if (run.OutliersDetected > 0)
-        run.AddRunEntry(RunEvent.Summary, $"{run.OutliersDetected} outliers");
+      // Desynth runs don't carry vendor / listing / outlier semantics — skip
+      // those summary lines for them.
+      if (!isDesynthRun)
+      {
+        if (run.SkippedCount > 0)
+          run.AddRunEntry(RunEvent.Summary, $"{run.SkippedCount} skipped");
+        if (run.NoDataCount > 0)
+          run.AddRunEntry(RunEvent.Summary, $"{run.NoDataCount} no data");
 
-      if (run.VendorSoldCount > 0)
-        run.AddRunEntry(RunEvent.Summary, $"{run.VendorSoldCount} vendor-sold for {run.VendorSoldGil:N0} gil");
+        if (run.OutliersDetected > 0)
+          run.AddRunEntry(RunEvent.Summary, $"{run.OutliersDetected} outliers");
 
-      run.AddRunEntry(RunEvent.Summary, isHawkRun
-        ? $"{run.TotalListingGil:N0} gil put on market"
-        : $"{run.TotalListingGil:N0} gil on market");
+        if (run.VendorSoldCount > 0)
+          run.AddRunEntry(RunEvent.Summary, $"{run.VendorSoldCount} vendor-sold for {run.VendorSoldGil:N0} gil");
+
+        run.AddRunEntry(RunEvent.Summary, isHawkRun
+          ? $"{run.TotalListingGil:N0} gil put on market"
+          : $"{run.TotalListingGil:N0} gil on market");
+      }
 
       // Hand off triage data to the triage window
       if (run.TriageItems.Count > 0)
@@ -348,6 +376,7 @@ namespace Scrooge.Windows
                 ItemOutcome.NoData => new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f),
                 ItemOutcome.VendorSold => new System.Numerics.Vector4(0.4f, 0.9f, 0.4f, 1f),
                 ItemOutcome.Banned => new System.Numerics.Vector4(0.4f, 0.6f, 1f, 1f),
+                ItemOutcome.Desynthed => new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1f),
                 _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
               };
 
