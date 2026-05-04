@@ -118,6 +118,7 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// </summary>
   private unsafe bool? ProcessNext()
   {
+    if (!IsRunning) return true;
     if (_queue == null || _queue.Count == 0)
     {
       EndRun();
@@ -154,6 +155,10 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// <summary>
   /// Finds the current index of the given DesynthItem in AgentSalvage.ItemList.
   /// Returns -1 if not present (player switched filter, item disappeared, etc.).
+  ///
+  /// Matches by (InventoryType, InventorySlot) — SalvageListItem.ItemId is a
+  /// game-internal ID that doesn't map to Lumina Item.RowId, so we use the
+  /// slot identity that stays stable across the run.
   /// </summary>
   private static unsafe int FindAgentIndex(DesynthItem item)
   {
@@ -163,8 +168,8 @@ internal sealed class DesynthOrchestrator : IDisposable
     for (int i = 0; i < agent->ItemCount; i++)
     {
       var entry = agent->ItemList[i];
-      if (entry.ItemId == item.ItemId) return i;
-      if (entry.ItemId == item.ItemId + 1_000_000u && item.IsHq) return i;
+      if (entry.InventoryType == item.Container && (int)entry.InventorySlot == item.SlotIndex)
+        return i;
     }
     return -1;
   }
@@ -183,23 +188,17 @@ internal sealed class DesynthOrchestrator : IDisposable
   }
 
   /// <summary>
-  /// Toggles the "Desynthesize unique/untradable item" checkbox on SalvageDialog.
-  /// Per-dialog (not sticky) — must be called for every untradable/unique item
-  /// before FireSalvageDialogConfirm, or the Desynthesize button stays disabled.
+  /// If a SelectYesno popup is open (typically the untradable/unique
+  /// confirmation that fires after Confirm on SalvageDialog), click Yes.
+  /// No-op if no popup is up. Int=0 = Yes per FFXIV addon convention.
   /// </summary>
-  /// <remarks>
-  /// Callback index TBD at smoke. Likely value index 1 or 2 (after the
-  /// confirm/cancel slots). If 1 doesn't work, try 2 then 3 and check chat
-  /// log for callback errors.
-  /// </remarks>
-  private static unsafe void FireUntradableCheckbox()
+  private static unsafe void TryConfirmSelectYesno()
   {
-    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageDialog", out var addon)
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var addon)
         || !GenericHelpers.IsAddonReady(addon)) return;
 
-    // PLACEHOLDER — verify callback index at smoke.
     var values = stackalloc AtkValue[1];
-    values[0] = new AtkValue { Type = AtkValueType.Int, Int = 1 }; // try 1, then 2
+    values[0] = new AtkValue { Type = AtkValueType.Int, Int = 0 };
     addon->FireCallback(1, values, true);
   }
 
@@ -291,20 +290,24 @@ internal sealed class DesynthOrchestrator : IDisposable
     // "Read the dialog" beat — humanized 300±150ms before firing confirm.
     _taskManager.DelayNext(Jitter(300, 150));
 
-    // If the item requires the unique/untradable checkbox, click it before
-    // confirm. Per-dialog (not sticky) — fires every act on every applicable
-    // item. The "Guarantee NQ item results" checkbox is never touched.
-    if (item.RequiresUntradableConfirm)
-    {
-      _taskManager.Enqueue(() => { FireUntradableCheckbox(); return true; },
-        $"DesynthUntradable_{item.Name}");
-      // Brief settle after checkbox toggle so the dialog state propagates
-      // before we fire confirm.
-      _taskManager.DelayNext(Jitter(200, 100));
-    }
-
+    // Note: per AddonSalvageDialog (FFXIVClientStructs), the only checkbox
+    // exposed is BulkDesynchCheckboxNode (entire-stack), which we never touch.
+    // Untradable/unique items do NOT need a pre-Confirm checkbox tick — if
+    // they pop a SelectYesno confirmation after Confirm, that's handled
+    // separately. This was a misread of the spec; chat-log "I have to check
+    // the box each time" referred to a different setup, not this dialog.
     _taskManager.Enqueue(() => { FireSalvageDialogConfirm(); return true; },
       $"DesynthConfirm_{item.Name}");
+
+    // If a SelectYesno popup appears (untradable/unique confirmation), click
+    // Yes. Non-blocking — if the popup never shows, we move on to wait for
+    // SalvageResult below.
+    if (item.RequiresUntradableConfirm)
+    {
+      _taskManager.DelayNext(Jitter(400, 150));
+      _taskManager.Enqueue(() => { TryConfirmSelectYesno(); return true; },
+        $"DesynthYesno_{item.Name}");
+    }
 
     // Wait for SalvageResult — strict, abort-on-timeout. Per Q1 (2026-05-03
     // in-game observation), SalvageResult always fires after every desynth.
@@ -325,6 +328,9 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// </summary>
   private unsafe bool? PostActDecision(DesynthItem item)
   {
+    // Bail if a prior task aborted the run (e.g. WaitForAddon timeout).
+    if (!IsRunning || _queue == null) return true;
+
     // Log the act. ItemOutcome.Desynthed gets plain-text render in Task 13.
     _processed++;
     Plugin.PinchRunLog.AddEntry(ItemOutcome.Desynthed, item.Name,
@@ -392,8 +398,15 @@ internal sealed class DesynthOrchestrator : IDisposable
       if (Environment.TickCount64 > deadline)
       {
         Svc.Chat.PrintError($"[Scrooge] Timeout waiting for {addonName}. Aborting.");
-        Abort();
-        return true; // unblock the queue; Abort cleared it
+        // Don't call _taskManager.Abort() from inside a task — corrupts the
+        // tick loop. Just clear our state; the remaining enqueued tasks will
+        // see IsRunning == false and bail at their guard.
+        IsRunning = false;
+        _queue = null;
+        Plugin.PinchRunLog.CancelRun();
+        if (Plugin.CurrentRun != null && Plugin.CurrentRun.Mode == RunMode.Desynth)
+          Plugin.CurrentRun = null;
+        return true;
       }
       return false; // keep polling
     };

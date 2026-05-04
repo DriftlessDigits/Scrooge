@@ -50,19 +50,23 @@ internal static class DesynthInventoryScanner
     for (int i = 0; i < count; i++)
     {
       var entry = agent->ItemList[i];
-      uint baseItemId = entry.ItemId;
-      if (baseItemId == 0) continue;
 
-      // AgentSalvage stores +1M for HQ in some builds; defensively normalize.
-      bool isHq = baseItemId >= 1_000_000u;
-      uint nqId = isHq ? baseItemId - 1_000_000u : baseItemId;
+      // SalvageListItem.ItemId is a game-internal ID that doesn't map to the
+      // Lumina Item sheet directly (e.g. 60170 for "Augmented Crystarium
+      // Greatsword"). Source the canonical Item.RowId from the actual
+      // InventoryItem at the slot the agent points to.
+      var slotContainer = im->GetInventoryContainer(entry.InventoryType);
+      if (slotContainer == null) continue;
+      var slot = slotContainer->GetInventorySlot((int)entry.InventorySlot);
+      if (slot == null || slot->ItemId == 0) continue;
 
+      uint nqId = slot->ItemId;
+      bool isHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
+
+      // Some inventory entries (event items, collectables, special tokens)
+      // aren't in the regular Item sheet — skip rather than crash.
+      if (!itemSheet.HasRow(nqId)) continue;
       var luminaItem = itemSheet.GetRow(nqId);
-
-      // Find the inventory slot that matches and read the fields we need
-      // for protection flags. Returned as primitives — InventoryItem* can't
-      // cross tuple/return boundaries cleanly.
-      var hit = FindInventorySlot(im, nqId, isHq);
 
       // SB100 and equipped materia are skipped here as protections, but
       // they're also gil opportunities — see "Materia harvest sibling" in
@@ -71,8 +75,12 @@ internal static class DesynthInventoryScanner
       //
       // Spiritbond is stored as 0..10000 in SpiritbondOrCollectability.
       // For non-collectable equipment this field IS spiritbond.
-      bool sb100 = hit.Found && hit.SpiritbondOrCollectability >= 10000;
-      bool hasMateria = hit.Found && hit.HasAnyMateria;
+      bool sb100 = slot->SpiritbondOrCollectability >= 10000;
+      bool hasMateria = false;
+      for (int m = 0; m < 5; m++)
+      {
+        if (slot->Materia[m] != 0) { hasMateria = true; break; }
+      }
 
       // Gearset check: by id+HQ. Conservative — flags both copies if you have
       // two of the same item, even though only one is in a gearset.
@@ -97,7 +105,7 @@ internal static class DesynthInventoryScanner
       {
         ItemId = nqId,
         Name = luminaItem.Name.ToString(),
-        Quantity = hit.Found ? hit.Quantity : 1,
+        Quantity = slot->Quantity,
         IsHq = isHq,
         ClassJobId = classJob,
         ClassAbbrev = abbrev,
@@ -107,78 +115,13 @@ internal static class DesynthInventoryScanner
         IsSpiritbond100 = sb100,
         HasMateria = hasMateria,
         RequiresUntradableConfirm = requiresUntradableConfirm,
-        Container = hit.Container,
-        SlotIndex = hit.Found ? hit.SlotIndex : -1,
+        Container = entry.InventoryType,
+        SlotIndex = (int)entry.InventorySlot,
         Selected = false,
       });
     }
 
     return result;
-  }
-
-  /// <summary>
-  /// Snapshot of an inventory slot's relevant fields. Used instead of
-  /// returning an <c>InventoryItem*</c> because pointer types can't appear
-  /// as tuple element types or as method return types in non-unsafe contexts.
-  /// </summary>
-  private struct InventoryHit
-  {
-    public bool Found;
-    public InventoryType Container;
-    public int SlotIndex;
-    public int Quantity;
-    public ushort SpiritbondOrCollectability;
-    public bool HasAnyMateria;
-  }
-
-  /// <summary>
-  /// Locates the first inventory slot matching (itemId, isHq) across the four
-  /// main inventory pages and snapshots the fields we need for protection
-  /// flags (spiritbond, materia) and quantity. Returns an empty hit
-  /// (<c>Found = false</c>) if no match.
-  /// </summary>
-  private static unsafe InventoryHit FindInventorySlot(InventoryManager* im, uint itemId, bool isHq)
-  {
-    var containers = new[]
-    {
-      InventoryType.Inventory1,
-      InventoryType.Inventory2,
-      InventoryType.Inventory3,
-      InventoryType.Inventory4,
-    };
-
-    foreach (var ct in containers)
-    {
-      var c = im->GetInventoryContainer(ct);
-      if (c == null) continue;
-
-      for (int i = 0; i < c->Size; i++)
-      {
-        var s = c->GetInventorySlot(i);
-        if (s == null || s->ItemId != itemId) continue;
-
-        bool slotHq = (s->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
-        if (slotHq != isHq) continue;
-
-        bool hasAnyMateria = false;
-        for (int m = 0; m < 5; m++)
-        {
-          if (s->Materia[m] != 0) { hasAnyMateria = true; break; }
-        }
-
-        return new InventoryHit
-        {
-          Found = true,
-          Container = ct,
-          SlotIndex = i,
-          Quantity = s->Quantity,
-          SpiritbondOrCollectability = s->SpiritbondOrCollectability,
-          HasAnyMateria = hasAnyMateria,
-        };
-      }
-    }
-
-    return default;
   }
 
   /// <summary>
