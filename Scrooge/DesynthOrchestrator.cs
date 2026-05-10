@@ -304,7 +304,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     _taskManager.Enqueue(() =>
     {
       if (Plugin.CurrentRun != null)
-        Plugin.CurrentRun.CurrentItem = new PricingItem { ItemId = item.ItemId };
+        Plugin.CurrentRun.CurrentItem = new PricingItem { ItemId = item.ItemId, IsHq = item.IsHq };
       return true;
     }, $"DesynthInit_{item.Name}");
 

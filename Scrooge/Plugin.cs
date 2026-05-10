@@ -47,6 +47,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static DesynthYieldStore DesynthYieldStore { get; private set; } = null!;
 
+  internal static DesynthYieldTracker DesynthYieldTracker { get; private set; } = null!;
+
   internal static TriageWindow TriageWindow { get; private set; } = null!;
 
   internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
@@ -166,6 +168,15 @@ public sealed class Plugin : IDalamudPlugin
 
     DesynthOrchestrator = new DesynthOrchestrator();
 
+    try
+    {
+      DesynthYieldTracker = new DesynthYieldTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Error(ex, "[Scrooge] DesynthYieldTracker failed to initialize — yield capture disabled this session");
+    }
+
     DesynthLauncher = new DesynthLauncher();
     WindowSystem.AddWindow(DesynthLauncher);
 
@@ -182,6 +193,7 @@ public sealed class Plugin : IDalamudPlugin
   {
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
     TriageOrchestrator.Dispose();
+    DesynthYieldTracker?.Dispose();
     DesynthOrchestrator.Dispose();
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();

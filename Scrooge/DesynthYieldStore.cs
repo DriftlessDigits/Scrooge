@@ -18,6 +18,12 @@ internal sealed class DesynthYieldStore
     _connection = connection;
   }
 
+  /// <summary>Fires after a yield row is inserted. Subscribed to by PinchRunLog for live sub-row rendering.</summary>
+  internal event Action<DesynthYield>? YieldCaptured;
+
+  /// <summary>Invoked by DesynthYieldTracker right after InsertYield succeeds.</summary>
+  internal void PublishYieldCaptured(DesynthYield yield) => YieldCaptured?.Invoke(yield);
+
   /// <summary>Inserts a new run row. Returns the auto-generated id.</summary>
   internal long StartRun(string mode, int totalItems, DateTimeOffset startedAt)
   {
