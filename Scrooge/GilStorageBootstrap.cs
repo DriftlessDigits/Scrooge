@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 7;
+  private const int CurrentSchemaVersion = 10;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -72,6 +72,18 @@ internal class GilStorageBootstrap
     {
       MigrateV8(connection);
       SetSchemaVersion(connection, 8);
+    }
+
+    if (version < 9)
+    {
+      MigrateV9(connection);
+      SetSchemaVersion(connection, 9);
+    }
+
+    if (version < 10)
+    {
+      MigrateV10(connection);
+      SetSchemaVersion(connection, 10);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -693,6 +705,56 @@ internal class GilStorageBootstrap
     var affected = fix.ExecuteNonQuery();
 
     Svc.Log.Info($"[GilTrack] V8 migration: removed {affected} catchall rows duplicating vendor_sale");
+  }
+
+  /// <summary>
+  /// V9: Add desynth_runs table. One row per desynthesis run started by
+  /// the DesynthOrchestrator. Tracks lifecycle (start, end, mode, total
+  /// items selected) and abort state for diagnostic value.
+  /// </summary>
+  private static void MigrateV9(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE desynth_runs (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          started_at      INTEGER NOT NULL,
+          ended_at        INTEGER,
+          mode            TEXT NOT NULL,
+          total_items     INTEGER NOT NULL,
+          aborted_reason  TEXT
+        );
+        CREATE INDEX ix_desynth_runs_started_at ON desynth_runs(started_at DESC);",
+      connection);
+    cmd.ExecuteNonQuery();
+    Svc.Log.Info("[Scrooge] V9 migration: created desynth_runs table");
+  }
+
+  /// <summary>
+  /// V10: Add desynth_yields table. One row per yield event observed in
+  /// chat during a desynth run. attempt_seq groups yields from one act
+  /// (multiple materials per desynth share the same attempt_seq).
+  /// </summary>
+  private static void MigrateV10(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE desynth_yields (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id          INTEGER NOT NULL,
+          attempt_seq     INTEGER NOT NULL,
+          source_item_id  INTEGER NOT NULL,
+          source_is_hq    INTEGER NOT NULL DEFAULT 0,
+          yield_item_id   INTEGER NOT NULL,
+          yield_qty       INTEGER NOT NULL,
+          yield_is_hq     INTEGER NOT NULL DEFAULT 0,
+          captured_at     INTEGER NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES desynth_runs(id)
+        );
+        CREATE INDEX ix_desynth_yields_run ON desynth_yields(run_id, attempt_seq);
+        CREATE INDEX ix_desynth_yields_source ON desynth_yields(source_item_id);
+        CREATE INDEX ix_desynth_yields_captured ON desynth_yields(captured_at DESC);",
+      connection);
+    cmd.ExecuteNonQuery();
+    Svc.Log.Info("[Scrooge] V10 migration: created desynth_yields table");
   }
 
   // =========================================================================
