@@ -269,45 +269,50 @@ public sealed class Plugin : IDalamudPlugin
     if (itemId == 0)
       return;
 
-    // (Retainer sell list handled above for ContextMenuType.Default)
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
+    // --- Hawk closed: ban-only fallback when at the retainer sell list ---
+    // When Hawk is open we always show the full menu (Always Vendor included),
+    // even at a retainer. Ban-only here is the legacy fallback for inventory
+    // right-clicks while at the retainer with Hawk closed.
+    if (!HawkWindow.IsOpen)
     {
-      var isBanned = Configuration.BannedItemIds.Contains(itemId);
-      if (isBanned)
+      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var inventorySellListAddon)
+          && GenericHelpers.IsAddonReady(inventorySellListAddon))
       {
-        args.AddMenuItem(new MenuItem
+        var isBanned = Configuration.BannedItemIds.Contains(itemId);
+        if (isBanned)
         {
-          Name = "Remove Scrooge Ban",
-          PrefixChar = 'S',
-          PrefixColor = 539,
-          OnClicked = _ =>
+          args.AddMenuItem(new MenuItem
           {
-            Configuration.BannedItemIds.Remove(itemId);
-            Configuration.Save();
-          },
-        });
-      }
-      else
-      {
-        args.AddMenuItem(new MenuItem
+            Name = "Remove Scrooge Ban",
+            PrefixChar = 'S',
+            PrefixColor = 539,
+            OnClicked = _ =>
+            {
+              Configuration.BannedItemIds.Remove(itemId);
+              Configuration.Save();
+            },
+          });
+        }
+        else
         {
-          Name = "Ban from Scrooge",
-          PrefixChar = 'S',
-          PrefixColor = 17, // red
-          OnClicked = _ =>
+          args.AddMenuItem(new MenuItem
           {
-            Configuration.BannedItemIds.Add(itemId);
-            Configuration.AlwaysVendorItemIds.Remove(itemId); // mutual exclusivity
-            Configuration.Save();
-          },
-        });
+            Name = "Ban from Scrooge",
+            PrefixChar = 'S',
+            PrefixColor = 17, // red
+            OnClicked = _ =>
+            {
+              Configuration.BannedItemIds.Add(itemId);
+              Configuration.AlwaysVendorItemIds.Remove(itemId); // mutual exclusivity
+              Configuration.Save();
+            },
+          });
+        }
       }
       return;
     }
 
-    // --- Hawk Window: Full inventory context menu ---
-    if (!HawkWindow.IsOpen)
-      return;
+    // --- Hawk Window open: Full inventory context menu ---
 
     // Base ID for Lumina lookups (vendor price, etc.) and HawkWindow selection
     var baseItemId = item.IsHq && itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
