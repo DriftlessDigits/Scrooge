@@ -16,6 +16,9 @@ internal static class GilStorage
   private static SqliteConnection? _connection;
   internal static string DbPath => Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "scrooge.db");
 
+  /// <summary>The shared SQLite connection. Borrowers must not Dispose it.</summary>
+  internal static SqliteConnection Connection => _connection!;
+
   // =========================================================================
   // Lifecycle
   // =========================================================================

@@ -45,6 +45,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
+  internal static DesynthYieldStore DesynthYieldStore { get; private set; } = null!;
+
   internal static TriageWindow TriageWindow { get; private set; } = null!;
 
   internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
@@ -93,6 +95,7 @@ public sealed class Plugin : IDalamudPlugin
     try
     {
       GilStorage.Initialize();
+      DesynthYieldStore = new DesynthYieldStore(GilStorage.Connection);
     }
     catch (Exception ex)
     {
