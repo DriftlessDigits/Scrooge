@@ -6,6 +6,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using Scrooge.Windows;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Dalamud.Utility;
 
 namespace Scrooge;
@@ -32,6 +33,16 @@ internal sealed class DesynthOrchestrator : IDisposable
   private Queue<DesynthItem>? _queue;
   private int _processed;
   private int _itemsUntilNextLongPause;
+
+  /// <summary>
+  /// Per-run monotonic counter incremented at the head of every act (including
+  /// stack continuations). Yields from one act share the same value, used as
+  /// desynth_yields.attempt_seq for grouping.
+  /// </summary>
+  private int _currentAttemptSeq;
+
+  /// <summary>Read by DesynthYieldTracker to stamp the attempt_seq on incoming yield rows.</summary>
+  internal int CurrentAttemptSeq => _currentAttemptSeq;
 
   /// <summary>True while a desynth run is in progress.</summary>
   internal bool IsRunning { get; private set; }
@@ -71,7 +82,21 @@ internal sealed class DesynthOrchestrator : IDisposable
     _queue = null;
     Plugin.PinchRunLog.CancelRun();
     if (Plugin.CurrentRun != null && Plugin.CurrentRun.Mode == RunMode.Desynth)
+    {
+      if (Plugin.CurrentRun.DesynthRunId is long runId)
+      {
+        try
+        {
+          Plugin.DesynthYieldStore.AbortRun(runId, DateTimeOffset.UtcNow,
+            "user-initiated abort or addon closed mid-run");
+        }
+        catch (Exception ex)
+        {
+          Svc.Log.Error(ex, "[Scrooge] Failed to update desynth_runs row on abort");
+        }
+      }
       Plugin.CurrentRun = null;
+    }
   }
 
   /// <summary>Entry point. Called by DesynthPreviewWindow when user clicks Run.</summary>
@@ -97,6 +122,25 @@ internal sealed class DesynthOrchestrator : IDisposable
 
     IsRunning = true;
     Plugin.CurrentRun = new RunData { Mode = RunMode.Desynth };
+
+    // Mode inference: any red/yellow row tags Skillup; otherwise Burn. Imperfect
+    // (a player running Burn over a red-eligible inventory would be tagged Skillup).
+    // If/when DesynthPreviewWindow surfaces the preset, thread that through for accuracy.
+    var modeLabel = items.Any(i =>
+        i.Color == DesynthSkillupColor.Red || i.Color == DesynthSkillupColor.Yellow)
+      ? "Skillup" : "Burn";
+
+    try
+    {
+      var runId = Plugin.DesynthYieldStore.StartRun(modeLabel, items.Count, DateTimeOffset.UtcNow);
+      Plugin.CurrentRun.DesynthRunId = runId;
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Error(ex, "[Scrooge] Failed to insert desynth_runs row — yield capture for this run will be unattributed");
+    }
+    _currentAttemptSeq = 0;
+
     // PinchRunLog renders LogEntry rows only under an open RetainerHeader tree.
     // Set a synthetic "retainer" name so per-item rows render. Without this,
     // the run log shows summary lines but no per-item entries.
@@ -252,6 +296,8 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// </summary>
   private unsafe void EnqueueActChain(DesynthItem item, int agentIndex, bool isContinuation)
   {
+    _currentAttemptSeq++;
+
     // Track for the run log + chat-yield attribution. Set at the start of
     // every act so v2.6.1.0's E-chat parser can attribute yields to the
     // current item.
@@ -415,6 +461,17 @@ internal sealed class DesynthOrchestrator : IDisposable
   private void EndRun()
   {
     Plugin.PinchRunLog.EndRun();
+    if (Plugin.CurrentRun?.DesynthRunId is long runId)
+    {
+      try
+      {
+        Plugin.DesynthYieldStore.EndRun(runId, DateTimeOffset.UtcNow);
+      }
+      catch (Exception ex)
+      {
+        Svc.Log.Error(ex, "[Scrooge] Failed to update desynth_runs row on end");
+      }
+    }
     Plugin.CurrentRun = null;
     IsRunning = false;
     _queue = null;

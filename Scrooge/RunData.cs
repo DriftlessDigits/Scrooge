@@ -66,6 +66,12 @@ internal class RunData
   /// <summary>Whether the run has completed (or was cancelled).</summary>
   public bool IsComplete { get; set; }
 
+  /// <summary>
+  /// FK into desynth_runs.id while a desynth run is in flight. Null for
+  /// non-desynth runs and outside any run.
+  /// </summary>
+  public long? DesynthRunId { get; set; }
+
   // --- Timing ---
 
   /// <summary>Tracks total run duration.</summary>
