@@ -1,3 +1,4 @@
+using Dalamud.Plugin.Services;
 using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
@@ -40,15 +41,53 @@ internal sealed class GcTurnInOrchestrator
     };
   }
 
-  internal void Abort() => Finish("cancelled");
-
-  private void Finish(string how)
+  /// <summary>
+  /// External cancel (Cancel button, plugin dispose). Never call from inside
+  /// a task - tasks end their run via FinishState and a return value instead
+  /// (the LegacyTaskManager abort invariant).
+  /// </summary>
+  internal void Abort()
   {
     _taskManager.Abort();
+    FinishState("cancelled");
+  }
+
+  /// <summary>
+  /// Clears run state without touching the task manager, so it is safe from
+  /// inside a task. Already-queued follow-up tasks no-op on the IsRunning
+  /// guard at their top. Non-complete finishes close a still-open reward
+  /// dialog so an abort never leaves the game mid-prompt.
+  /// </summary>
+  private unsafe void FinishState(string how)
+  {
     _queue = null;
     if (IsRunning)
+    {
+      Svc.Framework.Update -= OnFrameworkUpdate;
+      if (how != "complete")
+        CloseRewardDialog();
       Svc.Chat.Print($"[Scrooge] Churn run {how}: {_turnedIn} items, {_sealsEarned:N0} seals.");
+    }
     IsRunning = false;
+  }
+
+  /// <summary>
+  /// Wedge watchdog. A task timeout clears the queue inside ECommons without
+  /// notifying us - IsRunning with an idle task manager is exactly that state
+  /// and nothing else. Finish so the run can't jam StartRun (and the Cancel
+  /// button) until a manual cancel.
+  /// </summary>
+  private void OnFrameworkUpdate(IFramework framework)
+  {
+    if (IsRunning && !_taskManager.IsBusy)
+      FinishState("timed out (the game stopped responding)");
+  }
+
+  private static unsafe void CloseRewardDialog()
+  {
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyReward", out var addon)
+        && GenericHelpers.IsAddonReady(addon))
+      addon->Close(true);
   }
 
   /// <summary>
@@ -76,6 +115,7 @@ internal sealed class GcTurnInOrchestrator
     _sealsEarned = 0;
     _turnedIn = 0;
     IsRunning = true;
+    Svc.Framework.Update += OnFrameworkUpdate;
     Svc.Chat.Print($"[Scrooge] Churning {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
     _taskManager.Enqueue(ProcessNext, "GcProcessNext");
   }
@@ -86,9 +126,12 @@ internal sealed class GcTurnInOrchestrator
   /// </summary>
   private unsafe bool? ProcessNext()
   {
+    if (!IsRunning)
+      return true; // run ended from an earlier task - queued follow-ups no-op
+
     if (_queue == null || _queue.Count == 0)
     {
-      Finish("complete");
+      FinishState("complete");
       return true;
     }
 
@@ -97,12 +140,12 @@ internal sealed class GcTurnInOrchestrator
     // Wallet room - stop before the game starts eating the overflow.
     if (GameSafe.CompanySeals() is not { } seals)
     {
-      Finish("aborted (seal wallet unreadable mid-run)");
+      FinishState("aborted (seal wallet unreadable mid-run)");
       return true;
     }
     if (seals.Current + (uint)item.SealReward > seals.Max)
     {
-      Finish($"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_queue.Count} items left");
+      FinishState($"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_queue.Count} items left");
       return true;
     }
     _sealsBefore = seals.Current;
@@ -121,7 +164,7 @@ internal sealed class GcTurnInOrchestrator
 
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyList", out var addon)
         || !GenericHelpers.IsAddonReady(addon))
-      return null; // retry until timeout
+      return false; // false = keep polling until timeout (null would signal ABORT)
 
     // Select the list row -> pops the reward dialog.
     // VERIFY in-game: (1, index) as the row-select event on this addon.
@@ -172,14 +215,17 @@ internal sealed class GcTurnInOrchestrator
   /// </summary>
   private unsafe bool? ConfirmReward(GcTurnInItem item)
   {
+    if (!IsRunning)
+      return true;
+
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyReward", out var addon)
         || !GenericHelpers.IsAddonReady(addon))
-      return null; // retry until timeout
+      return false; // false = keep polling until timeout (null would signal ABORT)
 
     if (!RewardDialogShows(addon, item.Name))
     {
       addon->Close(true);
-      Finish($"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
+      FinishState($"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
       return true;
     }
 
@@ -212,14 +258,17 @@ internal sealed class GcTurnInOrchestrator
   /// </summary>
   private bool? VerifyAndAdvance(GcTurnInItem item)
   {
+    if (!IsRunning)
+      return true;
+
     if (GameSafe.CompanySeals() is not { } seals)
     {
-      Finish("aborted (seal wallet unreadable mid-run)");
+      FinishState("aborted (seal wallet unreadable mid-run)");
       return true;
     }
 
     if (seals.Current <= _sealsBefore)
-      return null; // not landed yet - retry until timeout
+      return false; // not landed yet - keep polling (seals lag the Deliver packet)
 
     _sealsEarned += seals.Current - _sealsBefore;
     _turnedIn++;

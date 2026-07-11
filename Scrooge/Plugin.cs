@@ -231,6 +231,7 @@ public sealed class Plugin : IDalamudPlugin
 
   public void Dispose()
   {
+    GcTurnIn?.Abort(); // ends a live churn run + unsubscribes its watchdog
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
     TriageOrchestrator.Dispose();
     DesynthYieldTracker?.Dispose();
