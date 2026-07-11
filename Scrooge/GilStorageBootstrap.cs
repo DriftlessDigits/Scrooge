@@ -15,8 +15,6 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 12;
-
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
   {
@@ -876,6 +874,11 @@ internal class GilStorageBootstrap
   /// </summary>
   private static void MigrateV13(SqliteConnection connection)
   {
+    // The one destructive migration (DROP + RENAME): atomic or not at all.
+    // Without the transaction, a crash between DROP and RENAME leaves
+    // user_version=12 with the v13 table present - the bare CREATE then
+    // throws on every subsequent boot and storage is dead permanently.
+    using var tx = connection.BeginTransaction();
     using var cmd = new SqliteCommand(
       @"CREATE TABLE last_sale_prices_v13 (
           item_id         INTEGER NOT NULL,
@@ -894,8 +897,9 @@ internal class GilStorageBootstrap
           SELECT item_id, 0, unit_price, timestamp FROM last_sale_prices;
         DROP TABLE last_sale_prices;
         ALTER TABLE last_sale_prices_v13 RENAME TO last_sale_prices;",
-      connection);
+      connection, tx);
     cmd.ExecuteNonQuery();
+    tx.Commit();
     Svc.Log.Info("[Scrooge] V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
   }
 
