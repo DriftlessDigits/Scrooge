@@ -175,11 +175,11 @@ namespace Scrooge.Windows
 
           var color = item.Result switch
           {
-            PricingResult.BelowFloor => new Vector4(1f, 0.3f, 0.3f, 1f),
-            PricingResult.BelowMinimum => new Vector4(1f, 0.7f, 0.2f, 1f),
-            PricingResult.CapBlocked => new Vector4(1f, 1f, 0.3f, 1f),
-            PricingResult.UndercutTooDeep => new Vector4(1f, 1f, 0.3f, 1f),
-            _ => new Vector4(0.5f, 0.5f, 0.5f, 1f),
+            PricingResult.BelowFloor => ScroogeColors.Spent,
+            PricingResult.BelowMinimum => ScroogeColors.Amber,
+            PricingResult.CapBlocked => ScroogeColors.Warning,
+            PricingResult.UndercutTooDeep => ScroogeColors.Warning,
+            _ => ScroogeColors.Muted,
           };
 
           // Item

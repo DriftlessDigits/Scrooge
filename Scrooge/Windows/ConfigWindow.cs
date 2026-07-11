@@ -52,13 +52,21 @@ public sealed class ConfigWindow : Window
     : base("Scrooge Configuration")
   { }
 
+  /// <summary>House section header — parchment-gold title over a separator.</summary>
+  private static void SectionHeader(string title)
+  {
+    ImGui.Spacing();
+    ImGui.TextColored(ScroogeColors.Header, title);
+    ImGui.Separator();
+  }
+
   public override void Draw()
   {
 
     // Quote header
     if (!string.IsNullOrEmpty(_currentQuote))
     {
-      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.6f, 0.6f, 1f));
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Header);
       ImGui.TextWrapped($"\"{_currentQuote}\"");
       ImGui.Text($"    — {_currentQuoteAuthor}");
       ImGui.PopStyleColor();
@@ -124,7 +132,7 @@ public sealed class ConfigWindow : Window
   private void DrawPricingTab()
   {
     // --- Undercut Settings ---
-    ImGui.Text("-- Undercut Settings --");
+    SectionHeader("Undercut Settings");
     ImGui.BeginGroup();
     ImGui.Text("Mode: ");
     ImGui.SameLine();
@@ -331,7 +339,7 @@ public sealed class ConfigWindow : Window
 
     ImGui.Separator();
     // --- Price Floor Mode dropdown ---
-    ImGui.Text("-- Price Floors --");
+    SectionHeader("Price Floors");
     ImGui.BeginGroup();
     ImGui.Text("Price Floor Mode:");
     ImGui.SameLine();
@@ -417,7 +425,7 @@ public sealed class ConfigWindow : Window
 
     ImGui.Separator();
     // --- Outlier Detection ---
-    ImGui.Text("-- Outlier Detection --");
+    SectionHeader("Outlier Detection");
     var outlierDetection = Plugin.Configuration.OutlierDetection;
     if (ImGui.Checkbox("Outlier Detection", ref outlierDetection))
     {
@@ -875,12 +883,12 @@ public sealed class ConfigWindow : Window
 
         if (retainerNameArray == null && !namesUpdated)
         {
-          ImGui.TextColored(new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1), "(Using cached retainer list - open retainer list to refresh)");
+          ImGui.TextColored(ScroogeColors.Muted, "(Using cached retainer list - open retainer list to refresh)");
         }
       }
       else
       {
-        ImGui.TextColored(new System.Numerics.Vector4(1, 1, 0, 1), "Open retainer list in-game to configure retainer selection");
+        ImGui.TextColored(ScroogeColors.Warning, "Open retainer list in-game to configure retainer selection");
       }
     }
   }
@@ -889,7 +897,7 @@ public sealed class ConfigWindow : Window
   {
     // --- Hotkeys ---
     bool enablePostPinchKey = Plugin.Configuration.EnablePostPinchkey;
-    ImGui.Text("-- Hotkeys --");
+    SectionHeader("Hotkeys");
     ImGui.BeginGroup();
     if (ImGui.Checkbox("Enable Post'n'Pinch:", ref enablePostPinchKey))
     {
@@ -981,7 +989,7 @@ public sealed class ConfigWindow : Window
     if (!Plugin.Configuration.DontUseTTS)
     {
       ImGui.Separator();
-      ImGui.Text("-- Text-To-Speech --");
+      SectionHeader("Text-To-Speech");
 
       ImGui.BeginGroup();
       bool ttsall = Plugin.Configuration.TTSWhenAllDone;
@@ -1067,7 +1075,7 @@ public sealed class ConfigWindow : Window
     var itemSheet = Svc.Data.GetExcelSheet<Item>();
 
     // --- Always Vendor list ---
-    ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+    ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
     ImGui.Text("Always Vendor");
     ImGui.PopStyleColor();
     ImGui.Separator();
@@ -1102,7 +1110,7 @@ public sealed class ConfigWindow : Window
     ImGui.Spacing();
 
     // --- Ban list ---
-    ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.2f, 0.2f, 1f));
+    ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Spent);
     ImGui.Text("Banned");
     ImGui.PopStyleColor();
     ImGui.Separator();

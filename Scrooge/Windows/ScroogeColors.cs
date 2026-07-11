@@ -17,8 +17,11 @@ internal static class ScroogeColors
 
   // State
   internal static readonly Vector4 Warning = new(0.95f, 0.85f, 0.30f, 1f); // needs attention
-  internal static readonly Vector4 Stale   = new(0.60f, 0.60f, 0.60f, 1f); // aging data
+  internal static readonly Vector4 Amber   = new(1.00f, 0.70f, 0.20f, 1f); // aging data, soft caution
+  internal static readonly Vector4 Stale   = new(0.60f, 0.60f, 0.60f, 1f); // stale/expired data
   internal static readonly Vector4 Muted   = new(0.55f, 0.55f, 0.55f, 1f); // secondary text
+  internal static readonly Vector4 Info    = new(0.60f, 0.80f, 1.00f, 1f); // summary/info lines
+  internal static readonly Vector4 Banned  = new(0.40f, 0.60f, 1.00f, 1f); // ban-list tag
   internal static readonly Vector4 Header  = new(0.90f, 0.80f, 0.55f, 1f); // section headers — counting-house parchment
 
   // Desynth skill-up tags (match the game's desynth color language)

@@ -352,7 +352,7 @@ namespace Scrooge.Windows
             if (runEntry.EventType == RunEvent.Start || runEntry.EventType == RunEvent.End)
             {
               ImGui.Spacing();
-              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.5f, 0.5f, 0.5f, 1f));
+              ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Muted);
               ImGui.TextWrapped($"--- {runEntry.Message} ---");
               ImGui.PopStyleColor();
               ImGui.Spacing();
@@ -360,7 +360,7 @@ namespace Scrooge.Windows
             else if (runEntry.EventType == RunEvent.Summary)
             {
               ImGui.Indent(16);
-              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.6f, 0.8f, 1f, 1f));
+              ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Info);
               ImGui.TextWrapped(runEntry.Message);
               ImGui.PopStyleColor();
               ImGui.Unindent(16);
@@ -384,13 +384,13 @@ namespace Scrooge.Windows
               // Normal text with colored prices — mimics in-game chat
               ImGui.Text($"{entry.ItemName} — skipping ");
               ImGui.SameLine(0, 0);
-              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f));
+              ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Spent);
               ImGui.Text($"{entry.BaitPrice:N0}");
               ImGui.PopStyleColor();
               ImGui.SameLine(0, 0);
               ImGui.Text(" gil, using ");
               ImGui.SameLine(0, 0);
-              ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.4f, 1f, 0.4f, 1f));
+              ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
               ImGui.Text($"{entry.UsedPrice:N0}");
               ImGui.PopStyleColor();
               ImGui.SameLine(0, 0);
@@ -400,11 +400,11 @@ namespace Scrooge.Windows
             {
               var color = entry.Outcome switch
               {
-                ItemOutcome.Skipped => new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f),
-                ItemOutcome.NoData => new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f),
-                ItemOutcome.VendorSold => new System.Numerics.Vector4(0.4f, 0.9f, 0.4f, 1f),
-                ItemOutcome.Banned => new System.Numerics.Vector4(0.4f, 0.6f, 1f, 1f),
-                ItemOutcome.Desynthed => new System.Numerics.Vector4(0.7f, 0.7f, 0.7f, 1f),
+                ItemOutcome.Skipped => ScroogeColors.Spent,
+                ItemOutcome.NoData => ScroogeColors.Amber,
+                ItemOutcome.VendorSold => ScroogeColors.Earned,
+                ItemOutcome.Banned => ScroogeColors.Banned,
+                ItemOutcome.Desynthed => ScroogeColors.Muted,
                 _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
               };
 
@@ -440,7 +440,7 @@ namespace Scrooge.Windows
       {
         ImGui.Spacing();
         ImGui.Indent(16);
-        ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.8f, 0.2f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
         ImGui.Text($"{run.TriageItems.Count} {(run.TriageItems.Count == 1 ? "item needs" : "items need")} triage");
         ImGui.PopStyleColor();
         ImGui.SameLine();

@@ -129,7 +129,7 @@ public sealed class Configuration : IPluginConfiguration
   /// <summary>When enabled, adds a jitter element to simulate human interaction.</summary>
   public bool EnableJitter { get; set; } = false;
 
-  /// <summary>Random ± variance in ms applied to configurable delays. Slider range: 500–1500.</summary>
+  /// <summary>Random ± variance in ms applied to configurable delays. Slider range: 500–3500.</summary>
   public int JitterMS { get; set; } = 2000;
 
   /// <summary>Delay before opening the MB price list. Too low = prices fail to load.</summary>

@@ -178,14 +178,14 @@ internal sealed class HawkWindow : Window
     if (vendorCount > 0)
     {
       ImGui.SameLine();
-      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
       ImGui.Text($"+ {vendorCount} vendor");
       ImGui.PopStyleColor();
     }
     ImGui.SameLine();
     if (overCapacity)
     {
-      ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.4f, 0.4f, 1f));
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Spent);
       ImGui.Text($"({_availableSlots} slots available)");
       ImGui.PopStyleColor();
     }
@@ -235,7 +235,7 @@ internal sealed class HawkWindow : Window
         ImGui.TableNextColumn();
         if (item.IsAlwaysVendor)
         {
-          ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+          ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
           ImGui.Text("Sell");
           ImGui.PopStyleColor();
         }
@@ -249,7 +249,7 @@ internal sealed class HawkWindow : Window
         // Item name column — orange for Always Vendor
         ImGui.TableNextColumn();
         if (item.IsAlwaysVendor)
-          ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
+          ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
         ImGui.Text(Format.Hq(item.Name, item.IsHq));
         if (item.IsAlwaysVendor)
           ImGui.PopStyleColor();
@@ -261,7 +261,7 @@ internal sealed class HawkWindow : Window
         if (item.LastSalePrice > 0)
         {
           if (item.LastSaleStale)
-            ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.5f, 0.5f, 0.5f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Stale);
           ImGui.Text($"{item.LastSalePrice:N0}");
           if (item.LastSaleStale)
             ImGui.PopStyleColor();
