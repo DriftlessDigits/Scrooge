@@ -13,6 +13,19 @@ namespace Scrooge;
 /// </summary>
 internal static unsafe class GameSafe
 {
+  /// <summary>
+  /// Player's desynthesis skill for the given DoH class job (standard FFXIV
+  /// ids, e.g. 8 = CRP ... 15 = CUL). 0 when PlayerState is unavailable —
+  /// callers classify against 0, which reads as Red (skillup) and never
+  /// gates anything. Moved from DesynthSkillup so that file stays pure.
+  /// </summary>
+  internal static int GetDesynthLevel(byte classJobId)
+  {
+    var ps = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+    if (ps == null) return 0;
+    return (int)ps->GetDesynthesisLevel(classJobId);
+  }
+
   /// <summary>Player gil, or null when InventoryManager isn't available (zoning/startup).</summary>
   internal static long? PlayerGil()
   {

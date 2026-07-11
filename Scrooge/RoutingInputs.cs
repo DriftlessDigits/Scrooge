@@ -5,91 +5,10 @@ using System.Collections.Generic;
 namespace Scrooge;
 
 /// <summary>
-/// Batch-scoped context for routing evaluations: one DB pass for sales and
-/// melt values, one venture-stock read. Build once per evaluation sweep
-/// (e.g. a Hawk window refresh), then Collect() per item is pure lookups.
-/// </summary>
-internal sealed class RoutingBatch
-{
-  public Dictionary<(uint ItemId, bool IsHq), (int Price, long Timestamp, int? SoldAfterDays)> LastSales { get; init; } = [];
-  public Dictionary<(uint ItemId, bool IsHq), long> MeltValues { get; init; } = [];
-  /// <summary>Venture token stock, or null when the inventory read failed. Rules-engine input (venture tilt bands).</summary>
-  public int? VentureStock { get; init; }
-  /// <summary>Seals-to-gil rate for this batch: empirical (venture returns) when enough data exists, else the config placeholder.</summary>
-  public int SealToGilRate { get; init; }
-}
-
-/// <summary>
-/// Protection flags read off the inventory slot + gearset module at scan time.
-/// Any set flag routes the item to Hold — never auto-routed.
-/// </summary>
-internal readonly record struct ItemProtections(bool InGearset, bool Spiritbond100, bool HasMateria)
-{
-  public bool Any => InGearset || Spiritbond100 || HasMateria;
-
-  public string Describe()
-  {
-    if (!Any) return "";
-    var parts = new List<string>(3);
-    if (InGearset) parts.Add("in a gearset");
-    if (Spiritbond100) parts.Add("spiritbond 100%");
-    if (HasMateria) parts.Add("has materia");
-    return string.Join(", ", parts);
-  }
-}
-
-/// <summary>
-/// Everything the routing rules need to know about one item variant.
-/// Inputs only — no verdicts here. All evidence is local and free
-/// (own sales, own yields, game sheets, player flags).
-/// </summary>
-internal sealed record RoutingItemInputs
-{
-  // Identity + sheet facts
-  public required uint ItemId { get; init; }
-  public required bool IsHq { get; init; }
-  public string Name { get; init; } = "";
-  public int Ilvl { get; init; }
-  public bool IsEquipment { get; init; }
-  /// <summary>Has a market search category — can be listed at all. Untradable gear's only exits are melt/GC/vendor.</summary>
-  public bool IsMarketable { get; init; }
-  public int VendorPrice { get; init; }
-
-  // Evidence
-  /// <summary>Own last sale for this variant (price, when, days listed before selling).</summary>
-  public (int Price, long Timestamp, int? SoldAfterDays)? LastSale { get; init; }
-  /// <summary>Yield gil per desynth attempt from the player's own ledger.</summary>
-  public long? MeltValuePerAttempt { get; init; }
-  /// <summary>GC Expert Delivery seals, when eligible.</summary>
-  public int? SealValue { get; init; }
-
-  /// <summary>
-  /// Home-world sale velocity for this quality (units/day) from the
-  /// Universalis almanac. Null = no trusted data (offline, stale past the
-  /// trust window, unmarketable, or still fetching) — behave as before.
-  /// </summary>
-  public double? MarketVelocity { get; init; }
-  /// <summary>Days since ANYONE last bought this item here (Universalis).</summary>
-  public int? MarketLastSaleDays { get; init; }
-
-  // Desynth skill state (null color = not desynthesizable / no repair class)
-  public DesynthSkillupColor? DesynthColor { get; init; }
-  public bool DesynthSkillupEligible { get; init; }
-
-  // Player flags
-  public bool IsBanned { get; init; }
-  public bool IsAlwaysVendor { get; init; }
-
-  // Protections (gearset / spiritbond / materia) — Hold pile material.
-  // Slot-level facts the caller reads at scan time; default = unprotected.
-  public bool IsProtected { get; init; }
-  public string ProtectionReason { get; init; } = "";
-}
-
-/// <summary>
 /// The routing brain's input aggregation layer. Assembles per-item evidence
 /// from storage, game sheets, and player state — the rules engine and the
-/// listing gate consume this instead of gathering their own inputs.
+/// listing gate consume this instead of gathering their own inputs. The pure
+/// data types live in RoutingModels.cs (shared with the test project).
 /// </summary>
 internal static class RoutingInputService
 {
@@ -108,7 +27,7 @@ internal static class RoutingInputService
     try
     {
       if (Plugin.DesynthYieldStore is { } store)
-        melts = ListingGate.BuildMeltValues(store.ReadSourceSummary(0));
+        melts = BuildMeltValues(store.ReadSourceSummary(0));
     }
     catch { /* storage unavailable — no melt evidence this batch */ }
 
@@ -122,13 +41,39 @@ internal static class RoutingInputService
     try { empirical = VentureReturns.EmpiricalSealToGilRate(); }
     catch { /* storage unavailable - placeholder rate */ }
 
+    var cfg = Plugin.Configuration;
     return new RoutingBatch
     {
       LastSales = sales,
       MeltValues = melts,
       VentureStock = ventures,
-      SealToGilRate = empirical ?? Plugin.Configuration.SealToGilRate,
+      SealToGilRate = empirical ?? cfg.SealToGilRate,
+      SealRateEmpirical = empirical is not null,
+      Rules = new RoutingConfig
+      {
+        ListingFloorGil = cfg.ListingFloorGil,
+        ListingVelocityDays = cfg.ListingVelocityDays,
+        ListingWorthGil = cfg.ListingWorthGil,
+        RoutingReviewBandPct = cfg.RoutingReviewBandPct,
+        VentureBandFull = cfg.VentureBandFull,
+        VentureBandLow = cfg.VentureBandLow,
+        VentureBandPanic = cfg.VentureBandPanic,
+        VenturePanicValueMultiplier = cfg.VenturePanicValueMultiplier,
+      },
     };
+  }
+
+  /// <summary>
+  /// Per-quality melt values from the desynth ledger, keyed by source item.
+  /// Aggregation, so it lives here (the gate consumed it, but never owned it).
+  /// </summary>
+  internal static Dictionary<(uint ItemId, bool IsHq), long> BuildMeltValues(List<DesynthSourceSummary> summaries)
+  {
+    var melts = new Dictionary<(uint, bool), long>();
+    foreach (var s in summaries)
+      if (s.Attempts > 0)
+        melts[(s.SourceItemId, s.SourceIsHq)] = s.YieldValue / s.Attempts;
+    return melts;
   }
 
   /// <summary>
@@ -152,7 +97,7 @@ internal static class RoutingInputService
     var repairClass = (byte)item.ClassJobRepair.RowId;
     if (isEquipment && repairClass != 0)
       color = DesynthSkillup.Classify(
-        DesynthSkillup.GetDesynthLevel(repairClass),
+        GameSafe.GetDesynthLevel(repairClass),
         (int)item.LevelItem.RowId);
 
     // Universalis almanac — marketable items only (untradable gear has no

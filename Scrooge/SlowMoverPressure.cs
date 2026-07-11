@@ -62,6 +62,9 @@ internal static class SlowMoverPressure
 
     var deepened = (int)(newPrice * (100 - pct) / 100.0);
     // Never pressure below vendor - at that point eviction logic owns it.
+    // VendorPrice 0 (unvendorable) is read as NO vendor floor, deliberately:
+    // there is nothing to undercut against, and the pinch's own cut caps
+    // still bound how deep the ladder can go.
     if (item.VendorPrice > 0 && deepened <= item.VendorPrice)
       return newPrice;
 
@@ -121,7 +124,7 @@ internal static class SlowMoverPressure
       _evictBatch ??= RoutingInputService.BeginBatch();
       if (RoutingInputService.Collect(_evictBatch, item.ItemId, item.IsHq) is { } inputs)
       {
-        var verdict = RoutingRules.Evaluate(inputs, _evictBatch.VentureStock, _evictBatch.SealToGilRate);
+        var verdict = RoutingRules.Evaluate(inputs, _evictBatch);
         exitText = verdict.IsReview
           ? $"Review - {verdict.Reason}"
           : $"{verdict.Exit} - {verdict.Reason}";

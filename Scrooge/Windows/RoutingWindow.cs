@@ -116,7 +116,7 @@ internal sealed class RoutingWindow : Window
           if (RoutingInputService.Collect(batch, itemId, isHq, protections) is not { } inputs)
             continue;
 
-          var verdict = RoutingRules.Evaluate(inputs, batch.VentureStock, batch.SealToGilRate);
+          var verdict = RoutingRules.Evaluate(inputs, batch);
           _items.Add(new RoutedItem
           {
             ItemId = itemId,

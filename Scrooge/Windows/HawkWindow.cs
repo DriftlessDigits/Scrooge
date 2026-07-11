@@ -98,15 +98,14 @@ internal sealed class HawkWindow : Window
   public void RefreshInventory()
   {
     _inventory.Clear();
-    var lastSales = GilStorage.GetLastSalePrices();
+
+    // Listing gate evidence doubles as the Last Sale column — one DB pass.
+    var gateOn = Plugin.Configuration.EnableRoutingBrain;
+    var batch = gateOn ? RoutingInputService.BeginBatch() : null;
+    var lastSales = batch?.LastSales ?? GilStorage.GetLastSalePrices();
     var staleCutoff = Plugin.Configuration.StalePriceDays > 0
         ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (Plugin.Configuration.StalePriceDays * 24L * 3600)
         : 0L;
-
-    // Listing gate (routing brain Increment 0) — evidence assembled once
-    // per refresh by the routing input service.
-    var gateOn = Plugin.Configuration.EnableRoutingBrain;
-    var batch = gateOn ? RoutingInputService.BeginBatch() : null;
 
     unsafe
     {
@@ -163,7 +162,7 @@ internal sealed class HawkWindow : Window
             LastSaleStale = hasLastSale && staleCutoff > 0 && lastSale.Timestamp < staleCutoff,
             Gate = batch != null
                 && RoutingInputService.Collect(batch, itemId, isHq) is { } inputs
-              ? ListingGate.Evaluate(inputs)
+              ? ListingGate.Evaluate(inputs, batch)
               : new ListingGate.Result(ListingGate.Verdict.None, ""),
           });
         }

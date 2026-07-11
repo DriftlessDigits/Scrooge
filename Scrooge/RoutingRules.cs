@@ -37,8 +37,9 @@ internal readonly record struct RoutingVerdict(
 
 /// <summary>
 /// The routing brain's decision core. Deterministic rules over pre-gathered
-/// evidence (RoutingItemInputs) — same inputs, same pile, every time. Pure
-/// functions: no game reads, no storage, unit-testable without FFXIV.
+/// evidence (RoutingItemInputs) and a batch-snapshotted config — same inputs,
+/// same pile, every time. Pure functions: no game reads, no storage, no
+/// statics — unit-testable without FFXIV (see Scrooge.Tests).
 ///
 /// Rule order (first match wins): ban, protection, always-vendor flags;
 /// venture-panic hard override; then the value rules — list evidence,
@@ -54,8 +55,7 @@ internal static class RoutingRules
   /// </summary>
   private const double MeltOverVendorFactor = 1.5;
 
-  internal static RoutingVerdict Evaluate(RoutingItemInputs item, int? ventureStock,
-    int? sealToGilRate = null)
+  internal static RoutingVerdict Evaluate(RoutingItemInputs item, RoutingBatch batch)
   {
     // --- Flag rules: the player already decided these ---
 
@@ -75,8 +75,8 @@ internal static class RoutingRules
     // (ambiguous until the token id is verified in-game) mean no tilt —
     // the router never panics on missing evidence.
 
-    var cfg = Plugin.Configuration;
-    var stock = ventureStock is int s && s > 0 ? s : (int?)null;
+    var cfg = batch.Rules;
+    var stock = batch.VentureStock is int s && s > 0 ? s : (int?)null;
 
     if (item.SealValue is int panicSeals && stock is int panicStock && panicStock < cfg.VentureBandPanic)
       return new(RoutingExit.Gc,
@@ -84,10 +84,13 @@ internal static class RoutingRules
 
     // --- Value rules: gil-equivalent scores from local evidence ---
 
-    var sealRate = sealToGilRate ?? cfg.SealToGilRate;
+    var sealRate = batch.SealToGilRate;
+    // The placeholder rate is a guess wearing numbers — the reason says so
+    // until venture returns measure the real rate.
+    var rateTag = batch.SealRateEmpirical ? "" : ", rough";
     var gcScore = item.SealValue is int seals ? (long)seals * sealRate : (long?)null;
     var gcReason = item.SealValue is int gs
-      ? $"Churn: {gs:N0} seals (~{gcScore:N0} gil at {sealRate} gil/seal)."
+      ? $"Churn: {gs:N0} seals (~{gcScore:N0} gil at {sealRate} gil/seal{rateTag})."
       : "";
 
     var meltScore = item.MeltValuePerAttempt;
@@ -104,14 +107,14 @@ internal static class RoutingRules
     if (item.LastSale is { } sale)
     {
       var clears = item.IsEquipment
-        ? ListingGate.ClearsEquipmentFloor(sale.Price, sale.SoldAfterDays, item.MarketVelocity)
+        ? ListingGate.ClearsEquipmentFloor(sale.Price, sale.SoldAfterDays, item.MarketVelocity, cfg)
         : sale.Price >= cfg.ListingWorthGil;
       if (clears)
       {
         listScore = sale.Price;
         listReason = sale.SoldAfterDays is int d
-          ? $"List: sold at {sale.Price:N0} after {d}d listed."
-          : $"List: sold at {sale.Price:N0}.";
+          ? $"List: sold at {sale.Price:N0} gil after {d}d listed."
+          : $"List: sold at {sale.Price:N0} gil.";
       }
     }
 
@@ -128,7 +131,7 @@ internal static class RoutingRules
         BestOf((RoutingExit.Desynth, meltScore, meltReason),
                (RoutingExit.Gc, gcScore, gcReason),
                (RoutingExit.Vendor, vendorScore, vendorReason)),
-        stock);
+        stock, cfg);
     }
 
     // Rule 5 — desynth skillup: scarce, gil can wait. Only blocked when the
@@ -159,16 +162,20 @@ internal static class RoutingRules
         return Resolve(RoutingExit.Gc, gc, gcReason,
           BestOf((RoutingExit.Desynth, meltScore, meltReason),
                  (RoutingExit.Vendor, vendorScore, vendorReason)),
-          stock);
+          stock, cfg);
     }
 
-    // Rule 7 — melt for gil: yields must beat vendor meaningfully.
-    if (meltScore is long melt && vendorScore is long vendor2)
+    // Rule 7 — melt for gil: yields must beat vendor meaningfully. No vendor
+    // price is read as NO vendor floor (0), not an unknown one — deliberate:
+    // for unvendorable gear any known-positive melt is the only gil exit,
+    // and "unknown floor" would strand the item in the shrug below.
+    if (meltScore is long melt && melt > 0)
     {
-      if (melt > vendor2 * MeltOverVendorFactor)
+      var vendorFloor = vendorScore ?? 0;
+      if (melt > vendorFloor * MeltOverVendorFactor)
         return Resolve(RoutingExit.Desynth, melt, meltReason,
-          (RoutingExit.Vendor, vendorScore, vendorReason), stock);
-      if (melt > vendor2)
+          (RoutingExit.Vendor, vendorScore, vendorReason), stock, cfg);
+      if (melt > vendorFloor)
         return new(RoutingExit.Desynth, meltReason, IsReview: true,
           RunnerUp: RoutingExit.Vendor,
           RunnerUpReason: $"{vendorReason} Melt lead is thin — attempt time may not pay.");
@@ -198,7 +205,7 @@ internal static class RoutingRules
 
       if (item.MarketVelocity is double marketV)
       {
-        if (marketV >= ListingGate.MarketVelocityFloor())
+        if (marketV >= ListingGate.MarketVelocityFloor(cfg))
           return new(RoutingExit.List,
             $"Never sold one, but it moves here (~{marketV:0.##}/day on your world, Universalis) — the Hawk run prices it off the live MB.");
         return new(RoutingExit.Vendor,
@@ -211,9 +218,16 @@ internal static class RoutingRules
         IsReview: true, RunnerUp: RoutingExit.Vendor, RunnerUpReason: vendorReason);
     }
 
-    // Rule 8 — nothing beat the vendor.
+    // Rule 8 — nothing beat the vendor. A sale that failed the floor is the
+    // "why not list" context (reaching here with LastSale set means rule 4
+    // rejected it) — say so instead of making the human wonder.
     if (vendorScore is long vendor)
-      return new(RoutingExit.Vendor, $"Vendor: {vendor:N0} gil — no better exit in evidence.");
+    {
+      var soldNote = item.LastSale is { } ls
+        ? $" Sold at {ls.Price:N0} once — below your list floor."
+        : "";
+      return new(RoutingExit.Vendor, $"Vendor: {vendor:N0} gil — no better exit in evidence.{soldNote}");
+    }
 
     // Unvendorable, no evidence for anything else — honest shrug.
     return new(RoutingExit.Vendor, "No viable exit known (can't even vendor it).",
@@ -229,14 +243,13 @@ internal static class RoutingRules
   private static RoutingVerdict Resolve(
     RoutingExit winner, long winnerScore, string winnerReason,
     (RoutingExit Exit, long? Score, string Reason) runnerUp,
-    int? ventureStock)
+    int? ventureStock, RoutingConfig cfg)
   {
     if (runnerUp.Score is not long rScore || rScore <= 0)
       return new(winner, winnerReason);
 
-    var bandPct = Plugin.Configuration.RoutingReviewBandPct;
     var withinBand = winnerScore > 0
-      && Math.Abs(winnerScore - rScore) <= winnerScore * bandPct / 100.0;
+      && Math.Abs(winnerScore - rScore) <= winnerScore * cfg.RoutingReviewBandPct / 100.0;
 
     if (!withinBand)
       return new(winner, winnerReason);
@@ -246,13 +259,13 @@ internal static class RoutingRules
       : runnerUp.Exit == RoutingExit.Gc ? runnerUp.Exit
       : (RoutingExit?)null;
     if (gcContender is RoutingExit gcExit
-        && ventureStock is int stock && stock < Plugin.Configuration.VentureBandFull)
+        && ventureStock is int stock && stock < cfg.VentureBandFull)
     {
       var (reason, other, otherReason) = gcExit == winner
         ? (winnerReason, runnerUp.Exit, runnerUp.Reason)
         : (runnerUp.Reason, winner, winnerReason);
       return new(RoutingExit.Gc,
-        $"{reason} Borderline vs {other} — tilted to churn ({stock:N0} tokens < {Plugin.Configuration.VentureBandFull:N0}).",
+        $"{reason} Borderline vs {other} — tilted to churn ({stock:N0} tokens < {cfg.VentureBandFull:N0}).",
         RunnerUp: other, RunnerUpReason: otherReason);
     }
 
