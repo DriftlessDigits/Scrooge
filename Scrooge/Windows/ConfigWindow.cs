@@ -722,6 +722,65 @@ public sealed class ConfigWindow : Window
 
         ImGui.TreePop();
       }
+
+      ImGui.Spacing();
+      if (ImGui.TreeNode("Slow-mover pressure"))
+      {
+        var pressureOn = Plugin.Configuration.EnableSlowMoverPressure;
+        if (ImGui.Checkbox("Pressure slow listings during pinches", ref pressureOn))
+        {
+          Plugin.Configuration.EnableSlowMoverPressure = pressureOn;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Items that sat listed get judged by the 14-day MB history:\n" +
+                           "others are selling = your price is the blocker - the pinch cut deepens.\n" +
+                           "Nobody is buying = cutting destroys value - the item is flagged for\n" +
+                           "eviction in Triage with the router's verdict on where it should go.");
+          ImGui.EndTooltip();
+        }
+
+        if (pressureOn)
+        {
+          var afterDays = Plugin.Configuration.PressureAfterDays;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Deepen after (days)", ref afterDays, 1, 14, "%dd"))
+          {
+            Plugin.Configuration.PressureAfterDays = afterDays;
+            Plugin.Configuration.Save();
+          }
+
+          var pct1 = Plugin.Configuration.PressureDeepenPct;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Deepen by (%)", ref pct1, 1, 10, "%d%%"))
+          {
+            Plugin.Configuration.PressureDeepenPct = pct1;
+            Plugin.Configuration.Save();
+          }
+
+          var pct2 = Plugin.Configuration.PressureDeepenMaxPct;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Deepen at 14d+ (%)", ref pct2, 1, 20, "%d%%"))
+          {
+            Plugin.Configuration.PressureDeepenMaxPct = pct2;
+            Plugin.Configuration.Save();
+          }
+
+          var evictDays = Plugin.Configuration.EvictAfterDays;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Evict after (days, dead market)", ref evictDays, 7, 30, "%dd"))
+          {
+            Plugin.Configuration.EvictAfterDays = evictDays;
+            Plugin.Configuration.Save();
+          }
+        }
+
+        ImGui.TreePop();
+      }
     }
   }
 

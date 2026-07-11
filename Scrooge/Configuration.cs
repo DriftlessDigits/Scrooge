@@ -279,6 +279,24 @@ public sealed class Configuration : IPluginConfiguration
 
   public float VenturePanicValueMultiplier { get; set; } = 3.0f;
 
+  // Slow-mover pressure - the routing brain pointed at already-listed
+  // inventory. Rides the pinch run; gated by EnableRoutingBrain too.
+
+  /// <summary>Master toggle for slow-mover pressure (deepen cuts / evict flags).</summary>
+  public bool EnableSlowMoverPressure { get; set; } = true;
+
+  /// <summary>Days listed before pressure starts deepening the pinch cut.</summary>
+  public int PressureAfterDays { get; set; } = 7;
+
+  /// <summary>Extra undercut percent at PressureAfterDays (market alive).</summary>
+  public int PressureDeepenPct { get; set; } = 2;
+
+  /// <summary>Extra undercut percent at 14+ days listed (market alive).</summary>
+  public int PressureDeepenMaxPct { get; set; } = 5;
+
+  /// <summary>Days listed with a dead 14-day MB history before the item is flagged for eviction.</summary>
+  public int EvictAfterDays { get; set; } = 14;
+
   // --- Gil Goals ---
   // Three independent buckets; 0 = that goal is off. Set from the dashboard's
   // Goals tab. Crossings celebrate once per target value — changing a target
