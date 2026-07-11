@@ -126,6 +126,15 @@ internal sealed class HawkRunOrchestrator
       return;
     }
 
+    // Read before mutating any run state — fail closed if the retainer
+    // can't be resolved (avoids a half-started run).
+    var retainerName = GameSafe.ActiveRetainerName();
+    if (retainerName == null)
+    {
+      Svc.Chat.PrintError("[Scrooge] Couldn't read the active retainer — try reopening the sell list.");
+      return;
+    }
+
     _pricing.ClearState();
     IsRunning = true;
     Plugin.CurrentRun = new RunData { Mode = RunMode.Hawk };
@@ -136,16 +145,10 @@ internal sealed class HawkRunOrchestrator
     Plugin.PinchRunLog.SetTotalItems(items.Count);
 
     // Set retainer name for log grouping (ClickRetainer doesn't fire when already inside a retainer)
-    var rm = RetainerManager.Instance();
-    Plugin.PinchRunLog.SetCurrentRetainer(rm->GetActiveRetainer()->NameString);
+    Plugin.PinchRunLog.SetCurrentRetainer(retainerName);
 
     // Read current retainer's listing count from RetainerSellList
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var sellList) && GenericHelpers.IsAddonReady(sellList))
-    {
-      var listNode = (AtkComponentNode*)sellList->UldManager.NodeList[10];
-      var listComponent = (AtkComponentList*)listNode->Component;
-      _hawkRetainerSlotsUsed = listComponent->ListLength;
-    }
+    _hawkRetainerSlotsUsed = GameSafe.RetainerSellListLength() ?? 0;
 
     // Auto-dismiss retainer greeting dialogs (needed for retainer swaps)
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", _skipRetainerDialog);

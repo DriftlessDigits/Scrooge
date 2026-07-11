@@ -192,6 +192,12 @@ internal static class GameNavigation
   internal static unsafe bool? ClickInventoryItemById(uint itemId, bool isHq)
   {
     var im = InventoryManager.Instance();
+    if (im == null)
+    {
+      Svc.Log.Warning("[Triage] InventoryManager unavailable — can't locate item");
+      return true;
+    }
+
     var containers = new[]
     {
       InventoryType.Inventory1, InventoryType.Inventory2,
@@ -212,8 +218,13 @@ internal static class GameNavigation
         if (slot->ItemId == itemId && slotIsHq == isHq)
         {
           var agent = AgentInventoryContext.Instance();
-          var addonId = AgentInventory.Instance()->OpenAddonId;
-          agent->OpenForItemSlot(containerType, i, 0, addonId);
+          var inventoryAgent = AgentInventory.Instance();
+          if (agent == null || inventoryAgent == null)
+          {
+            Svc.Log.Warning("[Triage] Inventory agent unavailable — can't open context menu");
+            return true;
+          }
+          agent->OpenForItemSlot(containerType, i, 0, inventoryAgent->OpenAddonId);
           return true;
         }
       }

@@ -67,20 +67,27 @@ internal sealed class TriageOrchestrator : IDisposable
     string? activeRetainer = null;
     bool sellListOpen = false;
 
+    var insideRetainer = false;
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
     {
-      var rm = RetainerManager.Instance();
-      activeRetainer = rm->GetActiveRetainer()->NameString;
+      activeRetainer = GameSafe.ActiveRetainerName();
+      insideRetainer = true;
       sellListOpen = true;
     }
     else if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out _))
     {
-      var rm = RetainerManager.Instance();
-      activeRetainer = rm->GetActiveRetainer()->NameString;
+      activeRetainer = GameSafe.ActiveRetainerName();
+      insideRetainer = true;
     }
     else if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out _))
     {
       Svc.Chat.PrintError("[Scrooge] Talk to a retainer or open the retainer list first.");
+      return false;
+    }
+
+    if (insideRetainer && activeRetainer == null)
+    {
+      Svc.Chat.PrintError("[Scrooge] Couldn't read the active retainer — try reopening the retainer.");
       return false;
     }
 
@@ -226,8 +233,10 @@ internal sealed class TriageOrchestrator : IDisposable
   {
     if (IsRunning || items.Count == 0) return false;
 
-    // Need at least 1 inventory slot to hold the pulled item
-    var freeSlots = InventoryManager.Instance()->GetEmptySlotsInBag();
+    // Need at least 1 inventory slot to hold the pulled item.
+    // Null manager reads as 0 free slots — can't verify, don't start.
+    var im = InventoryManager.Instance();
+    var freeSlots = im == null ? 0 : im->GetEmptySlotsInBag();
     if (freeSlots < 1)
     {
       Svc.Chat.PrintError("[Scrooge] No inventory space to pull items from MB.");
@@ -238,22 +247,29 @@ internal sealed class TriageOrchestrator : IDisposable
     string? activeRetainer = null;
     bool sellListOpen = false;
 
+    var insideRetainer = false;
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
     {
       // Inside a retainer with sell list open — ready to pull immediately
-      var rm = RetainerManager.Instance();
-      activeRetainer = rm->GetActiveRetainer()->NameString;
+      activeRetainer = GameSafe.ActiveRetainerName();
+      insideRetainer = true;
       sellListOpen = true;
     }
     else if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectString", out _))
     {
       // Inside a retainer at the menu — need to open sell list
-      var rm = RetainerManager.Instance();
-      activeRetainer = rm->GetActiveRetainer()->NameString;
+      activeRetainer = GameSafe.ActiveRetainerName();
+      insideRetainer = true;
     }
     else if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out _))
     {
       Svc.Chat.PrintError("[Scrooge] Talk to a retainer or open the retainer list first.");
+      return false;
+    }
+
+    if (insideRetainer && activeRetainer == null)
+    {
+      Svc.Chat.PrintError("[Scrooge] Couldn't read the active retainer — try reopening the retainer.");
       return false;
     }
 

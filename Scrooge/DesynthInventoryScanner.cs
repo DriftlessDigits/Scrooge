@@ -45,6 +45,7 @@ internal static class DesynthInventoryScanner
 
     var itemSheet = Svc.Data.GetExcelSheet<Item>();
     var im = InventoryManager.Instance();
+    if (im == null) return result;
 
     int count = (int)agent->ItemCount;
     for (int i = 0; i < count; i++)

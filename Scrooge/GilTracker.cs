@@ -165,26 +165,19 @@ internal static class GilTracker
   /// Called at pinch run end. Captures gil balances, updates current listings,
   /// cleans up first-seen timestamps for items no longer listed, and saves.
   /// </summary>
-  public static unsafe void FinalizeRun()
+  public static void FinalizeRun()
   {
-    var playerGil = (long)InventoryManager.Instance()->GetGil();
-
-    // Capture retainer gil
-    var retainerGil = new Dictionary<string, long>();
-    var rm = RetainerManager.Instance();
-    for (uint i = 0; i < rm->GetRetainerCount(); i++)
+    if (GameSafe.PlayerGil() is not long playerGil)
     {
-      var retainer = rm->GetRetainerBySortedIndex(i);
-      var name = retainer->NameString;
-      if (!string.IsNullOrEmpty(name))
-        retainerGil[name] = retainer->Gil;
+      Svc.Log.Warning("[GilTrack] InventoryManager unavailable at run end — skipping final snapshot");
+      return;
     }
 
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     // Gil snapshot → DB
     var snapshotId = GilStorage.InsertGilSnapshot(now, playerGil, "pinch_run");
-    foreach (var (name, gil) in retainerGil)
+    foreach (var (name, gil) in GameSafe.RetainerBalances())
       GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
 
     // Market snapshot → DB (post-adjustment values from RecordFinalPrice)
@@ -203,11 +196,11 @@ internal static class GilTracker
   /// Takes a player-only balance snapshot if tracking is enabled and dedup passes.
   /// Retainer balances are NOT captured (only available at the summoning bell).
   /// </summary>
-  public static unsafe void TakeBalanceSnapshot(string source)
+  public static void TakeBalanceSnapshot(string source)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
+    if (GameSafe.PlayerGil() is not long playerGil) return;
 
-    var playerGil = (long)InventoryManager.Instance()->GetGil();
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     // Dedup: skip if last snapshot < 60s ago and balance unchanged

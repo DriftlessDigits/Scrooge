@@ -59,13 +59,14 @@ internal sealed class ExchangeTracker : IDisposable
     _catchallBlock = null;
   }
 
-  private unsafe void OnOpen(AddonEvent type, AddonArgs args)
+  private void OnOpen(AddonEvent type, AddonArgs args)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     if (_active) return; // ignore nested openings — one snapshot per session
     if (!AddonSources.TryGetValue(args.AddonName, out var source)) return;
+    if (GameSafe.PlayerGil() is not long openGil) return; // no baseline — skip this session
 
-    _openGil = (long)InventoryManager.Instance()->GetGil();
+    _openGil = openGil;
     _counterparty = args.AddonName; // window titles come later for addons that need them
     _source = source;
     _active = true;
@@ -75,13 +76,14 @@ internal sealed class ExchangeTracker : IDisposable
     Svc.Log.Debug($"[GilTrack] {source} opened: snapshot {_openGil:N0}g");
   }
 
-  private unsafe void OnClose(AddonEvent type, AddonArgs args)
+  private void OnClose(AddonEvent type, AddonArgs args)
   {
     if (!_active) return;
 
     try
     {
-      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      if (GameSafe.PlayerGil() is not long currentGil) return;
+
       var diff = currentGil - _openGil;
       if (diff > 0)
         RecordExchange("earned", diff, _source, _counterparty);

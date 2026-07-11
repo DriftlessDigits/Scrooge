@@ -25,19 +25,21 @@ namespace Scrooge;
 /// </summary>
 internal sealed class GilTrackEventListener : IDisposable
 {
-  // MB purchase tracking — snapshot gil on open, diff on close
-  private long _mbOpenGil;
+  // MB purchase tracking — snapshot gil on open, diff on close.
+  // Snapshots are null when the gil read failed at open time — the paired
+  // close/finalize handler then skips recording (no baseline, no diff).
+  private long? _mbOpenGil;
   private int _mbPurchaseCount;
   private IDisposable? _mbBlock;
 
   // Tier 1 tracker state
-  private long _questSnapshotGil;
+  private long? _questSnapshotGil;
   private IDisposable? _questBlock;
-  private long _dutySnapshotGil;
+  private long? _dutySnapshotGil;
   private bool _inDuty;
   private string _dutyName = "";
   private IDisposable? _dutyBlock;
-  private long _fateSnapshotGil;
+  private long? _fateSnapshotGil;
   private IDisposable? _fateBlock;
 
   private static readonly HashSet<TerritoryIntendedUseEnum> DutyExclusions =
@@ -105,7 +107,7 @@ internal sealed class GilTrackEventListener : IDisposable
     {
       // Entering a duty — snapshot
       _inDuty = true;
-      _dutySnapshotGil = (long)InventoryManager.Instance()->GetGil();
+      _dutySnapshotGil = GameSafe.PlayerGil();
       _dutyName = Content.ContentName ?? $"Duty {cfcId}";
       _dutyBlock?.Dispose();
       _dutyBlock = GilTrackingState.Block("duty");
@@ -116,14 +118,16 @@ internal sealed class GilTrackEventListener : IDisposable
       // Leaving a duty — diff and record
       try
       {
-        var currentGil = (long)InventoryManager.Instance()->GetGil();
-        var diff = currentGil - _dutySnapshotGil;
-        if (diff > 0)
-          RecordGilTransaction("earned", "duty_reward", diff, _dutyName);
-        else if (diff < 0)
-          RecordGilTransaction("spent", "duty_reward", -diff, _dutyName);
+        if (GameSafe.PlayerGil() is long currentGil && _dutySnapshotGil is long dutySnapshot)
+        {
+          var diff = currentGil - dutySnapshot;
+          if (diff > 0)
+            RecordGilTransaction("earned", "duty_reward", diff, _dutyName);
+          else if (diff < 0)
+            RecordGilTransaction("spent", "duty_reward", -diff, _dutyName);
 
-        Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
+          Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
+        }
       }
       finally
       {
@@ -147,8 +151,8 @@ internal sealed class GilTrackEventListener : IDisposable
   private unsafe void OnRetainerListSetup(AddonEvent type, AddonArgs args)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
+    if (GameSafe.PlayerGil() is not long playerGil) return;
 
-    var playerGil = (long)InventoryManager.Instance()->GetGil();
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     // Dedup: skip if last snapshot < 60s ago and balance unchanged
@@ -159,23 +163,17 @@ internal sealed class GilTrackEventListener : IDisposable
     var snapshotId = GilStorage.InsertGilSnapshot(now, playerGil, "summoning_bell");
 
     // At the bell, retainer balances are populated
-    var rm = RetainerManager.Instance();
-    for (uint i = 0; i < rm->GetRetainerCount(); i++)
-    {
-      var retainer = rm->GetRetainerBySortedIndex(i);
-      var name = retainer->NameString;
-      if (!string.IsNullOrEmpty(name))
-        GilStorage.InsertRetainerSnapshot(snapshotId, name, retainer->Gil);
-    }
+    foreach (var (name, gil) in GameSafe.RetainerBalances())
+      GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
 
     Svc.Log.Debug($"[GilTrack] Bell snapshot: {playerGil:N0}g player + retainer balances");
   }
 
   // --- Market Board purchase tracking (gil diff approach) ---
 
-  private unsafe void OnMarketBoardOpen(AddonEvent type, AddonArgs args)
+  private void OnMarketBoardOpen(AddonEvent type, AddonArgs args)
   {
-    _mbOpenGil = (long)InventoryManager.Instance()->GetGil();
+    _mbOpenGil = GameSafe.PlayerGil();
     _mbPurchaseCount = 0;
     _mbBlock?.Dispose();
     _mbBlock = GilTrackingState.Block("mb_purchase");
@@ -186,9 +184,9 @@ internal sealed class GilTrackEventListener : IDisposable
     try
     {
       if (!Plugin.Configuration.EnableGilTracking || _mbPurchaseCount == 0) return;
+      if (GameSafe.PlayerGil() is not long currentGil || _mbOpenGil is not long mbOpenGil) return;
 
-      var currentGil = (long)InventoryManager.Instance()->GetGil();
-      var spent = _mbOpenGil - currentGil;
+      var spent = mbOpenGil - currentGil;
       if (spent <= 0) return;
 
       var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -349,10 +347,10 @@ internal sealed class GilTrackEventListener : IDisposable
 
   // --- Tier 1: Quest Rewards (JournalResult addon) ---
 
-  private unsafe void OnQuestRewardSetup(AddonEvent type, AddonArgs args)
+  private void OnQuestRewardSetup(AddonEvent type, AddonArgs args)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
-    _questSnapshotGil = (long)InventoryManager.Instance()->GetGil();
+    _questSnapshotGil = GameSafe.PlayerGil();
     _questBlock?.Dispose();
     _questBlock = GilTrackingState.Block("quest_reward");
     Svc.Log.Debug($"[GilTrack] Quest reward window opened, snapshot {_questSnapshotGil:N0}g");
@@ -378,8 +376,9 @@ internal sealed class GilTrackEventListener : IDisposable
         Svc.Log.Warning($"[GilTrack] Failed to read quest name: {ex.Message}");
       }
 
-      var currentGil = (long)InventoryManager.Instance()->GetGil();
-      var diff = currentGil - _questSnapshotGil;
+      if (GameSafe.PlayerGil() is not long currentGil || _questSnapshotGil is not long questSnapshot) return;
+
+      var diff = currentGil - questSnapshot;
       if (diff > 0)
         RecordGilTransaction("earned", "quest_reward", diff, questName);
 
@@ -394,10 +393,10 @@ internal sealed class GilTrackEventListener : IDisposable
 
   // --- Tier 1: FATE Rewards (FateReward addon) ---
 
-  private unsafe void OnFateRewardPreSetup(AddonEvent type, AddonArgs args)
+  private void OnFateRewardPreSetup(AddonEvent type, AddonArgs args)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
-    _fateSnapshotGil = (long)InventoryManager.Instance()->GetGil();
+    _fateSnapshotGil = GameSafe.PlayerGil();
     _fateBlock?.Dispose();
     _fateBlock = GilTrackingState.Block("fate_reward");
     Svc.Log.Debug($"[GilTrack] FATE reward window opening, snapshot {_fateSnapshotGil:N0}g");
@@ -427,8 +426,9 @@ internal sealed class GilTrackEventListener : IDisposable
         Svc.Log.Warning($"[GilTrack] Failed to read FATE name: {ex.Message}");
       }
 
-      var currentGil = (long)InventoryManager.Instance()->GetGil();
-      var diff = currentGil - _fateSnapshotGil;
+      if (GameSafe.PlayerGil() is not long currentGil || _fateSnapshotGil is not long fateSnapshot) return;
+
+      var diff = currentGil - fateSnapshot;
       if (diff > 0)
         RecordGilTransaction("earned", "fate_reward", diff, fateName);
 

@@ -52,7 +52,7 @@ internal sealed class ChatCatchallTracker : IDisposable
     Svc.Chat.ChatMessage -= OnChatMessage;
   }
 
-  private unsafe void OnChatMessage(IHandleableChatMessage message)
+  private void OnChatMessage(IHandleableChatMessage message)
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     if (!ValidChatTypes.Contains((int)message.LogKind)) return;
@@ -60,7 +60,9 @@ internal sealed class ChatCatchallTracker : IDisposable
 
     if (!_baselineInitialized)
     {
-      _baselineGil = (long)InventoryManager.Instance()->GetGil();
+      // No baseline means any diff would be garbage — don't schedule one.
+      if (GameSafe.PlayerGil() is not long gil) return;
+      _baselineGil = gil;
       _baselineInitialized = true;
     }
 
@@ -72,7 +74,7 @@ internal sealed class ChatCatchallTracker : IDisposable
     }
   }
 
-  private unsafe void OnFrameworkUpdate(IFramework framework)
+  private void OnFrameworkUpdate(IFramework framework)
   {
     if (_scheduledDiffTick == 0)
     {
@@ -87,7 +89,7 @@ internal sealed class ChatCatchallTracker : IDisposable
     Svc.Framework.Update -= OnFrameworkUpdate;
     _frameworkSubscribed = false;
 
-    var currentGil = (long)InventoryManager.Instance()->GetGil();
+    if (GameSafe.PlayerGil() is not long currentGil) return;
 
     if (GilTrackingState.IsBlocked)
     {
@@ -111,12 +113,15 @@ internal sealed class ChatCatchallTracker : IDisposable
     Svc.Log.Debug($"[GilTrack] catchall: {direction} {amount:N0}g");
   }
 
-  private unsafe void OnGilChangeHandled()
+  private void OnGilChangeHandled()
   {
     // A specific tracker just recorded the current gil state — adopt it as
     // our new baseline so the upcoming debounced diff sees 0 and skips.
-    _baselineGil = (long)InventoryManager.Instance()->GetGil();
-    _baselineInitialized = true;
+    if (GameSafe.PlayerGil() is long gil)
+    {
+      _baselineGil = gil;
+      _baselineInitialized = true;
+    }
 
     // Any debounce queued by the same chat message is now stale.
     _scheduledDiffTick = 0;

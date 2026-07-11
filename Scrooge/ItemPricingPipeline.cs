@@ -100,7 +100,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   {
     // Safety check: verify the item is still in the expected slot
     var im = InventoryManager.Instance();
-    var container = im->GetInventoryContainer(hawkItem.Container);
+    var container = im == null ? null : im->GetInventoryContainer(hawkItem.Container);
     if (container == null) return true;
 
     var slot = container->GetInventorySlot(hawkItem.SlotIndex);

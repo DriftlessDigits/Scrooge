@@ -102,6 +102,8 @@ internal sealed class HawkWindow : Window
     unsafe
     {
       var im = InventoryManager.Instance();
+      if (im == null) return;
+
       var containers = new[]
       {
         InventoryType.Inventory1,

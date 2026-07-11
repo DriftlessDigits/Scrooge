@@ -178,9 +178,11 @@ internal sealed class AutoPinch : Window, IDisposable
   /// </summary>
   private unsafe void DrawSellListBanIndicators(AtkUnitBase* addon)
   {
+    if (addon->UldManager.NodeListCount <= 10) return;
     var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
     if (listNode == null) return;
     var listComponent = (AtkComponentList*)listNode->Component;
+    if (listComponent == null) return;
     var listLength = listComponent->ListLength;
     if (listLength == 0) return;
 
@@ -442,10 +444,13 @@ internal sealed class AutoPinch : Window, IDisposable
     if (Plugin.Configuration.EnableGilTracking)
     {
       _taskManager.Enqueue(() => {
-        unsafe {
-          var rm = RetainerManager.Instance();
-          GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+        var name = GameSafe.ActiveRetainerName();
+        if (name == null)
+        {
+          Svc.Log.Warning("[GilTrack] Couldn't read active retainer — skipping listing snapshot");
+          return true;
         }
+        GilTracker.SetRetainer(name);
         GilTracker.SnapshotListings();
         return true;
       }, $"SnapshotListings{index}");
@@ -541,11 +546,13 @@ internal sealed class AutoPinch : Window, IDisposable
     {
       _taskManager.Enqueue(() =>
       {
-        unsafe
+        var name = GameSafe.ActiveRetainerName();
+        if (name == null)
         {
-          var rm = RetainerManager.Instance();
-          GilTracker.SetRetainer(rm->GetActiveRetainer()->NameString);
+          Svc.Log.Warning("[GilTrack] Couldn't read active retainer — skipping listing snapshot");
+          return true;
         }
+        GilTracker.SetRetainer(name);
         GilTracker.SnapshotListings();
         return true;
       }, $"TallySnapshotListings{index}");
@@ -562,38 +569,39 @@ internal sealed class AutoPinch : Window, IDisposable
     _taskManager.DelayNext(1000);
   }
 
-  private unsafe void PinchAllRetainerItems()
+  private void PinchAllRetainerItems()
   {
     if (_taskManager.IsBusy)
       return;
+
+    // Read before mutating any run state — fail closed if the retainer
+    // can't be resolved (avoids a half-started run).
+    var retainerName = GameSafe.ActiveRetainerName();
+    if (retainerName == null)
+    {
+      Svc.Chat.PrintError("[Scrooge] Couldn't read the active retainer — try reopening the sell list.");
+      return;
+    }
 
     ClearState();
     Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
     Plugin.PinchRunLog.StartNewRun();
 
     // Get total items from the sell list
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
-    {
-      var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
-      var listComponent = (AtkComponentList*)listNode->Component;
-      Plugin.PinchRunLog.SetTotalItems(listComponent->ListLength);
-    }
+    if (GameSafe.RetainerSellListLength() is int totalItems)
+      Plugin.PinchRunLog.SetTotalItems(totalItems);
 
     // Set retainer name for log grouping (ClickRetainer doesn't fire for single-retainer runs)
-    {
-      var rm = RetainerManager.Instance();
-      var retainerName = rm->GetActiveRetainer()->NameString;
-      Plugin.PinchRunLog.SetCurrentRetainer(retainerName);
+    Plugin.PinchRunLog.SetCurrentRetainer(retainerName);
 
-      // Gil tracking: start run, set retainer, snapshot
-      if (Plugin.Configuration.EnableGilTracking)
-      {
-        GilTracker.StartRun(retainerName);
-        GilTracker.SetRetainer(retainerName);
-        _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
-      }
+    // Gil tracking: start run, set retainer, snapshot
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      GilTracker.StartRun(retainerName);
+      GilTracker.SetRetainer(retainerName);
+      _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
     }
-      
+
     EnqueueAllRetainerItems(EnqueueSingleItem, false);
 
     // Gil tracking: close sell list → view sale history → reopen sell list
@@ -625,14 +633,10 @@ internal sealed class AutoPinch : Window, IDisposable
   /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
   /// <param name="enqueueFunc">Function to queue each item (EnqueueSingleItem or InsertSingleItem).</param>
   /// <param name="reverseOrder">If true, process items bottom-to-top (needed for Insert-based queuing).</param>
-  private unsafe bool? EnqueueAllRetainerItems(Action<int> enqueueFunc, bool reverseOrder)
+  private bool? EnqueueAllRetainerItems(Action<int> enqueueFunc, bool reverseOrder)
   {
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon) && GenericHelpers.IsAddonReady(addon))
+    if (GameSafe.RetainerSellListLength() is int num)
     {
-      var listNode = (AtkComponentNode*)addon->UldManager.NodeList[10];
-      var listComponent = (AtkComponentList*)listNode->Component;
-      int num = listComponent->ListLength;
-
       if (reverseOrder)
       {
         for (int i = num - 1; i >= 0; i--)

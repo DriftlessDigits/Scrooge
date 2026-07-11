@@ -102,6 +102,14 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
     OutlierDetected = false;
 
+    // Empty batch (nothing listed for this item) — every ItemListings[0]
+    // access below would throw. Treat as "no matching listing."
+    if (currentOfferings.ItemListings.Count == 0)
+    {
+      NewPrice = -1;
+      return;
+    }
+
     // Find the first listing that matches our HQ filter.
     // All listings in one response are for the same item, sorted by price ascending.
     var i = 0;
@@ -166,7 +174,7 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     {
       int price;
       var listingPrice = (int)currentOfferings.ItemListings[i].PricePerUnit;
-      var isOwnRetainer = !Plugin.Configuration.UndercutSelf && IsOwnRetainer(currentOfferings.ItemListings[i].RetainerId);
+      var isOwnRetainer = !Plugin.Configuration.UndercutSelf && GameSafe.IsOwnRetainer(currentOfferings.ItemListings[i].RetainerId);
       var effectiveMode = Plugin.Configuration.UndercutMode;
 
       if (!isOwnRetainer && effectiveMode == UndercutMode.Humanized)
@@ -257,26 +265,9 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   /// </summary>
   private unsafe void AddonRetainerSellPostSetup(AddonEvent type, AddonArgs args)
   {
-    string nodeText = ((AddonRetainerSell*)args.Addon.Address)->ItemName->NodeText.ToString();
-    _itemHq = nodeText.Contains('\uE03C');
-  }
-
-  /// <summary>
-  /// Checks if a listing belongs to one of the player's own retainers.
-  /// Used to avoid undercutting yourself when UndercutSelf is disabled.
-  /// </summary>
-  /// <param name="retainerId">The retainer ID from the MB listing to check.</param>
-  /// <returns>True if the retainer belongs to the current player.</returns>
-  private unsafe bool IsOwnRetainer(ulong retainerId)
-  {
-    var retainerManager = RetainerManager.Instance();
-    for (uint i = 0; i < retainerManager->GetRetainerCount(); ++i)
-    {
-      if (retainerId == retainerManager->GetRetainerBySortedIndex(i)->RetainerId)
-        return true;
-    }
-
-    return false;
+    var addon = (AddonRetainerSell*)args.Addon.Address;
+    if (addon == null || addon->ItemName == null) return;
+    _itemHq = addon->ItemName->NodeText.ToString().Contains('\uE03C');
   }
 
   /// <summary>
