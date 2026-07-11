@@ -104,7 +104,7 @@ internal static class RoutingRules
     if (item.LastSale is { } sale)
     {
       var clears = item.IsEquipment
-        ? ListingGate.ClearsEquipmentFloor(sale.Price, sale.SoldAfterDays)
+        ? ListingGate.ClearsEquipmentFloor(sale.Price, sale.SoldAfterDays, item.MarketVelocity)
         : sale.Price >= cfg.ListingWorthGil;
       if (clears)
       {
@@ -164,12 +164,27 @@ internal static class RoutingRules
     }
 
     // Evidence-only: gear the router knows nothing about is YOUR call,
-    // not a vendor trip. Leans List (the gate's Unknown flows to listing
-    // as today) but lands in Review — the router won't guess.
+    // not a vendor trip. The Universalis almanac upgrades this from a guess
+    // when it can — a market that moves keeps the List call (the Hawk run
+    // prices off the live MB at list time); a dead market means a listing
+    // never sells, so vendor is the honest exit. No almanac data = today's
+    // behavior: leans List but lands in Review — the router won't guess.
     if (item.IsEquipment && item.LastSale is null && meltScore is null && gcScore is null)
+    {
+      if (item.MarketVelocity is double marketV)
+      {
+        if (marketV >= ListingGate.MarketVelocityFloor())
+          return new(RoutingExit.List,
+            $"Never sold one, but it moves here (~{marketV:0.##}/day on your world, Universalis) — the Hawk run prices it off the live MB.");
+        return new(RoutingExit.Vendor,
+          $"Nobody buys this here (~{marketV:0.##}/day on your world, Universalis) — a listing just sits. {vendorReason}",
+          RunnerUp: RoutingExit.List,
+          RunnerUpReason: "List anyway if you think the almanac is wrong.");
+      }
       return new(RoutingExit.List,
         "No local evidence for this gear — never sold or melted one. Check the MB if it looks valuable.",
         IsReview: true, RunnerUp: RoutingExit.Vendor, RunnerUpReason: vendorReason);
+    }
 
     // Rule 8 — nothing beat the vendor.
     if (vendorScore is long vendor)

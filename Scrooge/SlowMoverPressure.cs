@@ -48,7 +48,7 @@ internal static class SlowMoverPressure
     // Dead market at eviction age: cutting destroys value. Flag and hold.
     if (!marketAlive)
     {
-      if (ageDays >= cfg.EvictAfterDays)
+      if (ageDays >= cfg.EvictAfterDays && !UniversalisContradicts(item))
         FlagEviction(item, ageDays);
       return newPrice;
     }
@@ -68,6 +68,24 @@ internal static class SlowMoverPressure
     Plugin.PinchRunLog?.AddEntry(Windows.ItemOutcome.Outlier,
       item.ItemName, $"Slow mover: listed {ageDays}d, market alive - deepened {pct}% ({newPrice:N0} → {deepened:N0})");
     return deepened;
+  }
+
+  /// <summary>
+  /// Cross-checks a locally-dead market against the Universalis almanac
+  /// before evicting: an empty 14-day history also happens on a failed MB
+  /// fetch, and evicting a live market is the expensive mistake. A recent
+  /// sale by anyone on the home world = someone IS buying — skip the flag
+  /// this run. No almanac data = trust the local read as today.
+  /// </summary>
+  private static bool UniversalisContradicts(PricingItem item)
+  {
+    var market = UniversalisStats.TryGet(item.ItemId, item.IsHq);
+    if (market?.LastSaleDaysAgo is not int saleDays
+        || saleDays >= Plugin.Configuration.EvictAfterDays)
+      return false;
+
+    Svc.Log.Debug($"[Pressure] {item.ItemName}: local history empty but Universalis shows a sale {saleDays}d ago — evict skipped this run");
+    return true;
   }
 
   /// <summary>Days this variant has sat listed on the item's retainer, or null when untracked.</summary>

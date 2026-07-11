@@ -177,6 +177,66 @@ internal static class GilStorage
       : null;
   }
 
+  /// <summary>
+  /// Upserts one Universalis fetch round for a world (V16). Framework thread
+  /// only — callers marshal here from the fetch worker.
+  /// </summary>
+  internal static void UpsertUniversalisStats(uint worldId, List<UniversalisStat> stats, long fetchedAt)
+  {
+    using var tx = Connection.BeginTransaction();
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO universalis_stats (item_id, world_id, nq_velocity, hq_velocity, last_sale_at, last_upload_at, fetched_at)
+      VALUES (@item, @world, @nq, @hq, @sale, @upload, @fetched)
+      ON CONFLICT (item_id, world_id) DO UPDATE SET
+        nq_velocity = @nq, hq_velocity = @hq, last_sale_at = @sale,
+        last_upload_at = @upload, fetched_at = @fetched",
+      _connection, tx);
+    var pItem = cmd.Parameters.Add("@item", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pWorld = cmd.Parameters.Add("@world", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pNq = cmd.Parameters.Add("@nq", Microsoft.Data.Sqlite.SqliteType.Real);
+    var pHq = cmd.Parameters.Add("@hq", Microsoft.Data.Sqlite.SqliteType.Real);
+    var pSale = cmd.Parameters.Add("@sale", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pUpload = cmd.Parameters.Add("@upload", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pFetched = cmd.Parameters.Add("@fetched", Microsoft.Data.Sqlite.SqliteType.Integer);
+
+    pWorld.Value = worldId;
+    pFetched.Value = fetchedAt;
+    foreach (var stat in stats)
+    {
+      pItem.Value = stat.ItemId;
+      pNq.Value = stat.NqVelocity;
+      pHq.Value = stat.HqVelocity;
+      pSale.Value = (object?)stat.LastSaleAt ?? DBNull.Value;
+      pUpload.Value = (object?)stat.LastUploadAt ?? DBNull.Value;
+      cmd.ExecuteNonQuery();
+    }
+    tx.Commit();
+  }
+
+  /// <summary>All cached Universalis rows for one world, keyed by item id.</summary>
+  internal static Dictionary<uint, (UniversalisStat Stat, long FetchedAt)> GetUniversalisStats(uint worldId)
+  {
+    var rows = new Dictionary<uint, (UniversalisStat, long)>();
+    using var cmd = new SqliteCommand(
+      @"SELECT item_id, nq_velocity, hq_velocity, last_sale_at, last_upload_at, fetched_at
+        FROM universalis_stats WHERE world_id = @world",
+      _connection);
+    cmd.Parameters.AddWithValue("@world", worldId);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      var itemId = (uint)reader.GetInt64(0);
+      rows[itemId] = (new UniversalisStat(
+        itemId,
+        reader.GetDouble(1),
+        reader.GetDouble(2),
+        reader.IsDBNull(3) ? null : reader.GetInt64(3),
+        reader.IsDBNull(4) ? null : reader.GetInt64(4)),
+        reader.GetInt64(5));
+    }
+    return rows;
+  }
+
   /// <summary>Inserts a single retainer's gil balance, linked to a snapshot.</summary>
   internal static void InsertRetainerSnapshot(long snapshotId, string retainerName, long gil,
       SqliteTransaction? transaction = null)

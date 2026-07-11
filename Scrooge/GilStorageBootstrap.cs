@@ -116,6 +116,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 15);
     }
 
+    if (version < 16)
+    {
+      MigrateV16(connection);
+      SetSchemaVersion(connection, 16);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -159,6 +165,16 @@ internal class GilStorageBootstrap
             )",
             @"CREATE INDEX IF NOT EXISTS ix_venture_returns_captured
                 ON venture_returns(captured_at DESC)",
+            @"CREATE TABLE IF NOT EXISTS universalis_stats (
+                item_id INTEGER NOT NULL,
+                world_id INTEGER NOT NULL,
+                nq_velocity REAL NOT NULL DEFAULT 0,
+                hq_velocity REAL NOT NULL DEFAULT 0,
+                last_sale_at INTEGER,
+                last_upload_at INTEGER,
+                fetched_at INTEGER NOT NULL,
+                PRIMARY KEY (item_id, world_id)
+            )",
             @"CREATE TABLE IF NOT EXISTS retainer_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 snapshot_id INTEGER NOT NULL REFERENCES gil_snapshots(id),
@@ -944,6 +960,31 @@ internal class GilStorageBootstrap
         alter.ExecuteNonQuery();
 
     Svc.Log.Info("[Scrooge] V15 migration: venture_returns table + gil_snapshots.venture_tokens");
+  }
+
+  /// <summary>
+  /// V16: the Universalis almanac cache. One row per (item, world) holding
+  /// per-quality sale velocity, most recent sale, and lastUploadTime for the
+  /// trust gate — so routing verdicts survive restarts without refetching.
+  /// Null last_upload_at = Universalis has no data for the item.
+  /// </summary>
+  private static void MigrateV16(SqliteConnection connection)
+  {
+    using (var cmd = new SqliteCommand(
+      @"CREATE TABLE IF NOT EXISTS universalis_stats (
+          item_id        INTEGER NOT NULL,
+          world_id       INTEGER NOT NULL,
+          nq_velocity    REAL NOT NULL DEFAULT 0,
+          hq_velocity    REAL NOT NULL DEFAULT 0,
+          last_sale_at   INTEGER,
+          last_upload_at INTEGER,
+          fetched_at     INTEGER NOT NULL,
+          PRIMARY KEY (item_id, world_id)
+        );",
+      connection))
+      cmd.ExecuteNonQuery();
+
+    Svc.Log.Info("[Scrooge] V16 migration: universalis_stats cache table");
   }
 
   // =========================================================================

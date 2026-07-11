@@ -61,6 +61,15 @@ internal sealed record RoutingItemInputs
   /// <summary>GC Expert Delivery seals, when eligible.</summary>
   public int? SealValue { get; init; }
 
+  /// <summary>
+  /// Home-world sale velocity for this quality (units/day) from the
+  /// Universalis almanac. Null = no trusted data (offline, stale past the
+  /// trust window, unmarketable, or still fetching) — behave as before.
+  /// </summary>
+  public double? MarketVelocity { get; init; }
+  /// <summary>Days since ANYONE last bought this item here (Universalis).</summary>
+  public int? MarketLastSaleDays { get; init; }
+
   // Desynth skill state (null color = not desynthesizable / no repair class)
   public DesynthSkillupColor? DesynthColor { get; init; }
   public bool DesynthSkillupEligible { get; init; }
@@ -144,6 +153,13 @@ internal static class RoutingInputService
         DesynthSkillup.GetDesynthLevel(repairClass),
         (int)item.LevelItem.RowId);
 
+    // Universalis almanac — marketable items only (untradable gear has no
+    // market to ask about). A cache miss queues an async fetch; this batch
+    // evaluates on local evidence and the UI re-runs when the answer lands.
+    (double Velocity, int? LastSaleDaysAgo)? market = null;
+    if (item.ItemSearchCategory.RowId != 0)
+      market = UniversalisStats.TryGet(itemId, isHq);
+
     return new RoutingItemInputs
     {
       ItemId = itemId,
@@ -155,6 +171,8 @@ internal static class RoutingInputService
       LastSale = batch.LastSales.TryGetValue((itemId, isHq), out var sale) ? sale : null,
       MeltValuePerAttempt = batch.MeltValues.TryGetValue((itemId, isHq), out var melt) ? melt : null,
       SealValue = GcSeals.For(itemId),
+      MarketVelocity = market?.Velocity,
+      MarketLastSaleDays = market?.LastSaleDaysAgo,
       DesynthColor = color,
       DesynthSkillupEligible = color is { } c && DesynthSkillup.IsSkillupEligible(c),
       IsBanned = Plugin.Configuration.BannedItemIds.Contains(fullId),
