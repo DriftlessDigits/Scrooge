@@ -227,6 +227,20 @@ internal sealed class HawkWindow : Window
     }
     ImGui.EndDisabled();
 
+    // Route: the pile view over the same bags — verdicts for every exit,
+    // not just a listing gate. Only offered when the routing brain is on.
+    if (Plugin.Configuration.EnableRoutingBrain)
+    {
+      ImGui.SameLine();
+      if (ImGui.Button("Route"))
+      {
+        Plugin.RoutingWindow.Refresh();
+        Plugin.RoutingWindow.IsOpen = true;
+      }
+      if (ImGui.IsItemHovered())
+        ImGui.SetTooltip("Open the router's pile view: list / melt / churn / vendor verdicts\nfor the gear in your bags, with reasons. One Go runs the List and\nVendor piles from here.");
+    }
+
     ImGui.Separator();
 
     // --- Item table ---
