@@ -67,7 +67,7 @@ public sealed class Plugin : IDalamudPlugin
   private ChatCatchallTracker? _chatCatchallTracker;
 
   public readonly WindowSystem WindowSystem = new("Scrooge");
-  private ConfigWindow ConfigWindow { get; init; }
+  internal static ConfigWindow ConfigWindow { get; private set; } = null!;
 
   public Plugin()
   {
@@ -77,14 +77,14 @@ public sealed class Plugin : IDalamudPlugin
 
     CommandManager.AddHandler("/scrooge", new CommandInfo(OnScroogeCommand)
     {
-      HelpMessage = "Opens the Scrooge configuration window"
+      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config for settings)"
     });
 
-    // Register chat link handler for clickable config link
-    ConfigLinkPayload = ChatGui.AddChatLinkHandler(0, (id, _) => ToggleConfigUI());
+    // Register chat link handler — clicking Scrooge's chat output opens the dashboard
+    ConfigLinkPayload = ChatGui.AddChatLinkHandler(0, (id, _) => ToggleMainUi());
 
     PluginInterface.UiBuilder.Draw += DrawUI;
-    PluginInterface.UiBuilder.OpenMainUi += ToggleConfigUI;
+    PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
     PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUI;
 
     ECommonsMain.Init(PluginInterface, this);
@@ -211,8 +211,12 @@ public sealed class Plugin : IDalamudPlugin
 
   private void OnScroogeCommand(string command, string args)
   {
-    // in response to the slash command, just toggle the display status of our main ui
-    ToggleConfigUI();
+    // Dashboard is the front door; settings stay reachable via argument.
+    if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase)
+        || args.Trim().Equals("settings", StringComparison.OrdinalIgnoreCase))
+      ToggleConfigUI();
+    else
+      ToggleMainUi();
   }
 
   private void OnGilTrackCommand(string command, string args) => GilDashboard.Toggle();
@@ -438,4 +442,7 @@ public sealed class Plugin : IDalamudPlugin
   }
 
   public void ToggleConfigUI() => ConfigWindow.Toggle();
+
+  /// <summary>Main UI = the Gil Dashboard. Config stays behind the cog / /scrooge config.</summary>
+  public void ToggleMainUi() => GilDashboard.Toggle();
 }
