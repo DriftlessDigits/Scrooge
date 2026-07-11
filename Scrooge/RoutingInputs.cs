@@ -51,6 +51,8 @@ internal sealed record RoutingItemInputs
   public string Name { get; init; } = "";
   public int Ilvl { get; init; }
   public bool IsEquipment { get; init; }
+  /// <summary>Has a market search category — can be listed at all. Untradable gear's only exits are melt/GC/vendor.</summary>
+  public bool IsMarketable { get; init; }
   public int VendorPrice { get; init; }
 
   // Evidence
@@ -156,8 +158,9 @@ internal static class RoutingInputService
     // Universalis almanac — marketable items only (untradable gear has no
     // market to ask about). A cache miss queues an async fetch; this batch
     // evaluates on local evidence and the UI re-runs when the answer lands.
+    var isMarketable = item.ItemSearchCategory.RowId != 0;
     (double Velocity, int? LastSaleDaysAgo)? market = null;
-    if (item.ItemSearchCategory.RowId != 0)
+    if (isMarketable)
       market = UniversalisStats.TryGet(itemId, isHq);
 
     return new RoutingItemInputs
@@ -167,6 +170,7 @@ internal static class RoutingInputService
       Name = item.Name.ToString(),
       Ilvl = (int)item.LevelItem.RowId,
       IsEquipment = isEquipment,
+      IsMarketable = isMarketable,
       VendorPrice = (int)item.PriceLow,
       LastSale = batch.LastSales.TryGetValue((itemId, isHq), out var sale) ? sale : null,
       MeltValuePerAttempt = batch.MeltValues.TryGetValue((itemId, isHq), out var melt) ? melt : null,

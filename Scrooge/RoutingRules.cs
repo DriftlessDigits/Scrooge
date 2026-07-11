@@ -141,9 +141,20 @@ internal static class RoutingRules
     if (gcScore is long gc)
     {
       var bestGil = Math.Max(meltScore ?? 0, vendorScore ?? 0);
-      if (stock is int lowStock2 && lowStock2 < cfg.VentureBandLow)
+      // Sub-750 stock defaults to churn UNLESS the alternative is worth a lot —
+      // the same value escape the list branch has. Only sub-500 panic is
+      // unconditional (locked bands, BP4 Q5); without this guard a 50k melt
+      // churned for 20k of seals with a confident reason.
+      var lowCeiling = (long)(cfg.ListingFloorGil * cfg.VenturePanicValueMultiplier);
+      if (stock is int lowStock2 && lowStock2 < cfg.VentureBandLow && bestGil < lowCeiling)
+      {
+        var alt = BestOf((RoutingExit.Desynth, meltScore, meltReason),
+                         (RoutingExit.Vendor, vendorScore, vendorReason));
         return new(RoutingExit.Gc,
-          $"Venture low: {lowStock2:N0} tokens (< {cfg.VentureBandLow:N0}). {gcReason}");
+          $"Venture low: {lowStock2:N0} tokens (< {cfg.VentureBandLow:N0}) — churning unless it's worth {lowCeiling:N0}+. {gcReason}",
+          RunnerUp: alt.Score is not null ? alt.Exit : null,
+          RunnerUpReason: alt.Score is not null ? alt.Reason : "");
+      }
       if (gc > bestGil)
         return Resolve(RoutingExit.Gc, gc, gcReason,
           BestOf((RoutingExit.Desynth, meltScore, meltReason),
@@ -171,6 +182,20 @@ internal static class RoutingRules
     // behavior: leans List but lands in Review — the router won't guess.
     if (item.IsEquipment && item.LastSale is null && meltScore is null && gcScore is null)
     {
+      // Untradable gear can't be listed at all — with no melt or seal
+      // evidence either, vendor is the only executable exit. Confident
+      // verdict, never Review: this is the dungeon-clear vendor-trash tail,
+      // and Universalis can never settle it (no market to ask about), so a
+      // Review here would re-ask the same dead question every single run.
+      if (!item.IsMarketable)
+      {
+        if (vendorScore is long uv)
+          return new(RoutingExit.Vendor,
+            $"Untradable, no melt or seal evidence — vendor is the only exit: {uv:N0} gil.");
+        return new(RoutingExit.Vendor,
+          "No viable exit known (untradable, can't even vendor it).", IsReview: true);
+      }
+
       if (item.MarketVelocity is double marketV)
       {
         if (marketV >= ListingGate.MarketVelocityFloor())
