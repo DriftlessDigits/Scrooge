@@ -283,6 +283,26 @@ public static class Communicator
     Svc.Chat.Print(seString);
   }
 
+  /// <summary>Chat message when the player's own sale history prices a market-silent item.</summary>
+  public static void PrintOwnSalesFallback(string itemName, int price, int daysAgo)
+  {
+    if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
+      return;
+
+    var ageLabel = daysAgo <= 0 ? "today" : $"{daysAgo}d ago";
+    var itemPayload = RawItemNameToItemPayload(itemName);
+    if (itemPayload != null)
+    {
+      var seString = new SeStringBuilder()
+        .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
+        .AddText($": Market is silent — using your own sale history ({price:N0} gil, sold {ageLabel})")
+        .Build();
+      Svc.Chat.Print(seString);
+    }
+    else
+      Svc.Chat.Print($"{itemName}: Market is silent — using your own sale history ({price:N0} gil, sold {ageLabel})");
+  }
+
   /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
   public static void PrintHistoryFallback(string itemName, int price, int saleCount)
   {

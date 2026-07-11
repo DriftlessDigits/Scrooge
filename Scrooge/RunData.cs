@@ -164,6 +164,7 @@ internal class RunData
     PricingResult.BelowMinimum => true,
     PricingResult.CapBlocked => true,
     PricingResult.UndercutTooDeep => true,
+    PricingResult.UpwardHeld => true,
     PricingResult.NoData => true,
     _ => false,
   };

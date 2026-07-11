@@ -38,6 +38,12 @@ public enum PricingResult
   CapBlocked,
   /// <summary>Undercut exceeds MaxUndercutPercentage threshold.</summary>
   UndercutTooDeep,
+  /// <summary>
+  /// Upward reprice held: the new price exceeds own-sales sanity
+  /// (UpwardRepriceMultiplier). Price kept, flagged to triage — a human
+  /// priced this listing, a robot must not multiply it on one bad packet.
+  /// </summary>
+  UpwardHeld,
   /// <summary>Below floor + auto vendor sell enabled — will vendor-sell.</summary>
   VendorSell,
   /// <summary>Item is on the ban list — observed but not repriced.</summary>

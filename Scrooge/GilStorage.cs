@@ -911,6 +911,113 @@ internal static class GilStorage
     return result == null || result == DBNull.Value ? null : Convert.ToInt32(result);
   }
 
+  /// <summary>
+  /// Last sale price AND timestamp for one item - the own-sales pricing
+  /// fallback needs both (staleness gate + "sold Nd ago" label).
+  /// </summary>
+  internal static (int Price, long Timestamp)? GetLastSalePriceWithTime(uint itemId)
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT unit_price, timestamp FROM last_sale_prices WHERE item_id = @iid",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    using var reader = cmd.ExecuteReader();
+    if (!reader.Read()) return null;
+    return (reader.GetInt32(0), reader.GetInt64(1));
+  }
+
+  // =========================================================================
+  // Triage Flags (V12) - persistent until acted on or dismissed
+  // =========================================================================
+
+  /// <summary>
+  /// Inserts a triage flag, or refreshes the existing OPEN flag for the same
+  /// (item, hq, retainer, reason) - re-flagging updates detail/prices/created_at
+  /// instead of stacking duplicates.
+  /// </summary>
+  internal static void UpsertTriageFlag(uint itemId, bool isHq, string retainerName, int slotIndex,
+      string reason, string detail, int oldPrice, int flaggedPrice)
+  {
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    using var update = new SqliteCommand(
+      @"UPDATE triage_flags
+        SET detail = @detail, old_price = @old, flagged_price = @flagged,
+            slot_index = @slot, created_at = @now
+        WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
+          AND reason = @reason AND status = 'open'",
+      _connection);
+    update.Parameters.AddWithValue("@detail", detail);
+    update.Parameters.AddWithValue("@old", oldPrice);
+    update.Parameters.AddWithValue("@flagged", flaggedPrice);
+    update.Parameters.AddWithValue("@slot", slotIndex);
+    update.Parameters.AddWithValue("@now", now);
+    update.Parameters.AddWithValue("@iid", (long)itemId);
+    update.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    update.Parameters.AddWithValue("@ret", retainerName);
+    update.Parameters.AddWithValue("@reason", reason);
+    if (update.ExecuteNonQuery() > 0) return;
+
+    using var insert = new SqliteCommand(
+      @"INSERT INTO triage_flags
+          (created_at, item_id, is_hq, retainer_name, slot_index, reason, detail, old_price, flagged_price)
+        VALUES (@now, @iid, @hq, @ret, @slot, @reason, @detail, @old, @flagged)",
+      _connection);
+    insert.Parameters.AddWithValue("@now", now);
+    insert.Parameters.AddWithValue("@iid", (long)itemId);
+    insert.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    insert.Parameters.AddWithValue("@ret", retainerName);
+    insert.Parameters.AddWithValue("@slot", slotIndex);
+    insert.Parameters.AddWithValue("@reason", reason);
+    insert.Parameters.AddWithValue("@detail", detail);
+    insert.Parameters.AddWithValue("@old", oldPrice);
+    insert.Parameters.AddWithValue("@flagged", flaggedPrice);
+    insert.ExecuteNonQuery();
+  }
+
+  /// <summary>Open triage flags, newest first. Loaded by the TriageWindow alongside the current run's items.</summary>
+  internal static List<TriageFlag> GetOpenTriageFlags()
+  {
+    var flags = new List<TriageFlag>();
+    using var cmd = new SqliteCommand(
+      @"SELECT id, created_at, item_id, is_hq, retainer_name, slot_index,
+               reason, detail, old_price, flagged_price, status
+        FROM triage_flags WHERE status = 'open'
+        ORDER BY created_at DESC",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      flags.Add(new TriageFlag
+      {
+        Id = reader.GetInt64(0),
+        CreatedAt = reader.GetInt64(1),
+        ItemId = (uint)reader.GetInt64(2),
+        IsHq = reader.GetInt32(3) != 0,
+        RetainerName = reader.GetString(4),
+        SlotIndex = reader.GetInt32(5),
+        Reason = reader.GetString(6),
+        Detail = reader.GetString(7),
+        OldPrice = reader.GetInt32(8),
+        FlaggedPrice = reader.GetInt32(9),
+        Status = reader.GetString(10),
+      });
+    }
+    return flags;
+  }
+
+  /// <summary>Closes a flag: status = 'dismissed' or 'actioned', stamps acted_at.</summary>
+  internal static void SetTriageFlagStatus(long flagId, string status)
+  {
+    using var cmd = new SqliteCommand(
+      "UPDATE triage_flags SET status = @status, acted_at = @now WHERE id = @id",
+      _connection);
+    cmd.Parameters.AddWithValue("@status", status);
+    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    cmd.Parameters.AddWithValue("@id", flagId);
+    cmd.ExecuteNonQuery();
+  }
+
   /// <summary>Upserts the last sale price for an item. Called on every retainer sale.</summary>
   internal static void UpsertLastSalePrice(uint itemId, int unitPrice, long timestamp)
   {

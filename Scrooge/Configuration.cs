@@ -124,6 +124,19 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public bool RelativeOutlierWindow { get; set; } = false;
 
+  /// <summary>
+  /// When enabled, a pinch that would raise an existing listing's price past
+  /// own-sales sanity (UpwardRepriceMultiplier) is held: price kept, item
+  /// flagged to triage. A human priced that listing — never auto-multiply it.
+  /// </summary>
+  public bool FlagUpwardRepriceEnabled { get; set; } = true;
+
+  /// <summary>
+  /// Upward sanity multiplier. Hold the reprice when the new price exceeds
+  /// (own last sale x this), or (current listing x this) when no sale history.
+  /// </summary>
+  public float UpwardRepriceMultiplier { get; set; } = 3.0f;
+
   // --- Timing ---
 
   /// <summary>When enabled, adds a jitter element to simulate human interaction.</summary>

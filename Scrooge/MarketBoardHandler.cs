@@ -146,6 +146,26 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
         // If the price gap exceeds the threshold, it's a cliff
         if (gapPercent > Plugin.Configuration.OutlierThresholdPercent)
         {
+          // Own listings are evidence, not bait - never skip past one. If a
+          // listing in the would-be-skipped range is ours, it anchors instead
+          // (the 900k bug: own 150k listing read as below-cliff bait, troll
+          // wall became the anchor, item repriced to ~899,900).
+          var ownIndex = -1;
+          for (var k = startIndex; k <= j; k++)
+          {
+            if (GameSafe.IsOwnRetainer(currentOfferings.ItemListings[k].RetainerId))
+            {
+              ownIndex = k;
+              break;
+            }
+          }
+          if (ownIndex >= 0)
+          {
+            i = ownIndex;
+            Svc.Log.Debug($"[Outlier] own listing at position {ownIndex} anchors past the cliff skip");
+            break;
+          }
+
           var outlierItemName = _items.GetRow(currentOfferings.ItemListings[0].ItemId).Name.ToString();
           Plugin.PinchRunLog?.AddOutlierEntry(outlierItemName, (int)currentPrice, (int)nextPrice);
           Plugin.PinchRunLog?.IncrementOutliers();
