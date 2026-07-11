@@ -148,6 +148,12 @@ internal sealed class GilWindow: Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Desynth"))
+      {
+        DrawDesynthTab();
+        ImGui.EndTabItem();
+      }
+
       if (ImGui.BeginTabItem("Goals"))
       {
         DrawGoalsTab();
@@ -244,6 +250,165 @@ internal sealed class GilWindow: Window
       return null;
 
     return last.Delta;
+  }
+
+  // Desynth tab state
+  private List<DesynthSourceSummary>? _cachedDesynthSummary;
+  private List<DesynthYieldRow>? _cachedDesynthYields;
+  private Dictionary<uint, (int Price, long Timestamp)>? _cachedSalePrices;
+  private long _cachedDesynthYieldCount;
+  private int _desynthTimeFilter = 1; // 0=30d, 1=90d, 2=All
+  private int _prevDesynthTimeFilter = -1;
+  private int _desynthPage;
+  private DateTime _desynthLastRefresh = DateTime.MinValue;
+  private const int DesynthPageSize = 25;
+
+  /// <summary>
+  /// Desynth tab — the profitability readout. Headline is what the materials
+  /// are worth (vendor forfeit is meaningless — gear vendor prices are jokes);
+  /// the per-source rows carry the advisor cues: yield value per attempt vs
+  /// the source's own last sale price, plus GC Expert Delivery seals.
+  /// </summary>
+  private void DrawDesynthTab()
+  {
+    if (Plugin.DesynthYieldStore is not DesynthYieldStore store)
+    {
+      ImGui.TextDisabled("Yield storage unavailable this session.");
+      return;
+    }
+
+    var timeLabels = new[] { "30 days", "90 days", "All time" };
+    ImGui.SetNextItemWidth(100);
+    ImGui.Combo("##DesynthTime", ref _desynthTimeFilter, timeLabels, timeLabels.Length);
+
+    var filterChanged = _desynthTimeFilter != _prevDesynthTimeFilter;
+    if (filterChanged) _desynthPage = 0;
+    if (filterChanged || _cachedDesynthSummary == null
+        || DateTime.Now - _desynthLastRefresh > TimeSpan.FromSeconds(30))
+    {
+      var since = _desynthTimeFilter switch
+      {
+        0 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 30 * 86400L,
+        1 => DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 90 * 86400L,
+        _ => 0L,
+      };
+      _cachedDesynthSummary = store.ReadSourceSummary(since);
+      _cachedDesynthYields = store.ReadRecent(DesynthPageSize, _desynthPage * DesynthPageSize);
+      _cachedDesynthYieldCount = store.Count();
+      _cachedSalePrices = GilStorage.GetLastSalePrices();
+      _prevDesynthTimeFilter = _desynthTimeFilter;
+      _desynthLastRefresh = DateTime.Now;
+    }
+
+    if (_cachedDesynthSummary.Count == 0)
+    {
+      ImGui.TextDisabled("No desynth yields recorded yet — run a desynth to start the ledger.");
+      return;
+    }
+
+    // --- By source item: the advisor view ---
+    if (ImGui.CollapsingHeader("By Source Item", ImGuiTreeNodeFlags.DefaultOpen))
+    {
+      ImGui.TextDisabled("Green source price = the item sells for more than its materials; consider listing instead.");
+      if (ImGui.BeginTable("DesynthSources", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
+      {
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
+        ImGui.TableSetupColumn("Desynths", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 60);
+        ImGui.TableSetupColumn("Yield / attempt", ImGuiTableColumnFlags.None, 100);
+        ImGui.TableSetupColumn("Item last sale", ImGuiTableColumnFlags.None, 100);
+        ImGui.TableSetupColumn("GC Seals", ImGuiTableColumnFlags.None, 70);
+        ImGui.TableHeadersRow();
+
+        var (col, asc) = GetSortSpec();
+        var summary = col switch
+        {
+          1 => Order(_cachedDesynthSummary, s => s.Attempts, asc),
+          2 => Order(_cachedDesynthSummary, s => s.Attempts > 0 ? s.YieldValue / s.Attempts : 0, asc),
+          _ => Order(_cachedDesynthSummary, s => GilTracker.GetItemName(s.SourceItemId), asc),
+        };
+
+        foreach (var row in summary)
+        {
+          var yieldPerAttempt = row.Attempts > 0 ? row.YieldValue / row.Attempts : 0;
+          var sourceSale = _cachedSalePrices!.TryGetValue(row.SourceItemId, out var sale) ? sale.Price : (int?)null;
+
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn();
+          ImGui.Text(Format.Hq(GilTracker.GetItemName(row.SourceItemId), row.SourceIsHq));
+          ImGui.TableNextColumn(); ImGui.Text($"{row.Attempts}");
+          ImGui.TableNextColumn();
+          ImGui.Text(yieldPerAttempt > 0 ? $"~{yieldPerAttempt:N0}" : "?");
+          ImGui.TableNextColumn();
+          if (sourceSale is int salePrice)
+          {
+            // The graduation cue: this item is worth more whole than melted.
+            if (salePrice > yieldPerAttempt && yieldPerAttempt >= 0)
+            {
+              ImGui.TextColored(ScroogeColors.Earned, $"{salePrice:N0}");
+              if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Last sale beats the melt value — this one may deserve the market board.");
+            }
+            else
+              ImGui.Text($"{salePrice:N0}");
+          }
+          else
+            ImGui.TextDisabled("—");
+          ImGui.TableNextColumn();
+          var seals = GcSeals.For(row.SourceItemId);
+          if (seals is int s)
+            ImGui.Text($"{s:N0}");
+          else
+            ImGui.TextDisabled("—");
+        }
+
+        ImGui.EndTable();
+      }
+      ImGui.TextDisabled("Values are estimates from your own sale history; unknown yields count as 0.");
+    }
+
+    ImGui.Spacing();
+
+    // --- Recent yields: the raw ledger ---
+    if (ImGui.CollapsingHeader("Recent Yields"))
+    {
+      if (ImGui.BeginTable("DesynthYields", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      {
+        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.None, 90);
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 180);
+        ImGui.TableSetupColumn("Yield", ImGuiTableColumnFlags.None, 180);
+        ImGui.TableSetupColumn("Est. Value", ImGuiTableColumnFlags.None, 90);
+        ImGui.TableHeadersRow();
+
+        foreach (var y in _cachedDesynthYields!)
+        {
+          var value = _cachedSalePrices!.TryGetValue(y.YieldItemId, out var p) ? (long)p.Price * y.YieldQty : 0;
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn(); ImGui.Text(FormatAge(y.CapturedAt.ToUnixTimeSeconds()));
+          ImGui.TableNextColumn(); ImGui.Text(Format.Hq(GilTracker.GetItemName(y.SourceItemId), y.SourceIsHq));
+          ImGui.TableNextColumn(); ImGui.Text($"{(y.YieldQty > 1 ? $"{y.YieldQty}x " : "")}{Format.Hq(GilTracker.GetItemName(y.YieldItemId), y.YieldIsHq)}");
+          ImGui.TableNextColumn();
+          if (value > 0) ImGui.Text($"~{value:N0}");
+          else ImGui.TextDisabled("—");
+        }
+
+        ImGui.EndTable();
+      }
+
+      var totalPages = Math.Max(1, (int)((_cachedDesynthYieldCount + DesynthPageSize - 1) / DesynthPageSize));
+      ImGui.BeginDisabled(_desynthPage <= 0);
+      if (ImGui.ArrowButton("##DesynthPrev", ImGuiDir.Left))
+      { _desynthPage--; _cachedDesynthSummary = null; }
+      ImGui.EndDisabled();
+      ImGui.SameLine();
+      ImGui.Text($"Page {_desynthPage + 1} of {totalPages}");
+      ImGui.SameLine();
+      ImGui.BeginDisabled(_desynthPage >= totalPages - 1);
+      if (ImGui.ArrowButton("##DesynthNext", ImGuiDir.Right))
+      { _desynthPage++; _cachedDesynthSummary = null; }
+      ImGui.EndDisabled();
+      ImGui.SameLine();
+      ImGui.TextDisabled($"({_cachedDesynthYieldCount:N0} total)");
+    }
   }
 
   /// <summary>

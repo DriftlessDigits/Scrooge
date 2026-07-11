@@ -125,6 +125,16 @@ internal class RunData
     LogEntries.Add(new RunEntry(eventType, message));
   }
 
+  /// <summary>Running total of desynth material value this run (cached last-sale prices).</summary>
+  public long MaterialsValueGil { get; set; }
+
+  /// <summary>Adds a desynth yield sub-row and accumulates its cached value.</summary>
+  public void AddYieldEntry(string yieldName, int qty, bool isHq, long value)
+  {
+    LogEntries.Add(new YieldEntry(yieldName, qty, isHq, value));
+    MaterialsValueGil += value;
+  }
+
   private void InsertRetainerHeaderIfNeeded()
   {
     if (CurrentRetainer != _lastRetainerHeader && !string.IsNullOrEmpty(CurrentRetainer))

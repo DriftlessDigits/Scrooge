@@ -897,6 +897,20 @@ internal static class GilStorage
     return prices;
   }
 
+  /// <summary>
+  /// Last sale price for one item, or null when it has never sold via retainer.
+  /// Single-row variant of GetLastSalePrices for per-event lookups.
+  /// </summary>
+  internal static int? GetLastSalePrice(uint itemId)
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT unit_price FROM last_sale_prices WHERE item_id = @iid",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    var result = cmd.ExecuteScalar();
+    return result == null || result == DBNull.Value ? null : Convert.ToInt32(result);
+  }
+
   /// <summary>Upserts the last sale price for an item. Called on every retainer sale.</summary>
   internal static void UpsertLastSalePrice(uint itemId, int unitPrice, long timestamp)
   {

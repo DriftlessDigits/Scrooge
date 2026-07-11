@@ -133,6 +133,52 @@ internal sealed class DesynthYieldStore
     using var cmd = new SqliteCommand("SELECT COUNT(*) FROM desynth_yields;", _connection);
     return (long)(cmd.ExecuteScalar() ?? 0L);
   }
+
+  /// <summary>
+  /// Per-source-item rollup for the Desynth tab: how many times each item
+  /// was desynthed and what the yields were worth (cached last-sale prices;
+  /// unknown yields count 0). An attempt = one (run_id, attempt_seq) pair.
+  /// </summary>
+  internal List<DesynthSourceSummary> ReadSourceSummary(long sinceUnixSeconds)
+  {
+    var results = new List<DesynthSourceSummary>();
+    using var cmd = new SqliteCommand(
+      @"SELECT y.source_item_id, y.source_is_hq,
+               COUNT(DISTINCT y.run_id || '-' || y.attempt_seq) AS attempts,
+               SUM(y.yield_qty * COALESCE(p.unit_price, 0)) AS yield_value
+        FROM desynth_yields y
+        LEFT JOIN last_sale_prices p ON p.item_id = y.yield_item_id
+        WHERE y.captured_at >= @since
+        GROUP BY y.source_item_id, y.source_is_hq
+        ORDER BY attempts DESC;",
+      _connection);
+    cmd.Parameters.AddWithValue("@since", sinceUnixSeconds);
+
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      results.Add(new DesynthSourceSummary
+      {
+        SourceItemId = (uint)reader.GetInt64(0),
+        SourceIsHq = reader.GetInt32(1) != 0,
+        Attempts = reader.GetInt32(2),
+        YieldValue = reader.IsDBNull(3) ? 0 : reader.GetInt64(3),
+      });
+    }
+    return results;
+  }
+}
+
+/// <summary>
+/// Per-source-item rollup row for the Desynth tab.
+/// </summary>
+internal sealed class DesynthSourceSummary
+{
+  public uint SourceItemId { get; init; }
+  public bool SourceIsHq { get; init; }
+  public int Attempts { get; init; }
+  /// <summary>Total yield value across all attempts (cached prices, 0 = unknown).</summary>
+  public long YieldValue { get; init; }
 }
 
 /// <summary>

@@ -44,6 +44,12 @@ namespace Scrooge.Windows
   /// <summary>Retainer section header. Inserted lazily on first entry for each retainer.</summary>
   public record RetainerHeader(string RetainerName) : ILogItem;
 
+  /// <summary>
+  /// A desynth yield sub-row — one material obtained, rendered indented under
+  /// the desynthed item's entry. Value is the cached last-sale price (0 = unknown).
+  /// </summary>
+  public record YieldEntry(string YieldName, int Qty, bool IsHq, long Value) : ILogItem;
+
   internal class PinchRunLogWindow : Window
   {
 
@@ -110,6 +116,23 @@ namespace Scrooge.Windows
         return;
 
       Run?.AddLogEntry(outcome, itemName, message);
+    }
+
+    /// <summary>
+    /// Live yield sub-row during a desynth run. Subscribed to
+    /// DesynthYieldStore.YieldCaptured in the Plugin constructor.
+    /// </summary>
+    public void OnYieldCaptured(DesynthYield yield)
+    {
+      if (!Plugin.Configuration.EnablePinchRunLog)
+        return;
+
+      var run = Run;
+      if (run == null || run.Mode != RunMode.Desynth || run.IsComplete)
+        return;
+
+      var value = (long)(GilStorage.GetLastSalePrice(yield.YieldItemId) ?? 0) * yield.YieldQty;
+      run.AddYieldEntry(GilTracker.GetItemName(yield.YieldItemId), yield.YieldQty, yield.YieldIsHq, value);
     }
 
     /// <summary>Adds an outlier entry with bait/used prices for colored rendering.</summary>
@@ -192,6 +215,11 @@ namespace Scrooge.Windows
         : isHawkRun
           ? $"{run.ItemsAdjusted} listed"
           : $"{run.ItemsAdjusted} adjusted");
+
+      // Desynth headline = what the materials are worth, not vendor forfeit —
+      // vendor prices for gear are jokingly cheap, so "net vs vendor" always wins.
+      if (isDesynthRun && run.MaterialsValueGil > 0)
+        run.AddRunEntry(RunEvent.Summary, $"~{run.MaterialsValueGil:N0} gil in materials (cached prices)");
 
       // Desynth runs don't carry vendor / listing / outlier semantics — skip
       // those summary lines for them.
@@ -385,6 +413,21 @@ namespace Scrooge.Windows
               ImGui.PopStyleColor();
             }
 
+            break;
+          }
+
+          case YieldEntry yield:
+          {
+            if (!treeOpen) break;
+
+            var label = Format.Hq(yield.YieldName, yield.IsHq);
+            var qty = yield.Qty > 1 ? $"{yield.Qty}x " : "";
+            var value = yield.Value > 0 ? $"  (~{yield.Value:N0}g)" : "";
+            ImGui.Indent(16);
+            ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Muted);
+            ImGui.TextWrapped($"→ {qty}{label}{value}");
+            ImGui.PopStyleColor();
+            ImGui.Unindent(16);
             break;
           }
         }

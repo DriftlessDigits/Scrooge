@@ -99,6 +99,7 @@ public sealed class Plugin : IDalamudPlugin
     {
       GilStorage.Initialize();
       DesynthYieldStore = new DesynthYieldStore(GilStorage.Connection);
+      DesynthYieldStore.YieldCaptured += PinchRunLog.OnYieldCaptured;
     }
     catch (Exception ex)
     {
