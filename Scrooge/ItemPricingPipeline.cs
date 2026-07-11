@@ -441,6 +441,30 @@ internal sealed class ItemPricingPipeline : IDisposable
         Communicator.PrintPriceUpdate(itemName, currentItem?.CurrentListingPrice, newPrice.Value, 0f);
         Plugin.PinchRunLog?.IncrementAdjusted();
         if (currentItem != null) currentItem.Result = PricingResult.Listed;
+
+        // Warn-and-list (locked 2026-07-10): new listings always ride the
+        // market price, but when it dwarfs own sale history the discrepancy
+        // gets a persistent flag - "listed 900k; your history says ~120k".
+        if (Plugin.Configuration.FlagUpwardRepriceEnabled && currentItem != null && currentItem.ItemId != 0)
+        {
+          int? ownSale = null;
+          try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId); } catch { /* storage unavailable */ }
+          if (ownSale is int sale && sale > 0
+              && newPrice.Value > (long)(sale * Plugin.Configuration.UpwardRepriceMultiplier))
+          {
+            try
+            {
+              GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
+                currentItem.RetainerName, currentItem.SlotIndex, "outlier_warn",
+                $"Listed at {newPrice:N0} - your last sale was {sale:N0}; market may be a troll wall",
+                sale, newPrice.Value);
+            }
+            catch (Exception ex)
+            {
+              Svc.Log.Warning($"[Triage] Failed to persist outlier-warn flag: {ex.Message}");
+            }
+          }
+        }
       }
       else
       {
