@@ -523,6 +523,49 @@ public sealed class ConfigWindow : Window
         ImGui.EndTooltip();
       }
     }
+
+    var flagUpward = Plugin.Configuration.FlagUpwardRepriceEnabled;
+    if (ImGui.Checkbox("Hold suspicious upward reprices", ref flagUpward))
+    {
+      Plugin.Configuration.FlagUpwardRepriceEnabled = flagUpward;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("When a pinch would RAISE an existing listing's price far past your\n" +
+                       "own sale history, the price is kept and the item is flagged to triage.\n\n" +
+                       "Protects listings you priced by hand from being multiplied onto a\n" +
+                       "troll wall by one packet of bad market data. Flags persist until\n" +
+                       "you reprice, pull, or dismiss them.");
+      ImGui.EndTooltip();
+    }
+    if (Plugin.Configuration.FlagUpwardRepriceEnabled)
+    {
+      ImGui.BeginGroup();
+      ImGui.Text("Sanity multiplier:");
+      ImGui.SameLine();
+      float upwardMult = Plugin.Configuration.UpwardRepriceMultiplier;
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.SliderFloat("##upwardRepriceMult", ref upwardMult, 1.5f, 10f, "%.1fx"))
+      {
+        Plugin.Configuration.UpwardRepriceMultiplier = MathF.Round(upwardMult, 1);
+        Plugin.Configuration.Save();
+      }
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Hold the reprice when the new price exceeds your last sale for the\n" +
+                         "item times this multiplier (or the current listing price times this,\n" +
+                         "when you have no sale history for it).");
+        ImGui.EndTooltip();
+      }
+    }
   }
 
   private void DrawTimingTab()

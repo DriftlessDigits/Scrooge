@@ -15,6 +15,7 @@ namespace Scrooge.Windows
     private List<PricingItem>? _sortedItems;
     private List<PricingItem> _triageItems = [];
     private Dictionary<PricingItem, TriageAction> _actions = [];
+    private List<TriageFlag> _heldFlags = [];
 
     internal TriageWindow() : base("Scrooge - Triage")
     {
@@ -28,14 +29,93 @@ namespace Scrooge.Windows
       IsOpen = false;
     }
 
+    public override void OnOpen()
+    {
+      RefreshHeldFlags();
+    }
+
     public override void Draw()
     {
-      if (_triageItems.Count == 0)
+      if (_triageItems.Count == 0 && _heldFlags.Count == 0)
       {
         ImGui.TextDisabled("No triage items.");
         return;
       }
 
+      if (_triageItems.Count > 0)
+        DrawRunItems();
+
+      DrawHeldFlags();
+    }
+
+    /// <summary>Loads open persistent flags (V12). Called on window open and after flag mutations.</summary>
+    private void RefreshHeldFlags()
+    {
+      try { _heldFlags = GilStorage.GetOpenTriageFlags(); }
+      catch { _heldFlags = []; }
+    }
+
+    /// <summary>Marks any open flags for this item as actioned (it was queued in a triage batch).</summary>
+    private void CloseFlagsFor(PricingItem item)
+    {
+      foreach (var flag in _heldFlags.Where(f => f.ItemId == item.ItemId && f.IsHq == item.IsHq && f.RetainerName == item.RetainerName))
+        try { GilStorage.SetTriageFlagStatus(flag.Id, "actioned"); } catch { /* storage unavailable */ }
+    }
+
+    /// <summary>
+    /// Persistent held flags (V12) - warnings that survive restarts, open
+    /// until acted on or dismissed. Rows duplicated by a live triage item
+    /// are hidden (the live row carries the actions).
+    /// </summary>
+    private void DrawHeldFlags()
+    {
+      var visible = _heldFlags.Where(f => !_triageItems.Any(t =>
+          t.ItemId == f.ItemId && t.IsHq == f.IsHq && t.RetainerName == f.RetainerName)).ToList();
+      if (visible.Count == 0) return;
+
+      ImGui.Spacing();
+      ImGui.Separator();
+      ImGui.TextColored(ScroogeColors.Header, $"Held flags ({visible.Count})");
+      ImGui.TextDisabled("From earlier sessions - open until you act on or dismiss them.");
+
+      if (ImGui.BeginTable("HeldFlags", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      {
+        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.WidthFixed, 70);
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 1.0f);
+        ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch, 0.7f);
+        ImGui.TableSetupColumn("Detail", ImGuiTableColumnFlags.WidthStretch, 2.0f);
+        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 60);
+        ImGui.TableHeadersRow();
+
+        long? dismissId = null;
+        foreach (var flag in visible)
+        {
+          ImGui.TableNextRow();
+          ImGui.TableNextColumn();
+          var ageDays = (System.DateTimeOffset.UtcNow.ToUnixTimeSeconds() - flag.CreatedAt) / 86400;
+          ImGui.Text(ageDays < 1 ? "today" : $"{ageDays}d ago");
+          ImGui.TableNextColumn();
+          ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Warning);
+          ImGui.Text(Format.Hq(GilTracker.GetItemName(flag.ItemId), flag.IsHq));
+          ImGui.PopStyleColor();
+          ImGui.TableNextColumn(); ImGui.Text(flag.RetainerName);
+          ImGui.TableNextColumn(); ImGui.Text(flag.Detail);
+          ImGui.TableNextColumn();
+          if (ImGui.SmallButton($"Dismiss##flag{flag.Id}"))
+            dismissId = flag.Id;
+        }
+        ImGui.EndTable();
+
+        if (dismissId is long id)
+        {
+          try { GilStorage.SetTriageFlagStatus(id, "dismissed"); } catch { /* storage unavailable */ }
+          RefreshHeldFlags();
+        }
+      }
+    }
+
+    private void DrawRunItems()
+    {
       var triageItems = _triageItems;
       var isRunning = Plugin.TriageOrchestrator.IsRunning;
 
@@ -73,9 +153,11 @@ namespace Scrooge.Windows
                 if (action == TriageAction.Vendor || action == TriageAction.Pull)
                   triageItems.Remove(item);
                 // Reprice items are removed on success via RemoveItem callback
+                CloseFlagsFor(item);
               }
               _actions.Clear();
               _sortedItems = null;
+              RefreshHeldFlags();
             }
           }
           ImGui.SameLine();
