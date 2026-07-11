@@ -45,6 +45,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
+  internal static RoutingWindow RoutingWindow { get; private set; } = null!;
+
   /// <summary>Null when GilStorage failed to initialize — yield persistence disabled.</summary>
   internal static DesynthYieldStore? DesynthYieldStore { get; private set; }
 
@@ -160,6 +162,9 @@ public sealed class Plugin : IDalamudPlugin
     HawkWindow = new HawkWindow();
     WindowSystem.AddWindow(HawkWindow);
 
+    RoutingWindow = new RoutingWindow();
+    WindowSystem.AddWindow(RoutingWindow);
+
     TriageWindow = new TriageWindow();
     WindowSystem.AddWindow(TriageWindow);
 
@@ -216,6 +221,8 @@ public sealed class Plugin : IDalamudPlugin
     if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase)
         || args.Trim().Equals("settings", StringComparison.OrdinalIgnoreCase))
       ToggleConfigUI();
+    else if (args.Trim().Equals("route", StringComparison.OrdinalIgnoreCase))
+      RoutingWindow.Toggle();
     else
       ToggleMainUi();
   }
