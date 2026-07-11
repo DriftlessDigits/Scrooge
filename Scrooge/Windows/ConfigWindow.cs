@@ -874,6 +874,19 @@ public sealed class ConfigWindow : Window
 
   private void DrawOutputTab()
   {
+    // --- Server info bar ---
+    var dtrOn = Plugin.Configuration.EnableDtrToday;
+    if (ImGui.Checkbox("Today's gil in the server info bar", ref dtrOn))
+    {
+      Plugin.Configuration.EnableDtrToday = dtrOn;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("One glanceable number: today's total-gil delta. Click it to open the dashboard.");
+    ImGui.Spacing();
+
     // --- Chat Output ---
     ImGui.Columns(2, "##chatOutputColumns", false);
 

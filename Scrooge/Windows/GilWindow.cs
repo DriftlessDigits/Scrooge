@@ -161,6 +161,12 @@ internal sealed class GilWindow: Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Ventures"))
+      {
+        DrawVenturesTab();
+        ImGui.EndTabItem();
+      }
+
       if (ImGui.BeginTabItem("Goals"))
       {
         DrawGoalsTab();
@@ -243,10 +249,110 @@ internal sealed class GilWindow: Window
   }
 
   /// <summary>
+  /// Venture economics: token stock (colored by the routing tilt bands),
+  /// gil-per-venture and the empirical seals-to-gil rate over the rolling
+  /// window, then recent returns in the Desynth tab's grammar.
+  /// </summary>
+  private void DrawVenturesTab()
+  {
+    // Headline row
+    var stock = GameSafe.VentureTokenCount();
+    var cfg = Plugin.Configuration;
+    if (stock is int tokens)
+    {
+      var color = tokens >= cfg.VentureBandFull ? ScroogeColors.Earned
+        : tokens >= cfg.VentureBandLow ? ScroogeColors.Amber
+        : tokens >= cfg.VentureBandPanic ? ScroogeColors.Warning
+        : ScroogeColors.Spent;
+      ImGui.TextColored(color, $"{tokens:N0} venture tokens");
+    }
+    else
+      ImGui.TextDisabled("Venture tokens: unreadable (id unverified)");
+
+    var stats = VentureReturns.Stats();
+    ImGui.SameLine();
+    if (stats is { Ventures: > 0 } s)
+    {
+      ImGui.TextDisabled("|");
+      ImGui.SameLine();
+      ImGui.Text($"{s.Ventures} ventures / {VentureReturns.WindowDays}d");
+      ImGui.SameLine();
+      ImGui.TextDisabled("|");
+      ImGui.SameLine();
+      ImGui.Text($"~{s.GilPerVenture:N0} gil/venture");
+      if (VentureReturns.EmpiricalSealToGilRate() is int rate)
+      {
+        ImGui.SameLine();
+        ImGui.TextDisabled("|");
+        ImGui.SameLine();
+        ImGui.TextColored(ScroogeColors.Earned, $"{rate} gil/seal (measured)");
+        if (ImGui.IsItemHovered())
+          ImGui.SetTooltip("The routing brain uses this measured rate for the churn exit\ninstead of the config placeholder.");
+      }
+      else
+      {
+        ImGui.SameLine();
+        ImGui.TextDisabled($"| gil/seal: placeholder {cfg.SealToGilRate} (measures at 10+ ventures)");
+      }
+    }
+    else
+      ImGui.TextDisabled("| No venture returns captured yet - collect a quick venture to start the ledger.");
+
+    if (VentureReturns.BurnPerDay() is double burn)
+    {
+      ImGui.TextDisabled(burn <= 0
+        ? $"Burning ~{-burn:F1} tokens/day"
+        : $"Acquiring ~{burn:F1} tokens/day");
+    }
+
+    ImGui.Spacing();
+    ImGui.Separator();
+
+    // Recent returns
+    List<(long CapturedAt, string Retainer, uint ItemId, int Quantity, bool IsHq)> rows;
+    try { rows = GilStorage.GetVentureReturns(VentureReturns.WindowDays); }
+    catch { rows = []; }
+    if (rows.Count == 0)
+    {
+      ImGui.TextDisabled("Returns land here as they're collected (RetainerTaskResult capture).");
+      return;
+    }
+
+    if (ImGui.BeginTable("VentureReturns", 5,
+        ImGuiTableFlags.ScrollY | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+    {
+      ImGui.TableSetupScrollFreeze(0, 1);
+      ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.WidthFixed, 80);
+      ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch, 0.8f);
+      ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 1.4f);
+      ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 40);
+      ImGui.TableSetupColumn("Est. value", ImGuiTableColumnFlags.WidthFixed, 80);
+      ImGui.TableHeadersRow();
+
+      var sheet = ECommons.DalamudServices.Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+      var nowS = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      foreach (var r in rows)
+      {
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        var ageH = (nowS - r.CapturedAt) / 3600;
+        ImGui.TextDisabled(ageH < 1 ? "now" : ageH < 24 ? $"{ageH}h ago" : $"{ageH / 24}d ago");
+        ImGui.TableNextColumn(); ImGui.Text(r.Retainer);
+        ImGui.TableNextColumn(); ImGui.Text(Format.Hq(GilTracker.GetItemName(r.ItemId), r.IsHq));
+        ImGui.TableNextColumn(); ImGui.Text(r.Quantity.ToString());
+        ImGui.TableNextColumn();
+        var value = (long)VentureReturns.ValuePerUnit(r.ItemId, r.IsHq, sheet) * r.Quantity;
+        ImGui.Text($"{value:N0}");
+      }
+      ImGui.EndTable();
+    }
+  }
+
+  /// <summary>
   /// Today's total-gil movement from the daily rollup, or null when the
   /// newest rollup row isn't from today.
   /// </summary>
-  private static long? ComputeTodayDelta()
+  internal static long? ComputeTodayDelta()
   {
     var daily = GilStorage.GetDailyChanges();
     if (daily.Count < 2) return null;

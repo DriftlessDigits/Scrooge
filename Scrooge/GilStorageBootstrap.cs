@@ -110,6 +110,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 14);
     }
 
+    if (version < 15)
+    {
+      MigrateV15(connection);
+      SetSchemaVersion(connection, 15);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -140,8 +146,19 @@ internal class GilStorageBootstrap
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER NOT NULL,
                 player_gil INTEGER NOT NULL,
-                source TEXT NOT NULL DEFAULT 'pinch_run'
+                source TEXT NOT NULL DEFAULT 'pinch_run',
+                venture_tokens INTEGER
             )",
+            @"CREATE TABLE IF NOT EXISTS venture_returns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                captured_at INTEGER NOT NULL,
+                retainer_name TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                is_hq INTEGER NOT NULL DEFAULT 0
+            )",
+            @"CREATE INDEX IF NOT EXISTS ix_venture_returns_captured
+                ON venture_returns(captured_at DESC)",
             @"CREATE TABLE IF NOT EXISTS retainer_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 snapshot_id INTEGER NOT NULL REFERENCES gil_snapshots(id),
@@ -890,6 +907,43 @@ internal class GilStorageBootstrap
       connection);
     cmd.ExecuteNonQuery();
     Svc.Log.Info("[Scrooge] V14 migration: created routing_overrides table");
+  }
+
+  /// <summary>
+  /// V15: venture-return tracking. New venture_returns table (one row per
+  /// collected quick-venture result) + nullable venture_tokens column on
+  /// gil_snapshots so token stock rides the existing bell snapshots.
+  /// Fresh installs get both via CreateTables; the ALTER is guarded so a
+  /// fresh DB that already has the column migrates cleanly.
+  /// </summary>
+  private static void MigrateV15(SqliteConnection connection)
+  {
+    using (var cmd = new SqliteCommand(
+      @"CREATE TABLE IF NOT EXISTS venture_returns (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          captured_at   INTEGER NOT NULL,
+          retainer_name TEXT NOT NULL,
+          item_id       INTEGER NOT NULL,
+          quantity      INTEGER NOT NULL,
+          is_hq         INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS ix_venture_returns_captured
+          ON venture_returns(captured_at DESC);",
+      connection))
+      cmd.ExecuteNonQuery();
+
+    var hasColumn = false;
+    using (var check = new SqliteCommand("PRAGMA table_info(gil_snapshots);", connection))
+    using (var reader = check.ExecuteReader())
+      while (reader.Read())
+        if (reader.GetString(1) == "venture_tokens") { hasColumn = true; break; }
+
+    if (!hasColumn)
+      using (var alter = new SqliteCommand(
+        "ALTER TABLE gil_snapshots ADD COLUMN venture_tokens INTEGER;", connection))
+        alter.ExecuteNonQuery();
+
+    Svc.Log.Info("[Scrooge] V15 migration: venture_returns table + gil_snapshots.venture_tokens");
   }
 
   // =========================================================================

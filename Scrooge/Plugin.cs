@@ -64,6 +64,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static DesynthLauncher DesynthLauncher { get; private set; } = null!;
 
+  private VentureReturnTracker? _ventureReturnTracker;
+  private DtrToday? _dtrToday;
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
@@ -169,6 +171,24 @@ public sealed class Plugin : IDalamudPlugin
 
     GcTurnIn = new GcTurnInOrchestrator();
 
+    try
+    {
+      _ventureReturnTracker = new VentureReturnTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "[Scrooge] VentureReturnTracker failed - venture capture disabled this session");
+    }
+
+    try
+    {
+      _dtrToday = new DtrToday();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "[Scrooge] DTR entry failed - server info bar headline disabled");
+    }
+
     TriageWindow = new TriageWindow();
     WindowSystem.AddWindow(TriageWindow);
 
@@ -209,6 +229,8 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    _ventureReturnTracker?.Dispose();
+    _dtrToday?.Dispose();
     _chatCatchallTracker?.Dispose();
     _specialExchangeTracker?.Dispose();
     _exchangeTracker?.Dispose();

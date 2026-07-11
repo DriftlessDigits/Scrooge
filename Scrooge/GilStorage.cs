@@ -100,18 +100,81 @@ internal static class GilStorage
   /// snapshots can be linked to it.
   /// </summary>
   internal static long InsertGilSnapshot(long timestamp, long playerGil, string source,
-      SqliteTransaction? transaction = null)
+      SqliteTransaction? transaction = null, int? ventureTokens = null)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO gil_snapshots (timestamp, player_gil, source)
-      VALUES (@ts, @gil, @src);
+      @"INSERT INTO gil_snapshots (timestamp, player_gil, source, venture_tokens)
+      VALUES (@ts, @gil, @src, @vt);
       SELECT last_insert_rowid();",
       _connection);
     cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@gil", playerGil);
     cmd.Parameters.AddWithValue("@src", source);
+    cmd.Parameters.AddWithValue("@vt", (object?)ventureTokens ?? DBNull.Value);
     return (long)cmd.ExecuteScalar()!;
+  }
+
+  /// <summary>Records one collected venture result (V15).</summary>
+  internal static void InsertVentureReturn(long capturedAt, string retainerName,
+      uint itemId, int quantity, bool isHq)
+  {
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO venture_returns (captured_at, retainer_name, item_id, quantity, is_hq)
+      VALUES (@ts, @ret, @item, @qty, @hq)",
+      _connection);
+    cmd.Parameters.AddWithValue("@ts", capturedAt);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    cmd.Parameters.AddWithValue("@item", itemId);
+    cmd.Parameters.AddWithValue("@qty", quantity);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>Venture returns captured in the last N days, newest first.</summary>
+  internal static List<(long CapturedAt, string Retainer, uint ItemId, int Quantity, bool IsHq)>
+      GetVentureReturns(int sinceDays)
+  {
+    var rows = new List<(long, string, uint, int, bool)>();
+    var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
+    using var cmd = new SqliteCommand(
+      @"SELECT captured_at, retainer_name, item_id, quantity, is_hq
+        FROM venture_returns WHERE captured_at >= @cutoff
+        ORDER BY captured_at DESC",
+      _connection);
+    cmd.Parameters.AddWithValue("@cutoff", cutoff);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      rows.Add((reader.GetInt64(0), reader.GetString(1), (uint)reader.GetInt64(2),
+        reader.GetInt32(3), reader.GetInt32(4) != 0));
+    return rows;
+  }
+
+  /// <summary>
+  /// Oldest and newest venture-token stock readings in the last N days
+  /// (bell-snapshot piggyback), or null when fewer than two readings exist.
+  /// Burn/acquire rate = the delta over the window.
+  /// </summary>
+  internal static ((long Ts, int Tokens) First, (long Ts, int Tokens) Last)? GetVentureTokenSpan(int sinceDays)
+  {
+    var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
+    using var cmd = new SqliteCommand(
+      @"SELECT timestamp, venture_tokens FROM gil_snapshots
+        WHERE venture_tokens IS NOT NULL AND timestamp >= @cutoff
+        ORDER BY timestamp ASC",
+      _connection);
+    cmd.Parameters.AddWithValue("@cutoff", cutoff);
+    using var reader = cmd.ExecuteReader();
+    (long, int)? first = null, last = null;
+    while (reader.Read())
+    {
+      var row = (reader.GetInt64(0), reader.GetInt32(1));
+      first ??= row;
+      last = row;
+    }
+    return first is { } f && last is { } l && f.Item1 != l.Item1
+      ? ((f.Item1, f.Item2), (l.Item1, l.Item2))
+      : null;
   }
 
   /// <summary>Inserts a single retainer's gil balance, linked to a snapshot.</summary>

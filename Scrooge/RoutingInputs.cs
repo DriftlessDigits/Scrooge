@@ -15,6 +15,8 @@ internal sealed class RoutingBatch
   public Dictionary<(uint ItemId, bool IsHq), long> MeltValues { get; init; } = [];
   /// <summary>Venture token stock, or null when the inventory read failed. Rules-engine input (venture tilt bands).</summary>
   public int? VentureStock { get; init; }
+  /// <summary>Seals-to-gil rate for this batch: empirical (venture returns) when enough data exists, else the config placeholder.</summary>
+  public int SealToGilRate { get; init; }
 }
 
 /// <summary>
@@ -103,7 +105,19 @@ internal static class RoutingInputService
     if (ventures is int v)
       Svc.Log.Debug($"[Routing] venture stock: {v}");
 
-    return new RoutingBatch { LastSales = sales, MeltValues = melts, VentureStock = ventures };
+    // Empirical seals-to-gil replaces the placeholder once venture returns
+    // have enough data (fail-soft to the config rate).
+    int? empirical = null;
+    try { empirical = VentureReturns.EmpiricalSealToGilRate(); }
+    catch { /* storage unavailable - placeholder rate */ }
+
+    return new RoutingBatch
+    {
+      LastSales = sales,
+      MeltValues = melts,
+      VentureStock = ventures,
+      SealToGilRate = empirical ?? Plugin.Configuration.SealToGilRate,
+    };
   }
 
   /// <summary>

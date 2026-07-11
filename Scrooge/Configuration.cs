@@ -297,6 +297,17 @@ public sealed class Configuration : IPluginConfiguration
   /// <summary>Days listed with a dead 14-day MB history before the item is flagged for eviction.</summary>
   public int EvictAfterDays { get; set; } = 14;
 
+  /// <summary>
+  /// Venture tokens consumed per quick venture (VERIFY in-game; believed 2).
+  /// Feeds the empirical seals-to-gil conversion.
+  /// </summary>
+  public int VentureTokensPerVenture { get; set; } = 2;
+
+  // --- DTR / server info bar ---
+
+  /// <summary>Show today's gil delta in the server info bar. Click opens the dashboard.</summary>
+  public bool EnableDtrToday { get; set; } = true;
+
   // --- Gil Goals ---
   // Three independent buckets; 0 = that goal is off. Set from the dashboard's
   // Goals tab. Crossings celebrate once per target value — changing a target
