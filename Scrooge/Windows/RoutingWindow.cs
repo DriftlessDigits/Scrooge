@@ -217,13 +217,35 @@ internal sealed class RoutingWindow : Window
     if (!atBell && goParts.Count > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
       ImGui.SetTooltip("Open a retainer's sell view (Hawk Wares) to execute the List and Vendor piles.");
 
+    // Location session 2: the GC counter. Same one-confirm contract - the
+    // Churn button only lights up at an open Expert Delivery window.
+    if (gcCount > 0)
+    {
+      ImGui.SameLine();
+      if (Plugin.GcTurnIn.IsRunning)
+      {
+        if (ImGui.Button("Cancel churn"))
+          Plugin.GcTurnIn.Abort();
+      }
+      else
+      {
+        var atGc = GcTurnInOrchestrator.AtExpertDelivery();
+        ImGui.BeginDisabled(!atGc);
+        if (ImGui.Button($"Churn ({gcCount})"))
+          ExecuteChurnPile();
+        ImGui.EndDisabled();
+        if (!atGc && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+          ImGui.SetTooltip("Open your GC personnel officer's Expert Delivery window to execute the Churn pile.");
+      }
+    }
+
     // The piles Go can't touch — honest, visible, waiting.
     if (meltCount > 0 || gcCount > 0 || reviewCount > 0)
     {
       var waiting = new List<string>();
       if (reviewCount > 0) waiting.Add($"{reviewCount} in review");
       if (meltCount > 0) waiting.Add($"{meltCount} to melt (desynth window)");
-      if (gcCount > 0) waiting.Add($"{gcCount} to churn (GC counter - executor coming later this era)");
+      if (gcCount > 0) waiting.Add($"{gcCount} to churn (Churn button lights up at Expert Delivery)");
       ImGui.TextDisabled(string.Join("  |  ", waiting));
     }
   }
@@ -261,10 +283,30 @@ internal sealed class RoutingWindow : Window
     if (meltCount > 0)
       Svc.Chat.Print($"[Scrooge] Melt pile: {meltCount} items - run them from the desynth window.");
     if (gcCount > 0)
-      Svc.Chat.Print($"[Scrooge] Churn pile: {gcCount} items waiting for an Expert Delivery counter.");
+      Svc.Chat.Print($"[Scrooge] Churn pile: {gcCount} items - reopen the router at an Expert Delivery counter.");
 
     Plugin.AutoPinch.StartHawkRun(hawkItems);
     IsOpen = false;
+  }
+
+  /// <summary>
+  /// Hands the Churn pile to the GC turn-in orchestrator (Expert Delivery
+  /// window open - the button gates on it). Seal values re-read from the
+  /// sheet at queue time; highest seals first so a wallet-full stop wastes
+  /// the least.
+  /// </summary>
+  private void ExecuteChurnPile()
+  {
+    var churnItems = _items
+      .Where(i => !i.InReview && i.Pile == RoutingExit.Gc)
+      .Select(i => new GcTurnInOrchestrator.GcTurnInItem(
+        i.ItemId, i.IsHq, i.Name, GcSeals.For(i.ItemId) ?? 0))
+      .Where(i => i.SealReward > 0)
+      .OrderByDescending(i => i.SealReward)
+      .ToList();
+    if (churnItems.Count == 0) return;
+
+    Plugin.GcTurnIn.StartRun(churnItems);
   }
 
   /// <summary>

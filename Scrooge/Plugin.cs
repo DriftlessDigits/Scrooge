@@ -47,6 +47,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static RoutingWindow RoutingWindow { get; private set; } = null!;
 
+  internal static GcTurnInOrchestrator GcTurnIn { get; private set; } = null!;
+
   /// <summary>Null when GilStorage failed to initialize — yield persistence disabled.</summary>
   internal static DesynthYieldStore? DesynthYieldStore { get; private set; }
 
@@ -164,6 +166,8 @@ public sealed class Plugin : IDalamudPlugin
 
     RoutingWindow = new RoutingWindow();
     WindowSystem.AddWindow(RoutingWindow);
+
+    GcTurnIn = new GcTurnInOrchestrator();
 
     TriageWindow = new TriageWindow();
     WindowSystem.AddWindow(TriageWindow);
