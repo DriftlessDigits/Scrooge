@@ -179,6 +179,7 @@ namespace Scrooge.Windows
             PricingResult.BelowMinimum => ScroogeColors.Amber,
             PricingResult.CapBlocked => ScroogeColors.Warning,
             PricingResult.UndercutTooDeep => ScroogeColors.Warning,
+            PricingResult.UpwardHeld => ScroogeColors.Warning,
             _ => ScroogeColors.Muted,
           };
 
@@ -229,7 +230,7 @@ namespace Scrooge.Windows
           if (!isRunning)
           {
             _actions.TryGetValue(item, out var current);
-            var canReprice = item.Result == PricingResult.CapBlocked || item.Result == PricingResult.UndercutTooDeep;
+            var canReprice = item.Result is PricingResult.CapBlocked or PricingResult.UndercutTooDeep or PricingResult.UpwardHeld;
 
             DrawActionToggle(item, i, TriageAction.Vendor, "Vend", current);
             ImGui.SameLine(0, 2);
@@ -293,6 +294,8 @@ namespace Scrooge.Windows
           $"Cap ({item.CurrentListingPrice:N0} → {item.MbPrice:N0}, {item.PriceChangePercent:F0}%)",
         PricingResult.UndercutTooDeep =>
           $"Undercut Too Deep ({item.PriceChangePercent:F0}%)",
+        PricingResult.UpwardHeld =>
+          $"Upward Held ({item.CurrentListingPrice:N0} → {item.MbPrice:N0} exceeds own-sales sanity)",
         PricingResult.NoData => "No Data (no listings)",
         _ => "Unknown"
       };

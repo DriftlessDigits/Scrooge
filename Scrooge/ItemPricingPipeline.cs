@@ -321,6 +321,32 @@ internal sealed class ItemPricingPipeline : IDisposable
         }
         _mbHandler.ClearHistory();
       }
+
+      // Own-sales fallback — when the market is fully silent (no listings AND
+      // no MB history), the player's own last sale prices the item. Staleness-
+      // gated by StalePriceDays, never discounted (sole seller = premium
+      // position), always labeled in chat. Locked spec 2026-07-10.
+      if (currentItem != null
+          && currentItem.ItemId != 0
+          && currentItem.Result != PricingResult.BelowMinimum
+          && currentItem.Result != PricingResult.BelowFloor
+          && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
+      {
+        (int Price, long Timestamp)? ownSale = null;
+        try { ownSale = GilStorage.GetLastSalePriceWithTime(currentItem.ItemId); } catch { /* storage unavailable */ }
+
+        if (ownSale is (int salePrice, long saleTs) && salePrice > 0)
+        {
+          var ageDays = (int)((DateTimeOffset.UtcNow.ToUnixTimeSeconds() - saleTs) / 86400);
+          if (Plugin.Configuration.StalePriceDays <= 0 || ageDays <= Plugin.Configuration.StalePriceDays)
+          {
+            currentItem.FinalPrice = salePrice;
+            currentItem.Result = PricingResult.Pending;
+            Communicator.PrintOwnSalesFallback(itemName, salePrice, ageDays);
+          }
+        }
+      }
+
       var newPrice = currentItem?.FinalPrice ?? _hotKeyPrice;
       var confirmed = ApplyPriceDecision(retainerSell, currentItem, itemName, newPrice);
 
@@ -420,6 +446,43 @@ internal sealed class ItemPricingPipeline : IDisposable
       {
         var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
         var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
+
+        // Upward-reprice sanity: a human priced this listing — never multiply
+        // it upward on one packet of possibly-bad data (troll walls). Hold the
+        // price, flag to persistent triage.
+        if (Plugin.Configuration.FlagUpwardRepriceEnabled
+            && currentItem?.BypassPriceGuards != true
+            && oldPrice > 0 && newPrice.Value > oldPrice)
+        {
+          int? ownSale = null;
+          if (currentItem != null && currentItem.ItemId != 0)
+            try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId); } catch { /* storage unavailable — base on oldPrice */ }
+
+          var sanityBase = (long)(ownSale ?? oldPrice);
+          if (newPrice.Value > sanityBase * Plugin.Configuration.UpwardRepriceMultiplier)
+          {
+            var basis = ownSale.HasValue ? $"your last sale {ownSale:N0}" : $"current {oldPrice:N0}";
+            Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
+              $"Upward reprice held — market says {newPrice:N0} vs {basis}");
+            if (currentItem != null)
+            {
+              currentItem.Result = PricingResult.UpwardHeld;
+              currentItem.PriceChangePercent = cutPercentage;
+              try
+              {
+                GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
+                  currentItem.RetainerName, currentItem.SlotIndex, "upward_held",
+                  $"Listed {oldPrice:N0} → market {newPrice:N0}; {basis}",
+                  oldPrice, newPrice.Value);
+              }
+              catch (Exception ex)
+              {
+                Svc.Log.Warning($"[Triage] Failed to persist upward-held flag: {ex.Message}");
+              }
+            }
+            return true; // confirm keeps the old price (no-op)
+          }
+        }
 
         if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage
             || currentItem?.BypassPriceGuards == true)
