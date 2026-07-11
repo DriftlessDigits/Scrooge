@@ -26,6 +26,7 @@ internal sealed class TriageOrchestrator : IDisposable
 
   private Queue<PricingItem>? _triageQueue;
   private List<PricingItem>? _repriceQueue;
+  private IDisposable? _catchallBlock;
   private string? _currentRetainer;
   private int _vendorSoldCount;
   private long _vendorSoldGil;
@@ -46,6 +47,8 @@ internal sealed class TriageOrchestrator : IDisposable
   public void Dispose()
   {
     _taskManager.Abort();
+    _catchallBlock?.Dispose();
+    _catchallBlock = null;
     RemoveTalkListeners();
   }
 
@@ -291,6 +294,8 @@ internal sealed class TriageOrchestrator : IDisposable
     _taskManager.Abort();
     IsRunning = false;
     _triageQueue = null;
+    _catchallBlock?.Dispose();
+    _catchallBlock = null;
     RemoveTalkListeners();
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
   }
@@ -368,7 +373,7 @@ internal sealed class TriageOrchestrator : IDisposable
       _taskManager.Enqueue(() => GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
         $"TriageClickInv_{item.ItemName}");
       _taskManager.DelayNext(500);
-      _taskManager.Enqueue(() => { GilTrackingState.Block(); return true; },
+      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = GilTrackingState.Block("triage_vendor"); return true; },
         $"TriageBlockCatchall_{item.ItemName}");
       _taskManager.Enqueue(GameNavigation.ClickVendorSellItem,
         $"TriageVendor_{item.ItemName}");
@@ -377,7 +382,7 @@ internal sealed class TriageOrchestrator : IDisposable
       // Track the sale
       _taskManager.Enqueue(() => { TrackVendorSale(item); return true; },
         $"TriageTrack_{item.ItemName}");
-      _taskManager.Enqueue(() => { GilTrackingState.Unblock(); return true; },
+      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; },
         $"TriageUnblockCatchall_{item.ItemName}");
     }
     else

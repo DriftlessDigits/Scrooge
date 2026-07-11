@@ -1,4 +1,5 @@
 using System;
+using ECommons.DalamudServices;
 
 namespace Scrooge;
 
@@ -8,9 +9,11 @@ namespace Scrooge;
 /// flight; the chat catch-all consults <see cref="IsBlocked"/> to stand down
 /// and avoid double-counting.
 ///
-/// Ref-counted so overlapping trackers (e.g. an exchange opened during a
-/// duty) don't release the block prematurely. Only unblocks when every
-/// caller that blocked has unblocked.
+/// Blocks are owner-scoped: <see cref="Block"/> returns a token whose
+/// disposal releases exactly once no matter how many paths reach it
+/// (completion, abort, plugin unload). This replaces a bare ref-count that
+/// stranded the block forever when a task chain died between Block and
+/// Unblock — silently killing catch-all tracking for the session.
 /// </summary>
 internal static class GilTrackingState
 {
@@ -18,23 +21,21 @@ internal static class GilTrackingState
 
   /// <summary>
   /// Fires when a specific tracker has finished recording a gil change —
-  /// either by closing a blocked window (last <see cref="Unblock"/> in a
-  /// ref-count chain) or by declaring a one-shot chat-driven insert via
-  /// <see cref="NotifyHandled"/>. The chat catch-all subscribes here and
-  /// resets its baseline to current gil so the just-recorded delta isn't
-  /// re-captured by its debounced diff.
+  /// either by releasing the last live block token or by declaring a
+  /// one-shot chat-driven insert via <see cref="NotifyHandled"/>. The chat
+  /// catch-all subscribes here and resets its baseline to current gil so the
+  /// just-recorded delta isn't re-captured by its debounced diff.
   /// </summary>
   internal static event Action? OnGilChangeHandled;
 
   internal static bool IsBlocked => _blockCount > 0;
 
-  internal static void Block() => _blockCount++;
-
-  internal static void Unblock()
-  {
-    if (_blockCount > 0 && --_blockCount == 0)
-      OnGilChangeHandled?.Invoke();
-  }
+  /// <summary>
+  /// Acquires a block. Dispose the returned token to release it; disposal is
+  /// idempotent, so every exit path (success, abort, unload) can safely
+  /// dispose the same token.
+  /// </summary>
+  internal static IDisposable Block(string owner) => new BlockToken(owner);
 
   /// <summary>
   /// Signals that a synchronous tracker (e.g. a chat-message parser) just
@@ -43,4 +44,26 @@ internal static class GilTrackingState
   /// next debounced diff.
   /// </summary>
   internal static void NotifyHandled() => OnGilChangeHandled?.Invoke();
+
+  private sealed class BlockToken : IDisposable
+  {
+    private readonly string _owner;
+    private bool _released;
+
+    internal BlockToken(string owner)
+    {
+      _owner = owner;
+      _blockCount++;
+      Svc.Log.Verbose($"[GilTrack] catch-all block +{_owner} ({_blockCount} live)");
+    }
+
+    public void Dispose()
+    {
+      if (_released) return;
+      _released = true;
+      Svc.Log.Verbose($"[GilTrack] catch-all block -{_owner} ({_blockCount - 1} live)");
+      if (_blockCount > 0 && --_blockCount == 0)
+        OnGilChangeHandled?.Invoke();
+    }
+  }
 }

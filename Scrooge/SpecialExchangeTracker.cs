@@ -34,6 +34,7 @@ internal sealed class SpecialExchangeTracker : IDisposable
   private long _openGil;
   private string _counterparty = "";
   private string _source = "";
+  private IDisposable? _catchallBlock;
 
   internal SpecialExchangeTracker()
   {
@@ -46,6 +47,8 @@ internal sealed class SpecialExchangeTracker : IDisposable
     Svc.Framework.Update -= OnFrameworkUpdate;
     foreach (var addonName in AddonSources.Keys)
       Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, addonName, OnOpen);
+    _catchallBlock?.Dispose();
+    _catchallBlock = null;
   }
 
   private unsafe void OnOpen(AddonEvent type, AddonArgs args)
@@ -58,7 +61,8 @@ internal sealed class SpecialExchangeTracker : IDisposable
     _counterparty = args.AddonName;
     _source = source;
     _active = true;
-    GilTrackingState.Block();
+    _catchallBlock?.Dispose();
+    _catchallBlock = GilTrackingState.Block($"special_exchange:{source}");
     Svc.Framework.Update += OnFrameworkUpdate;
 
     Svc.Log.Debug($"[GilTrack] {source} opened: snapshot {_openGil:N0}g");
@@ -80,19 +84,25 @@ internal sealed class SpecialExchangeTracker : IDisposable
   {
     Svc.Framework.Update -= OnFrameworkUpdate;
 
-    var currentGil = (long)InventoryManager.Instance()->GetGil();
-    var diff = currentGil - _openGil;
-    if (diff > 0)
-      Record("earned", diff, _source, _counterparty);
-    else if (diff < 0)
-      Record("spent", -diff, _source, _counterparty);
+    try
+    {
+      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      var diff = currentGil - _openGil;
+      if (diff > 0)
+        Record("earned", diff, _source, _counterparty);
+      else if (diff < 0)
+        Record("spent", -diff, _source, _counterparty);
 
-    Svc.Log.Debug($"[GilTrack] {_source} closed: diff {diff:N0}g");
-
-    _active = false;
-    _counterparty = "";
-    _source = "";
-    GilTrackingState.Unblock();
+      Svc.Log.Debug($"[GilTrack] {_source} closed: diff {diff:N0}g");
+    }
+    finally
+    {
+      _active = false;
+      _counterparty = "";
+      _source = "";
+      _catchallBlock?.Dispose();
+      _catchallBlock = null;
+    }
   }
 
   private static void Record(string direction, long amount, string source, string counterparty)

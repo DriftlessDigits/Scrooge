@@ -28,6 +28,7 @@ internal sealed class HawkRunOrchestrator
   private readonly Action _removeTalkListeners;
 
   private Queue<HawkWindow.HawkItem>? _hawkQueue;
+  private IDisposable? _catchallBlock;
   private int _hawkRetainerSlotsUsed;
 
   /// <summary>True while a hawk run is in progress.</summary>
@@ -52,6 +53,8 @@ internal sealed class HawkRunOrchestrator
   {
     IsRunning = false;
     _hawkQueue = null;
+    _catchallBlock?.Dispose();
+    _catchallBlock = null;
     Plugin.PinchRunLog.CancelRun();
     Plugin.CurrentRun = null;
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
@@ -190,11 +193,11 @@ internal sealed class HawkRunOrchestrator
       _taskManager.Enqueue(() => { if (Plugin.CurrentRun != null) Plugin.CurrentRun.CurrentItem = new PricingItem { ItemId = item.ItemId }; return true; }, $"HawkInitItem_{item.Name}");
       _taskManager.Enqueue(() => _pricing.ClickInventoryItem(item), $"HawkClickItem_{item.Name}");
       _taskManager.DelayNext(100);
-      _taskManager.Enqueue(() => { GilTrackingState.Block(); return true; }, $"HawkBlockCatchall_{item.Name}");
+      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = GilTrackingState.Block("hawk_vendor"); return true; }, $"HawkBlockCatchall_{item.Name}");
       _taskManager.Enqueue(_pricing.ClickHaveRetainerSellItems, $"HawkVendorSell_{item.Name}");
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(() => { TrackVendorSale(item); return true; }, $"HawkTrackVendor_{item.Name}");
-      _taskManager.Enqueue(() => { GilTrackingState.Unblock(); return true; }, $"HawkUnblockCatchall_{item.Name}");
+      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; }, $"HawkUnblockCatchall_{item.Name}");
       _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
       return true;
     }
@@ -243,11 +246,11 @@ internal sealed class HawkRunOrchestrator
       // Path B: price check failed → vendor sell instead
       _taskManager.Enqueue(() => _pricing.ClickInventoryItem(item), $"HawkReClickItem_{item.Name}");
       _taskManager.DelayNext(100);
-      _taskManager.Enqueue(() => { GilTrackingState.Block(); return true; }, $"HawkBlockCatchall_{item.Name}");
+      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = GilTrackingState.Block("hawk_vendor"); return true; }, $"HawkBlockCatchall_{item.Name}");
       _taskManager.Enqueue(_pricing.ClickHaveRetainerSellItems, $"HawkVendorSell_{item.Name}");
       _taskManager.DelayNext(100);
       _taskManager.Enqueue(() => { TrackVendorSale(item); return true; }, $"HawkTrackVendor_{item.Name}");
-      _taskManager.Enqueue(() => { GilTrackingState.Unblock(); return true; }, $"HawkUnblockCatchall_{item.Name}");
+      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; }, $"HawkUnblockCatchall_{item.Name}");
       _taskManager.Enqueue(HawkProcessNext, "HawkProcessNext");
       return true;
     }

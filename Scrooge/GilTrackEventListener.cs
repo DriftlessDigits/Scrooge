@@ -28,13 +28,17 @@ internal sealed class GilTrackEventListener : IDisposable
   // MB purchase tracking — snapshot gil on open, diff on close
   private long _mbOpenGil;
   private int _mbPurchaseCount;
+  private IDisposable? _mbBlock;
 
   // Tier 1 tracker state
   private long _questSnapshotGil;
+  private IDisposable? _questBlock;
   private long _dutySnapshotGil;
   private bool _inDuty;
   private string _dutyName = "";
+  private IDisposable? _dutyBlock;
   private long _fateSnapshotGil;
+  private IDisposable? _fateBlock;
 
   private static readonly HashSet<TerritoryIntendedUseEnum> DutyExclusions =
   [
@@ -71,6 +75,11 @@ internal sealed class GilTrackEventListener : IDisposable
     Svc.ClientState.TerritoryChanged -= OnTerritoryChanged;
     Svc.ClientState.Logout -= OnLogout;
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerList", OnRetainerListSetup);
+
+    _mbBlock?.Dispose();
+    _questBlock?.Dispose();
+    _dutyBlock?.Dispose();
+    _fateBlock?.Dispose();
   }
 
   private unsafe void OnTerritoryChanged(uint territoryId)
@@ -98,23 +107,31 @@ internal sealed class GilTrackEventListener : IDisposable
       _inDuty = true;
       _dutySnapshotGil = (long)InventoryManager.Instance()->GetGil();
       _dutyName = Content.ContentName ?? $"Duty {cfcId}";
-      GilTrackingState.Block();
+      _dutyBlock?.Dispose();
+      _dutyBlock = GilTrackingState.Block("duty");
       Svc.Log.Debug($"[GilTrack] Entered duty: {_dutyName} (CFC {cfcId}), snapshot {_dutySnapshotGil:N0}g");
     }
     else if (_inDuty && (cfcId is null or 0 || isExcluded))
     {
       // Leaving a duty — diff and record
-      var currentGil = (long)InventoryManager.Instance()->GetGil();
-      var diff = currentGil - _dutySnapshotGil;
-      if (diff > 0)
-        RecordGilTransaction("earned", "duty_reward", diff, _dutyName);
-      else if (diff < 0)
-        RecordGilTransaction("spent", "duty_reward", -diff, _dutyName);
+      try
+      {
+        var currentGil = (long)InventoryManager.Instance()->GetGil();
+        var diff = currentGil - _dutySnapshotGil;
+        if (diff > 0)
+          RecordGilTransaction("earned", "duty_reward", diff, _dutyName);
+        else if (diff < 0)
+          RecordGilTransaction("spent", "duty_reward", -diff, _dutyName);
 
-      Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
-      _inDuty = false;
-      _dutyName = "";
-      GilTrackingState.Unblock();
+        Svc.Log.Debug($"[GilTrack] Left duty: {_dutyName}, diff {diff:N0}g");
+      }
+      finally
+      {
+        _inDuty = false;
+        _dutyName = "";
+        _dutyBlock?.Dispose();
+        _dutyBlock = null;
+      }
     }
   }
 
@@ -160,7 +177,8 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     _mbOpenGil = (long)InventoryManager.Instance()->GetGil();
     _mbPurchaseCount = 0;
-    GilTrackingState.Block();
+    _mbBlock?.Dispose();
+    _mbBlock = GilTrackingState.Block("mb_purchase");
   }
 
   private unsafe void OnMarketBoardClose(AddonEvent type, AddonArgs args)
@@ -184,7 +202,8 @@ internal sealed class GilTrackEventListener : IDisposable
     }
     finally
     {
-      GilTrackingState.Unblock();
+      _mbBlock?.Dispose();
+      _mbBlock = null;
     }
   }
 
@@ -334,33 +353,43 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     _questSnapshotGil = (long)InventoryManager.Instance()->GetGil();
-    GilTrackingState.Block();
+    _questBlock?.Dispose();
+    _questBlock = GilTrackingState.Block("quest_reward");
     Svc.Log.Debug($"[GilTrack] Quest reward window opened, snapshot {_questSnapshotGil:N0}g");
   }
 
   private unsafe void OnQuestRewardFinalize(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
-
-    var questName = "";
+    // Release the block even if tracking was toggled off mid-quest —
+    // the early return below must not strand it.
     try
     {
-      var addon = (AtkUnitBase*)args.Addon.Address;
-      if (addon->AtkValues[1].Type != 0)
-        questName = addon->AtkValues[1].GetValueAsString();
+      if (!Plugin.Configuration.EnableGilTracking) return;
+
+      var questName = "";
+      try
+      {
+        var addon = (AtkUnitBase*)args.Addon.Address;
+        if (addon->AtkValues[1].Type != 0)
+          questName = addon->AtkValues[1].GetValueAsString();
+      }
+      catch (Exception ex)
+      {
+        Svc.Log.Warning($"[GilTrack] Failed to read quest name: {ex.Message}");
+      }
+
+      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      var diff = currentGil - _questSnapshotGil;
+      if (diff > 0)
+        RecordGilTransaction("earned", "quest_reward", diff, questName);
+
+      Svc.Log.Debug($"[GilTrack] Quest reward finalized: '{questName}', diff {diff:N0}g");
     }
-    catch (Exception ex)
+    finally
     {
-      Svc.Log.Warning($"[GilTrack] Failed to read quest name: {ex.Message}");
+      _questBlock?.Dispose();
+      _questBlock = null;
     }
-
-    var currentGil = (long)InventoryManager.Instance()->GetGil();
-    var diff = currentGil - _questSnapshotGil;
-    if (diff > 0)
-      RecordGilTransaction("earned", "quest_reward", diff, questName);
-
-    Svc.Log.Debug($"[GilTrack] Quest reward finalized: '{questName}', diff {diff:N0}g");
-    GilTrackingState.Unblock();
   }
 
   // --- Tier 1: FATE Rewards (FateReward addon) ---
@@ -369,37 +398,47 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     if (!Plugin.Configuration.EnableGilTracking) return;
     _fateSnapshotGil = (long)InventoryManager.Instance()->GetGil();
-    GilTrackingState.Block();
+    _fateBlock?.Dispose();
+    _fateBlock = GilTrackingState.Block("fate_reward");
     Svc.Log.Debug($"[GilTrack] FATE reward window opening, snapshot {_fateSnapshotGil:N0}g");
   }
 
   private unsafe void OnFateRewardPostSetup(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
-
-    var fateName = "";
+    // Same shape as OnQuestRewardFinalize: the config early-return must not
+    // strand the block.
     try
     {
-      var addon = (AtkUnitBase*)args.Addon.Address;
-      if (GenericHelpers.IsAddonReady(addon))
+      if (!Plugin.Configuration.EnableGilTracking) return;
+
+      var fateName = "";
+      try
       {
-        var textNode = addon->GetTextNodeById(6);
-        if (textNode != null)
-          fateName = textNode->NodeText.ToString();
+        var addon = (AtkUnitBase*)args.Addon.Address;
+        if (GenericHelpers.IsAddonReady(addon))
+        {
+          var textNode = addon->GetTextNodeById(6);
+          if (textNode != null)
+            fateName = textNode->NodeText.ToString();
+        }
       }
+      catch (Exception ex)
+      {
+        Svc.Log.Warning($"[GilTrack] Failed to read FATE name: {ex.Message}");
+      }
+
+      var currentGil = (long)InventoryManager.Instance()->GetGil();
+      var diff = currentGil - _fateSnapshotGil;
+      if (diff > 0)
+        RecordGilTransaction("earned", "fate_reward", diff, fateName);
+
+      Svc.Log.Debug($"[GilTrack] FATE reward: '{fateName}', diff {diff:N0}g");
     }
-    catch (Exception ex)
+    finally
     {
-      Svc.Log.Warning($"[GilTrack] Failed to read FATE name: {ex.Message}");
+      _fateBlock?.Dispose();
+      _fateBlock = null;
     }
-
-    var currentGil = (long)InventoryManager.Instance()->GetGil();
-    var diff = currentGil - _fateSnapshotGil;
-    if (diff > 0)
-      RecordGilTransaction("earned", "fate_reward", diff, fateName);
-
-    Svc.Log.Debug($"[GilTrack] FATE reward: '{fateName}', diff {diff:N0}g");
-    GilTrackingState.Unblock();
   }
 
   // --- Shared helpers ---
