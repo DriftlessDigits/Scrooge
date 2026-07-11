@@ -116,4 +116,22 @@ internal static unsafe class GameSafe
 
     return listComponent->ListLength;
   }
+
+  /// <summary>
+  /// The player's GC seal wallet: current, max for their rank, and the GC id.
+  /// Null when PlayerState/InventoryManager are unavailable or the player
+  /// has no Grand Company.
+  /// </summary>
+  internal static (uint Current, uint Max, byte GcId)? CompanySeals()
+  {
+    var ps = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+    if (ps == null) return null;
+    var gc = ps->GrandCompany;
+    if (gc == 0) return null;
+
+    var im = InventoryManager.Instance();
+    if (im == null) return null;
+
+    return (im->GetCompanySeals(gc), im->GetMaxCompanySeals(gc), gc);
+  }
 }
