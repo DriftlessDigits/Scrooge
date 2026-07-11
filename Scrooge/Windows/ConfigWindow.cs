@@ -566,6 +566,74 @@ public sealed class ConfigWindow : Window
         ImGui.EndTooltip();
       }
     }
+
+    SectionHeader("Routing (advisor preview)");
+
+    var routingOn = Plugin.Configuration.EnableRoutingBrain;
+    if (ImGui.Checkbox("Enable listing gate", ref routingOn))
+    {
+      Plugin.Configuration.EnableRoutingBrain = routingOn;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("First slice of the routing brain. In the Hawk window, equipment whose\n" +
+                       "better exit is desynth (melt) or GC turn-in (churn) gets a Route tag\n" +
+                       "and is left out of Select All. Judged only on YOUR data - own sales,\n" +
+                       "own desynth yields. No evidence = no opinion. Checking a tagged item\n" +
+                       "anyway always wins (and teaches the router).");
+      ImGui.EndTooltip();
+    }
+
+    if (Plugin.Configuration.EnableRoutingBrain)
+    {
+      ImGui.BeginGroup();
+      ImGui.Text("Listing floor (gil):");
+      ImGui.SameLine();
+      var floorGil = Plugin.Configuration.ListingFloorGil;
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.InputInt("##listingFloorGil", ref floorGil, 1000, 5000)
+          && floorGil >= 0)
+      {
+        Plugin.Configuration.ListingFloorGil = floorGil;
+        Plugin.Configuration.Save();
+      }
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Equipment is worth listing when it sells for at least this much.\n" +
+                         "Gear below the floor routes to melt or churn when a better exit exists.");
+        ImGui.EndTooltip();
+      }
+
+      ImGui.BeginGroup();
+      ImGui.Text("Velocity floor (days):");
+      ImGui.SameLine();
+      var velocityDays = Plugin.Configuration.ListingVelocityDays;
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.SliderInt("##listingVelocityDays", ref velocityDays, 1, 30, "%dd"))
+      {
+        Plugin.Configuration.ListingVelocityDays = velocityDays;
+        Plugin.Configuration.Save();
+      }
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("...AND it should move within this many days. Judged from how long\n" +
+                         "the item sat listed before its last sale (captured going forward;\n" +
+                         "older sales have no sit time and get the benefit of the doubt).");
+        ImGui.EndTooltip();
+      }
+    }
   }
 
   private void DrawTimingTab()

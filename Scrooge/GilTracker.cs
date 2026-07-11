@@ -89,6 +89,12 @@ internal static class GilTracker
     var itemCount = addon->AtkValues[9].Int;
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
+    // Step 0: Remember when everything PREVIOUSLY listed here was first seen.
+    // Listings that disappear in this snapshot most likely sold — their
+    // first_seen feeds sold_after_days when ProcessSaleHistory reconciles
+    // the sale moments later (the snapshot delete would otherwise erase it).
+    var previousAges = GilStorage.GetRetainerListingAges(CurrentRetainerName);
+
     // Step 1: Read existing first_seen values before we delete
     // (so we can preserve them for items that are still listed)
     var existingFirstSeen = new Dictionary<string, long>();
@@ -141,6 +147,8 @@ internal static class GilTracker
           cleanName, GetItemCategory(itemID), pricePerUnit, quantity,
           isHQ, firstSeen, now, transaction);
 
+      previousAges.Remove((itemID, isHQ));
+
       // Keep in-memory for FinalizeRun calculations
       _runListings.Add(new ListingRecord
       {
@@ -158,8 +166,22 @@ internal static class GilTracker
     }
 
     transaction.Commit();
+
+    // Whatever survived in previousAges disappeared from the sell list —
+    // stash for sale reconciliation (sold_after_days). Keyed per retainer;
+    // replaced wholesale each snapshot so stale entries never accumulate.
+    _recentDelistings[CurrentRetainerName] = previousAges;
+
     Svc.Log.Debug($"[GilTrack] Snapshotted {itemCount} listings for {CurrentRetainerName}");
   }
+
+  /// <summary>
+  /// Listings that vanished in the latest snapshot per retainer, with their
+  /// first_seen — the sit-time evidence for sales reconciled right after.
+  /// In-memory only: a restart between snapshot and reconcile just means
+  /// sold_after_days stays null for that sale (evidence lost, never wrong).
+  /// </summary>
+  private static readonly Dictionary<string, Dictionary<(uint ItemId, bool IsHq), long>> _recentDelistings = [];
 
   /// <summary>
   /// Called at pinch run end. Captures gil balances, updates current listings,
@@ -278,7 +300,15 @@ internal static class GilTracker
         newCount++;
       }
 
-      GilStorage.UpsertLastSalePrice(entry.ItemID, realUnitPrice, (long)entry.UnixTimeSeconds);
+      // Sit time: if this item vanished from the sell list in the snapshot
+      // that just ran, its first_seen tells how long it sat before selling.
+      int? soldAfterDays = null;
+      if (_recentDelistings.TryGetValue(retainerName, out var delistings)
+          && delistings.TryGetValue((entry.ItemID, entry.IsHQ), out var firstSeen)
+          && (long)entry.UnixTimeSeconds >= firstSeen)
+        soldAfterDays = (int)(((long)entry.UnixTimeSeconds - firstSeen) / 86400);
+
+      GilStorage.UpsertLastSalePrice(entry.ItemID, entry.IsHQ, realUnitPrice, (long)entry.UnixTimeSeconds, soldAfterDays);
     }
 
     if (newCount > 0 || promotedCount > 0 || dedupedCount > 0)

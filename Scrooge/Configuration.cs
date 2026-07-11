@@ -224,6 +224,27 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int StalePriceDays { get; set; } = 30;
 
+  // --- Routing brain (advisor era; master toggle stays off until the era ships) ---
+
+  /// <summary>
+  /// Master toggle for routing-brain features. Increment 0 is the listing
+  /// gate: Hawk items whose better exit is desynth or GC turn-in get a
+  /// routing verdict, are excluded from Select All, and default unchecked.
+  /// </summary>
+  public bool EnableRoutingBrain { get; set; } = false;
+
+  /// <summary>
+  /// Equipment listing floor in gil. Gear whose own-sales evidence lands
+  /// below this is a gate candidate (when a better exit exists).
+  /// </summary>
+  public int ListingFloorGil { get; set; } = 15000;
+
+  /// <summary>
+  /// Equipment velocity floor in days. Gear that took longer than this to
+  /// sell last time is a gate candidate (when a better exit exists).
+  /// </summary>
+  public int ListingVelocityDays { get; set; } = 10;
+
   // --- Gil Goals ---
   // Three independent buckets; 0 = that goal is off. Set from the dashboard's
   // Goals tab. Crossings celebrate once per target value — changing a target

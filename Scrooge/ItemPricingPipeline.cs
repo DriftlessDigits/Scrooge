@@ -333,7 +333,7 @@ internal sealed class ItemPricingPipeline : IDisposable
           && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
       {
         (int Price, long Timestamp)? ownSale = null;
-        try { ownSale = GilStorage.GetLastSalePriceWithTime(currentItem.ItemId); } catch { /* storage unavailable */ }
+        try { ownSale = GilStorage.GetLastSalePriceWithTime(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable */ }
 
         if (ownSale is (int salePrice, long saleTs) && salePrice > 0)
         {
@@ -448,7 +448,7 @@ internal sealed class ItemPricingPipeline : IDisposable
         if (Plugin.Configuration.FlagUpwardRepriceEnabled && currentItem != null && currentItem.ItemId != 0)
         {
           int? ownSale = null;
-          try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId); } catch { /* storage unavailable */ }
+          try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable */ }
           if (ownSale is int sale && sale > 0
               && newPrice.Value > (long)(sale * Plugin.Configuration.UpwardRepriceMultiplier))
           {
@@ -480,7 +480,7 @@ internal sealed class ItemPricingPipeline : IDisposable
         {
           int? ownSale = null;
           if (currentItem != null && currentItem.ItemId != 0)
-            try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId); } catch { /* storage unavailable — base on oldPrice */ }
+            try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable — base on oldPrice */ }
 
           var sanityBase = (long)(ownSale ?? oldPrice);
           if (newPrice.Value > sanityBase * Plugin.Configuration.UpwardRepriceMultiplier)

@@ -131,7 +131,7 @@ namespace Scrooge.Windows
       if (run == null || run.Mode != RunMode.Desynth || run.IsComplete)
         return;
 
-      var value = (long)(GilStorage.GetLastSalePrice(yield.YieldItemId) ?? 0) * yield.YieldQty;
+      var value = (long)(GilStorage.GetLastSalePrice(yield.YieldItemId, yield.YieldIsHq) ?? 0) * yield.YieldQty;
       run.AddYieldEntry(GilTracker.GetItemName(yield.YieldItemId), yield.YieldQty, yield.YieldIsHq, value);
     }
 

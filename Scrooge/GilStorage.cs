@@ -882,45 +882,51 @@ internal static class GilStorage
   }
 
   /// <summary>
-  /// Gets the last sale price and timestamp for each item ever sold via retainer.
+  /// Gets the last sale for each (item, quality) ever sold via retainer.
   /// Reads from the last_sale_prices table (survives transaction pruning).
+  /// SoldAfterDays is how long the listing sat before selling — null for
+  /// sales reconciled before V13 started capturing it.
   /// </summary>
-  internal static Dictionary<uint, (int Price, long Timestamp)> GetLastSalePrices()
+  internal static Dictionary<(uint ItemId, bool IsHq), (int Price, long Timestamp, int? SoldAfterDays)> GetLastSalePrices()
   {
-    var prices = new Dictionary<uint, (int, long)>();
+    var prices = new Dictionary<(uint, bool), (int, long, int?)>();
     using var cmd = new SqliteCommand(
-      "SELECT item_id, unit_price, timestamp FROM last_sale_prices",
+      "SELECT item_id, is_hq, unit_price, timestamp, sold_after_days FROM last_sale_prices",
       _connection);
     using var reader = cmd.ExecuteReader();
     while (reader.Read())
-      prices[(uint)reader.GetInt64(0)] = (reader.GetInt32(1), reader.GetInt64(2));
+      prices[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0)] =
+        (reader.GetInt32(2), reader.GetInt64(3), reader.IsDBNull(4) ? null : reader.GetInt32(4));
     return prices;
   }
 
   /// <summary>
-  /// Last sale price for one item, or null when it has never sold via retainer.
-  /// Single-row variant of GetLastSalePrices for per-event lookups.
+  /// Last sale price for one item at one quality, or null when that variant
+  /// has never sold via retainer. NQ and HQ are separate evidence — an NQ
+  /// sale says nothing about the HQ price.
   /// </summary>
-  internal static int? GetLastSalePrice(uint itemId)
+  internal static int? GetLastSalePrice(uint itemId, bool isHq)
   {
     using var cmd = new SqliteCommand(
-      "SELECT unit_price FROM last_sale_prices WHERE item_id = @iid",
+      "SELECT unit_price FROM last_sale_prices WHERE item_id = @iid AND is_hq = @hq",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     var result = cmd.ExecuteScalar();
     return result == null || result == DBNull.Value ? null : Convert.ToInt32(result);
   }
 
   /// <summary>
-  /// Last sale price AND timestamp for one item - the own-sales pricing
-  /// fallback needs both (staleness gate + "sold Nd ago" label).
+  /// Last sale price AND timestamp for one item at one quality - the own-sales
+  /// pricing fallback needs both (staleness gate + "sold Nd ago" label).
   /// </summary>
-  internal static (int Price, long Timestamp)? GetLastSalePriceWithTime(uint itemId)
+  internal static (int Price, long Timestamp)? GetLastSalePriceWithTime(uint itemId, bool isHq)
   {
     using var cmd = new SqliteCommand(
-      "SELECT unit_price, timestamp FROM last_sale_prices WHERE item_id = @iid",
+      "SELECT unit_price, timestamp FROM last_sale_prices WHERE item_id = @iid AND is_hq = @hq",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     using var reader = cmd.ExecuteReader();
     if (!reader.Read()) return null;
     return (reader.GetInt32(0), reader.GetInt64(1));
@@ -1018,17 +1024,67 @@ internal static class GilStorage
     cmd.ExecuteNonQuery();
   }
 
-  /// <summary>Upserts the last sale price for an item. Called on every retainer sale.</summary>
-  internal static void UpsertLastSalePrice(uint itemId, int unitPrice, long timestamp)
+  /// <summary>
+  /// Upserts the last sale price for an item variant. Called on every retainer
+  /// sale. soldAfterDays (listing sit time, when known) only overwrites when
+  /// provided — a sale without sit-time evidence keeps the previous value.
+  /// </summary>
+  internal static void UpsertLastSalePrice(uint itemId, bool isHq, int unitPrice, long timestamp, int? soldAfterDays = null)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO last_sale_prices (item_id, unit_price, timestamp)
-        VALUES (@iid, @price, @ts)
-        ON CONFLICT(item_id) DO UPDATE SET unit_price = @price, timestamp = @ts",
+      @"INSERT INTO last_sale_prices (item_id, is_hq, unit_price, timestamp, sold_after_days)
+        VALUES (@iid, @hq, @price, @ts, @days)
+        ON CONFLICT(item_id, is_hq) DO UPDATE SET
+          unit_price = @price, timestamp = @ts,
+          sold_after_days = COALESCE(@days, sold_after_days)",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     cmd.Parameters.AddWithValue("@price", unitPrice);
     cmd.Parameters.AddWithValue("@ts", timestamp);
+    cmd.Parameters.AddWithValue("@days", (object?)soldAfterDays ?? DBNull.Value);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// first_seen per (item, quality) currently listed on a retainer — oldest
+  /// wins when the same variant is listed in multiple slots. Read by
+  /// GilTracker.SnapshotListings BEFORE the delete/re-insert so disappeared
+  /// (= likely sold) listings can carry their sit time to sale reconciliation.
+  /// </summary>
+  internal static Dictionary<(uint ItemId, bool IsHq), long> GetRetainerListingAges(string retainerName)
+  {
+    var ages = new Dictionary<(uint, bool), long>();
+    using var cmd = new SqliteCommand(
+      @"SELECT item_id, is_hq, MIN(first_seen) FROM listings
+        WHERE retainer_name = @ret GROUP BY item_id, is_hq",
+      _connection);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      ages[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0)] = reader.GetInt64(2);
+    return ages;
+  }
+
+  /// <summary>
+  /// Records a routing override: the router said one thing, the player did
+  /// another. Written by the Hawk window when a gated item is checked anyway.
+  /// </summary>
+  internal static void InsertRoutingOverride(uint itemId, bool isHq, int ilvl,
+      string routerVerdict, string routerReason, string playerVerdict)
+  {
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO routing_overrides
+          (created_at, item_id, is_hq, ilvl, router_verdict, router_reason, player_verdict)
+        VALUES (@now, @iid, @hq, @ilvl, @rv, @reason, @pv)",
+      _connection);
+    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.Parameters.AddWithValue("@ilvl", ilvl);
+    cmd.Parameters.AddWithValue("@rv", routerVerdict);
+    cmd.Parameters.AddWithValue("@reason", routerReason);
+    cmd.Parameters.AddWithValue("@pv", playerVerdict);
     cmd.ExecuteNonQuery();
   }
 

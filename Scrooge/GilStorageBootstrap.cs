@@ -98,6 +98,18 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 12);
     }
 
+    if (version < 13)
+    {
+      MigrateV13(connection);
+      SetSchemaVersion(connection, 13);
+    }
+
+    if (version < 14)
+    {
+      MigrateV14(connection);
+      SetSchemaVersion(connection, 14);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -177,9 +189,12 @@ internal class GilStorageBootstrap
                 display_group TEXT NOT NULL
             )",
             @"CREATE TABLE IF NOT EXISTS last_sale_prices (
-                item_id INTEGER PRIMARY KEY,
+                item_id INTEGER NOT NULL,
+                is_hq INTEGER NOT NULL DEFAULT 0,
                 unit_price INTEGER NOT NULL,
-                timestamp INTEGER NOT NULL
+                timestamp INTEGER NOT NULL,
+                sold_after_days INTEGER,
+                PRIMARY KEY (item_id, is_hq)
             )",
             @"CREATE TABLE IF NOT EXISTS quotes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -815,6 +830,66 @@ internal class GilStorageBootstrap
       connection);
     var affected = cmd.ExecuteNonQuery();
     Svc.Log.Info($"[Scrooge] V11 migration: desynth timestamps ms -> s ({affected} values converted)");
+  }
+
+  /// <summary>
+  /// V13: Split last_sale_prices by quality. NQ and HQ sell at different
+  /// prices and rates (the listing gate judges them separately), so the key
+  /// becomes (item_id, is_hq). Also adds sold_after_days — how long the
+  /// listing sat before selling, captured forward from sale reconciliation
+  /// (null for historical rows). Backfill: per-quality latest sale from
+  /// transactions; rows only present in the old table (pruned transactions)
+  /// carry over as NQ rather than being dropped.
+  /// </summary>
+  private static void MigrateV13(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE last_sale_prices_v13 (
+          item_id         INTEGER NOT NULL,
+          is_hq           INTEGER NOT NULL DEFAULT 0,
+          unit_price      INTEGER NOT NULL,
+          timestamp       INTEGER NOT NULL,
+          sold_after_days INTEGER,
+          PRIMARY KEY (item_id, is_hq)
+        );
+        INSERT OR REPLACE INTO last_sale_prices_v13 (item_id, is_hq, unit_price, timestamp)
+          SELECT item_id, is_hq, unit_price, MAX(timestamp)
+          FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0
+          GROUP BY item_id, is_hq;
+        INSERT OR IGNORE INTO last_sale_prices_v13 (item_id, is_hq, unit_price, timestamp)
+          SELECT item_id, 0, unit_price, timestamp FROM last_sale_prices;
+        DROP TABLE last_sale_prices;
+        ALTER TABLE last_sale_prices_v13 RENAME TO last_sale_prices;",
+      connection);
+    cmd.ExecuteNonQuery();
+    Svc.Log.Info("[Scrooge] V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
+  }
+
+  /// <summary>
+  /// V14: Add routing_overrides table. Every time the player overrules a
+  /// routing verdict (checks a gated item in the Hawk window), the disagreement
+  /// is recorded — recurring overrides suggest config tweaks, and the history
+  /// is the context a future judgment hook would need. Day-one requirement of
+  /// the routing brain design.
+  /// </summary>
+  private static void MigrateV14(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE routing_overrides (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at     INTEGER NOT NULL,
+          item_id        INTEGER NOT NULL,
+          is_hq          INTEGER NOT NULL DEFAULT 0,
+          ilvl           INTEGER NOT NULL DEFAULT 0,
+          router_verdict TEXT NOT NULL,
+          router_reason  TEXT NOT NULL DEFAULT '',
+          player_verdict TEXT NOT NULL
+        );
+        CREATE INDEX ix_routing_overrides_item ON routing_overrides(item_id, is_hq);",
+      connection);
+    cmd.ExecuteNonQuery();
+    Svc.Log.Info("[Scrooge] V14 migration: created routing_overrides table");
   }
 
   // =========================================================================
