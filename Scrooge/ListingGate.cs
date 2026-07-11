@@ -1,24 +1,22 @@
-using System.Collections.Generic;
-
 namespace Scrooge;
 
 /// <summary>
 /// Routing brain Increment 0: the listing gate. Advises AGAINST listing
-/// equipment whose better exit is desynth or GC turn-in, judged on local
-/// evidence only (own sales, own yields, seal sheet). Items without evidence
-/// are marked Unknown, never gated — the gate only acts on what it knows.
-/// Verdicts advise; execution of the better exit stays manual until the
-/// era builds the executors.
+/// equipment whose better exit is desynth or GC turn-in. Since the era
+/// review, the gate is a thin mapping over RoutingRules.Evaluate — the gate
+/// tag in the Hawk window and the router's pile are the SAME verdict and can
+/// never disagree about an item. Pure functions (config arrives snapshotted
+/// on the batch); the only gate-specific behavior is the mapping below.
 /// </summary>
 internal static class ListingGate
 {
   internal enum Verdict
   {
-    /// <summary>Not routable (non-equipment) or gate disabled — no opinion.</summary>
+    /// <summary>Not routable (non-equipment, banned, always-vendor) — no opinion.</summary>
     None,
     /// <summary>Evidence says it clears the price x velocity floor — list it.</summary>
     Pass,
-    /// <summary>No local sale history — listing is a coin flip, not gated.</summary>
+    /// <summary>No confident call (never sold, or verdicts too close) — not gated.</summary>
     Unknown,
     /// <summary>Fails the floor with no better exit known — informational only.</summary>
     BelowFloor,
@@ -35,116 +33,68 @@ internal static class ListingGate
   }
 
   /// <summary>
-  /// Per-quality melt values from the desynth ledger, keyed by source item.
-  /// Build once per evaluation batch via BuildMeltValues.
-  /// </summary>
-  internal static Dictionary<(uint ItemId, bool IsHq), long> BuildMeltValues(List<DesynthSourceSummary> summaries)
-  {
-    var melts = new Dictionary<(uint, bool), long>();
-    foreach (var s in summaries)
-      if (s.Attempts > 0)
-        melts[(s.SourceItemId, s.SourceIsHq)] = s.YieldValue / s.Attempts;
-    return melts;
-  }
-
-  /// <summary>
   /// The equipment listing floor: price x velocity (BP4 Q2). Shared with the
   /// full rules engine so the gate and the pile verdicts can never disagree
   /// about what "worth listing" means. Unknown sit time gets the benefit of
   /// the doubt — evidence only.
   /// </summary>
   internal static bool ClearsEquipmentFloor(int salePrice, int? soldAfterDays,
-    double? marketVelocity = null)
-    => salePrice >= Plugin.Configuration.ListingFloorGil
-       && VelocityAxisClears(soldAfterDays, marketVelocity);
+    double? marketVelocity, RoutingConfig cfg)
+    => salePrice >= cfg.ListingFloorGil
+       && VelocityAxisClears(soldAfterDays, marketVelocity, cfg);
 
   /// <summary>
   /// Universalis's home-world velocity (units/day) at or above this rate
   /// means a unit moves within the configured velocity window.
   /// </summary>
-  internal static double MarketVelocityFloor()
-    => 1.0 / System.Math.Max(1, Plugin.Configuration.ListingVelocityDays);
+  internal static double MarketVelocityFloor(RoutingConfig cfg)
+    => 1.0 / System.Math.Max(1, cfg.ListingVelocityDays);
 
   /// <summary>
   /// The velocity axis: own sit time when captured; else the Universalis
   /// almanac fills the gap; still unknown = benefit of the doubt.
   /// </summary>
-  private static bool VelocityAxisClears(int? soldAfterDays, double? marketVelocity)
+  private static bool VelocityAxisClears(int? soldAfterDays, double? marketVelocity,
+    RoutingConfig cfg)
   {
     if (soldAfterDays is int days)
-      return days <= Plugin.Configuration.ListingVelocityDays;
+      return days <= cfg.ListingVelocityDays;
     if (marketVelocity is double velocity)
-      return velocity >= MarketVelocityFloor();
+      return velocity >= MarketVelocityFloor(cfg);
     return true;
   }
 
   /// <summary>
-  /// Evaluates one item's aggregated inputs (see RoutingInputService).
-  /// Rules only — every piece of evidence arrives pre-gathered.
+  /// Evaluates one item by asking the rules engine and mapping its exit to a
+  /// gate verdict. Two deliberate carve-outs: banned/always-vendor items get
+  /// no gate opinion (the Hawk window has its own handling for both), and a
+  /// never-sold item whose verdict is List maps to Unknown, not Pass — the
+  /// locked Universalis design says a healthy market never auto-Passes gear
+  /// the player has no price evidence for.
   /// </summary>
-  internal static Result Evaluate(RoutingItemInputs item)
+  internal static Result Evaluate(RoutingItemInputs item, RoutingBatch batch)
   {
     // Equipment only — the desynth/GC exits are gear exits. Non-gear
     // (mats, consumables) flows through ungated as today.
-    if (!item.IsEquipment)
+    if (!item.IsEquipment || item.IsBanned || item.IsAlwaysVendor)
       return new Result(Verdict.None, "");
 
-    if (item.LastSale is null)
-      return EvaluateNeverSold(item);
+    var verdict = RoutingRules.Evaluate(item, batch);
 
-    var (salePrice, _, soldAfterDays) = item.LastSale.Value;
+    if (verdict.IsReview)
+      return new Result(Verdict.Unknown, verdict.Reason);
 
-    var floor = Plugin.Configuration.ListingFloorGil;
-    var velocityDays = Plugin.Configuration.ListingVelocityDays;
-
-    var saleText = soldAfterDays is int d
-      ? $"sold at {salePrice:N0} after {d}d listed"
-      : $"sold at {salePrice:N0}";
-
-    if (ClearsEquipmentFloor(salePrice, soldAfterDays, item.MarketVelocity))
-      return new Result(Verdict.Pass, $"Lists: {saleText}.");
-
-    // Fails price or velocity — is there a better exit with evidence?
-    var failText = salePrice < floor
-      ? $"{saleText} — below the {floor:N0} floor"
-      : soldAfterDays is null && item.MarketVelocity is double mv
-        ? $"{saleText} — market moves ~{mv:0.##}/day here (Universalis), slower than 1 per {velocityDays}d"
-        : $"{saleText} — slower than {velocityDays}d";
-
-    if (item.MeltValuePerAttempt is long melt && melt > salePrice)
-      return new Result(Verdict.GateDesynth,
-        $"Melt: yields ~{melt:N0}/attempt vs sells ~{salePrice:N0}. ({failText}.)");
-
-    if (item.SealValue is int seals)
-      return new Result(Verdict.GateGc,
-        $"Churn: {seals:N0} seals. {failText}.");
-
-    return new Result(Verdict.BelowFloor, $"{failText}; no better exit known.");
-  }
-
-  /// <summary>
-  /// Never-sold equipment: Universalis widens coverage by answering the
-  /// velocity axis without own history. The price axis stays unknown, so a
-  /// healthy market never auto-Passes — but a dead market with a better exit
-  /// is an honest gate (the item won't sell here at any pace worth waiting).
-  /// </summary>
-  private static Result EvaluateNeverSold(RoutingItemInputs item)
-  {
-    if (item.MarketVelocity is not double velocity)
-      return new Result(Verdict.Unknown, "No sale history for this variant — no evidence to gate on.");
-
-    if (velocity >= MarketVelocityFloor())
-      return new Result(Verdict.Unknown,
-        $"Never sold one, but it moves here (~{velocity:0.##}/day, Universalis) — price it off the live MB.");
-
-    var deadText = $"~{velocity:0.##}/day on your world (Universalis) — slower than 1 per {Plugin.Configuration.ListingVelocityDays}d";
-
-    if (item.MeltValuePerAttempt is long melt && melt > item.VendorPrice)
-      return new Result(Verdict.GateDesynth, $"Melt: yields ~{melt:N0}/attempt. {deadText}.");
-
-    if (item.SealValue is int seals)
-      return new Result(Verdict.GateGc, $"Churn: {seals:N0} seals. {deadText}.");
-
-    return new Result(Verdict.BelowFloor, $"{deadText}; no better exit known.");
+    return verdict.Exit switch
+    {
+      RoutingExit.List => item.LastSale is null
+        ? new Result(Verdict.Unknown, verdict.Reason)
+        : new Result(Verdict.Pass, verdict.Reason),
+      RoutingExit.Desynth => new Result(Verdict.GateDesynth, verdict.Reason),
+      RoutingExit.Gc => new Result(Verdict.GateGc, verdict.Reason),
+      RoutingExit.Vendor => new Result(Verdict.BelowFloor, verdict.Reason),
+      // Ban/Hold are unreachable here (guarded above; the gate context
+      // passes no protections) — defensively: no opinion.
+      _ => new Result(Verdict.None, ""),
+    };
   }
 }

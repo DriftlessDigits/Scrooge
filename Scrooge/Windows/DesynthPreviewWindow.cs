@@ -53,6 +53,13 @@ internal sealed class DesynthPreviewWindow : Window
       }
     }
 
+    // Location-session parity with the GC counter's Churn button: the
+    // router's Melt pile meets its executor here, so remind about it here.
+    var meltCount = Plugin.RoutingWindow.MeltPileCount;
+    if (meltCount > 0)
+      ImGui.TextColored(ScroogeColors.Amber,
+        $"Router melt pile: {meltCount} {(meltCount == 1 ? "item" : "items")} routed here.");
+
     if (_items.Count == 0)
     {
       ImGui.TextWrapped("No items visible in the desynthesis selector.");

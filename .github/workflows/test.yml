@@ -1,0 +1,22 @@
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # The decision-core tests are pure (linked sources, no Dalamud refs) -
+      # they run anywhere. The plugin itself still builds via the release
+      # workflow only (it needs game libraries this runner does not have).
+      - name: Run routing decision-core tests
+        run: dotnet test Scrooge.Tests/Scrooge.Tests.csproj -c Release

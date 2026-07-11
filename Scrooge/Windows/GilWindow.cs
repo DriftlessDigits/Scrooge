@@ -210,6 +210,20 @@ internal sealed class GilWindow: Window
     else
       ImGui.TextDisabled("Pending: 0");
 
+    // The router is the advisor era's front door — give it one on the
+    // dashboard too (the DTR click lands here, not in the Hawk window).
+    if (Plugin.Configuration.EnableRoutingBrain)
+    {
+      ImGui.SameLine(0, 24);
+      if (ImGui.SmallButton("Router"))
+      {
+        Plugin.RoutingWindow.Refresh();
+        Plugin.RoutingWindow.IsOpen = true;
+      }
+      if (ImGui.IsItemHovered())
+        ImGui.SetTooltip("Route the gear in your bags (also: /scrooge route).");
+    }
+
     // Split row: player vs retainers, per-retainer balances on hover
     var retainerTotal = snap.RetainerGil.Values.Sum();
     ImGui.TextDisabled($"Player {Format.Gil(snap.PlayerGil)}   |   Retainers {Format.Gil(retainerTotal)}");

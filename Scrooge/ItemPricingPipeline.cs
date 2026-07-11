@@ -473,7 +473,7 @@ internal sealed class ItemPricingPipeline : IDisposable
         // sat listed with a live market; flag dead-market sitters to triage.
         // Runs before the cut/cap checks so guards see the final price.
         if (IsPinchRun && Plugin.Configuration.EnableRoutingBrain
-            && Plugin.Configuration.EnableSlowMoverPressure
+            && Plugin.Configuration.SlowMoverPressureOptIn
             && currentItem != null && currentItem.ItemId != 0)
           newPrice = SlowMoverPressure.Apply(currentItem, newPrice.Value);
 

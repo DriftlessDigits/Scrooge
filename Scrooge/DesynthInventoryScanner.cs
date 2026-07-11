@@ -91,7 +91,7 @@ internal static class DesynthInventoryScanner
       byte classJob = (byte)luminaItem.ClassJobRepair.RowId;
       string abbrev = ClassJobAbbrev.TryGetValue(classJob, out var a) ? a : "ALL";
 
-      int playerLevel = DesynthSkillup.GetDesynthLevel(classJob);
+      int playerLevel = GameSafe.GetDesynthLevel(classJob);
       int itemLevel = (int)luminaItem.LevelItem.RowId;
       var color = DesynthSkillup.Classify(playerLevel, itemLevel);
 

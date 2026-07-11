@@ -116,7 +116,11 @@ internal static class UniversalisStats
 
     Dictionary<uint, (UniversalisStat, long)> rows = [];
     try { rows = GilStorage.GetUniversalisStats(world); }
-    catch { /* storage unavailable — start with an empty cache */ }
+    catch (Exception ex)
+    {
+      // Storage unavailable — start with an empty cache (refetches fill it).
+      Svc.Log.Debug($"[Universalis] cache load failed for world {world}: {ex.Message}");
+    }
 
     lock (Lock)
     {
@@ -132,9 +136,15 @@ internal static class UniversalisStats
   /// <summary>Queues one item for fetch. Caller holds Lock.</summary>
   private static void Enqueue(uint itemId, long now)
   {
-    if (now < _backoffUntil || InFlight.Contains(itemId) || !Queue.Add(itemId))
+    if (now < _backoffUntil || InFlight.Contains(itemId))
       return;
 
+    Queue.Add(itemId);
+
+    // The respawn check runs even when the item was ALREADY queued: the
+    // worker may have decided to exit between that queue-add and now, and
+    // a re-requested item would otherwise sit stranded until a brand-new
+    // item id missed the cache (the era review's stranded-queue race).
     if (_worker is null or { IsCompleted: true })
       _worker = Task.Run(() => WorkAsync(_cts!.Token));
   }
@@ -176,7 +186,8 @@ internal static class UniversalisStats
       }
       catch (Exception ex)
       {
-        _backoffUntil = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + BackoffSeconds;
+        lock (Lock)
+          _backoffUntil = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + BackoffSeconds;
         Svc.Log.Debug($"[Universalis] fetch failed ({ids.Count} items), backing off {BackoffSeconds}s: {ex.Message}");
       }
 
@@ -199,6 +210,12 @@ internal static class UniversalisStats
   /// </summary>
   private static void Land(uint world, List<uint> requested, List<UniversalisStat> stats)
   {
+    // Disposed mid-flight (plugin unload): Dispose runs on the framework
+    // thread, so by the time this queued delegate runs, storage may already
+    // be torn down. Drop the batch instead of writing during teardown.
+    if (_cts is null)
+      return;
+
     var byId = stats.ToDictionary(s => s.ItemId);
     foreach (var id in requested)
       if (!byId.ContainsKey(id))

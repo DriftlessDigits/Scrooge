@@ -282,8 +282,14 @@ public sealed class Configuration : IPluginConfiguration
   // Slow-mover pressure - the routing brain pointed at already-listed
   // inventory. Rides the pinch run; gated by EnableRoutingBrain too.
 
-  /// <summary>Master toggle for slow-mover pressure (deepen cuts / evict flags).</summary>
-  public bool EnableSlowMoverPressure { get; set; } = true;
+  /// <summary>
+  /// Master toggle for slow-mover pressure (deepen cuts / evict flags).
+  /// Default OFF: this is the one advisor-era feature that changes real
+  /// listing prices, so it never activates silently with the routing brain -
+  /// it gets its own explicit opt-in. (Renamed from EnableSlowMoverPressure
+  /// at the era review precisely to drop the old default-on stored value.)
+  /// </summary>
+  public bool SlowMoverPressureOptIn { get; set; } = false;
 
   /// <summary>Days listed before pressure starts deepening the pinch cut.</summary>
   public int PressureAfterDays { get; set; } = 7;

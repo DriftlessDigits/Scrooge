@@ -879,6 +879,17 @@ internal class GilStorageBootstrap
     // user_version=12 with the v13 table present - the bare CREATE then
     // throws on every subsequent boot and storage is dead permanently.
     using var tx = connection.BeginTransaction();
+
+    // Rows only the old table knows (their transactions were pruned) carry
+    // over as NQ - their HQ split is unknowable. Count them for the log so a
+    // "why is my HQ history blind" question has an answer on record.
+    using var countCmd = new SqliteCommand(
+      @"SELECT COUNT(*) FROM last_sale_prices WHERE item_id NOT IN (
+          SELECT DISTINCT item_id FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0)",
+      connection, tx);
+    var carriedAsNq = Convert.ToInt32(countCmd.ExecuteScalar());
+
     using var cmd = new SqliteCommand(
       @"CREATE TABLE last_sale_prices_v13 (
           item_id         INTEGER NOT NULL,
@@ -901,6 +912,8 @@ internal class GilStorageBootstrap
     cmd.ExecuteNonQuery();
     tx.Commit();
     Svc.Log.Info("[Scrooge] V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
+    if (carriedAsNq > 0)
+      Svc.Log.Info($"[Scrooge] V13: {carriedAsNq} pruned-history rows carried over as NQ - their HQ price history starts fresh at the next HQ sale");
   }
 
   /// <summary>
