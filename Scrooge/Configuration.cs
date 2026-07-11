@@ -245,6 +245,40 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int ListingVelocityDays { get; set; } = 10;
 
+  /// <summary>
+  /// Non-gear listing floor in gil (simple, no velocity axis). Rules-engine
+  /// input; gear uses ListingFloorGil x ListingVelocityDays instead.
+  /// </summary>
+  public int ListingWorthGil { get; set; } = 5000;
+
+  /// <summary>
+  /// Placeholder seals-to-gil conversion rate for scoring the GC exit.
+  /// Replaced by the empirical gil-per-venture number once venture-return
+  /// tracking ships — until then this is an honest rough cut.
+  /// </summary>
+  public int SealToGilRate { get; set; } = 25;
+
+  /// <summary>
+  /// Ambiguity band, percent. When the winning exit's gil score and the
+  /// runner-up land within this band, the item goes to Review with both
+  /// reasons instead of a confident guess.
+  /// </summary>
+  public int RoutingReviewBandPct { get; set; } = 15;
+
+  // Venture tilt bands (BP4 Q5) — configurable defaults, not product rules.
+  // Above Full: GC competes on pure value. Below Full: borderline calls tilt
+  // to churn. Below Low: churn unless the item is worth
+  // ListingFloorGil x VenturePanicValueMultiplier. Below Panic: churn
+  // everything GC-eligible until stock recovers.
+
+  public int VentureBandFull { get; set; } = 1250;
+
+  public int VentureBandLow { get; set; } = 750;
+
+  public int VentureBandPanic { get; set; } = 500;
+
+  public float VenturePanicValueMultiplier { get; set; } = 3.0f;
+
   // --- Gil Goals ---
   // Three independent buckets; 0 = that goal is off. Set from the dashboard's
   // Goals tab. Crossings celebrate once per target value — changing a target

@@ -48,6 +48,16 @@ internal static class ListingGate
   }
 
   /// <summary>
+  /// The equipment listing floor: price x velocity (BP4 Q2). Shared with the
+  /// full rules engine so the gate and the pile verdicts can never disagree
+  /// about what "worth listing" means. Unknown sit time gets the benefit of
+  /// the doubt — evidence only.
+  /// </summary>
+  internal static bool ClearsEquipmentFloor(int salePrice, int? soldAfterDays)
+    => salePrice >= Plugin.Configuration.ListingFloorGil
+       && (soldAfterDays is not int days || days <= Plugin.Configuration.ListingVelocityDays);
+
+  /// <summary>
   /// Evaluates one item's aggregated inputs (see RoutingInputService).
   /// Rules only — every piece of evidence arrives pre-gathered.
   /// </summary>
@@ -65,19 +75,16 @@ internal static class ListingGate
 
     var floor = Plugin.Configuration.ListingFloorGil;
     var velocityDays = Plugin.Configuration.ListingVelocityDays;
-    var floorOk = salePrice >= floor;
-    // Unknown sit time gets the benefit of the doubt — evidence only.
-    var velocityOk = soldAfterDays is not int days || days <= velocityDays;
 
     var saleText = soldAfterDays is int d
       ? $"sold at {salePrice:N0} after {d}d listed"
       : $"sold at {salePrice:N0}";
 
-    if (floorOk && velocityOk)
+    if (ClearsEquipmentFloor(salePrice, soldAfterDays))
       return new Result(Verdict.Pass, $"Lists: {saleText}.");
 
     // Fails price or velocity — is there a better exit with evidence?
-    var failText = !floorOk
+    var failText = salePrice < floor
       ? $"{saleText} — below the {floor:N0} floor"
       : $"{saleText} — slower than {velocityDays}d";
 

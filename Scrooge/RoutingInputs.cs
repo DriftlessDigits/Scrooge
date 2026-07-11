@@ -18,6 +18,25 @@ internal sealed class RoutingBatch
 }
 
 /// <summary>
+/// Protection flags read off the inventory slot + gearset module at scan time.
+/// Any set flag routes the item to Hold — never auto-routed.
+/// </summary>
+internal readonly record struct ItemProtections(bool InGearset, bool Spiritbond100, bool HasMateria)
+{
+  public bool Any => InGearset || Spiritbond100 || HasMateria;
+
+  public string Describe()
+  {
+    if (!Any) return "";
+    var parts = new List<string>(3);
+    if (InGearset) parts.Add("in a gearset");
+    if (Spiritbond100) parts.Add("spiritbond 100%");
+    if (HasMateria) parts.Add("has materia");
+    return string.Join(", ", parts);
+  }
+}
+
+/// <summary>
 /// Everything the routing rules need to know about one item variant.
 /// Inputs only — no verdicts here. All evidence is local and free
 /// (own sales, own yields, game sheets, player flags).
@@ -47,6 +66,11 @@ internal sealed record RoutingItemInputs
   // Player flags
   public bool IsBanned { get; init; }
   public bool IsAlwaysVendor { get; init; }
+
+  // Protections (gearset / spiritbond / materia) — Hold pile material.
+  // Slot-level facts the caller reads at scan time; default = unprotected.
+  public bool IsProtected { get; init; }
+  public string ProtectionReason { get; init; } = "";
 }
 
 /// <summary>
@@ -84,9 +108,12 @@ internal static class RoutingInputService
 
   /// <summary>
   /// Assembles the inputs for one item variant. Returns null when the item
-  /// has no sheet row (event items, tokens) — nothing to route.
+  /// has no sheet row (event items, tokens) — nothing to route. Protections
+  /// are slot-level facts only the caller's scan can see; omit for contexts
+  /// (like the Hawk listing gate) that don't route protected items anyway.
   /// </summary>
-  internal static RoutingItemInputs? Collect(RoutingBatch batch, uint itemId, bool isHq)
+  internal static RoutingItemInputs? Collect(RoutingBatch batch, uint itemId, bool isHq,
+    ItemProtections protections = default)
   {
     if (!Svc.Data.GetExcelSheet<Item>().TryGetRow(itemId, out var item))
       return null;
@@ -118,6 +145,8 @@ internal static class RoutingInputService
       DesynthSkillupEligible = color is { } c && DesynthSkillup.IsSkillupEligible(c),
       IsBanned = Plugin.Configuration.BannedItemIds.Contains(fullId),
       IsAlwaysVendor = Plugin.Configuration.AlwaysVendorItemIds.Contains(fullId),
+      IsProtected = protections.Any,
+      ProtectionReason = protections.Describe(),
     };
   }
 }
