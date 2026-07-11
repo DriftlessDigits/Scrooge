@@ -103,7 +103,7 @@ internal static class SlowMoverPressure
       _evictBatch ??= RoutingInputService.BeginBatch();
       if (RoutingInputService.Collect(_evictBatch, item.ItemId, item.IsHq) is { } inputs)
       {
-        var verdict = RoutingRules.Evaluate(inputs, _evictBatch.VentureStock);
+        var verdict = RoutingRules.Evaluate(inputs, _evictBatch.VentureStock, _evictBatch.SealToGilRate);
         exitText = verdict.IsReview
           ? $"Review - {verdict.Reason}"
           : $"{verdict.Exit} - {verdict.Reason}";

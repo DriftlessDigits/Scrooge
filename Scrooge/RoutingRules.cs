@@ -54,7 +54,8 @@ internal static class RoutingRules
   /// </summary>
   private const double MeltOverVendorFactor = 1.5;
 
-  internal static RoutingVerdict Evaluate(RoutingItemInputs item, int? ventureStock)
+  internal static RoutingVerdict Evaluate(RoutingItemInputs item, int? ventureStock,
+    int? sealToGilRate = null)
   {
     // --- Flag rules: the player already decided these ---
 
@@ -83,9 +84,10 @@ internal static class RoutingRules
 
     // --- Value rules: gil-equivalent scores from local evidence ---
 
-    var gcScore = item.SealValue is int seals ? (long)seals * cfg.SealToGilRate : (long?)null;
+    var sealRate = sealToGilRate ?? cfg.SealToGilRate;
+    var gcScore = item.SealValue is int seals ? (long)seals * sealRate : (long?)null;
     var gcReason = item.SealValue is int gs
-      ? $"Churn: {gs:N0} seals (~{gcScore:N0} gil at {cfg.SealToGilRate} gil/seal)."
+      ? $"Churn: {gs:N0} seals (~{gcScore:N0} gil at {sealRate} gil/seal)."
       : "";
 
     var meltScore = item.MeltValuePerAttempt;
