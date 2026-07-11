@@ -633,6 +633,95 @@ public sealed class ConfigWindow : Window
                          "older sales have no sit time and get the benefit of the doubt).");
         ImGui.EndTooltip();
       }
+
+      ImGui.Spacing();
+      if (ImGui.TreeNode("Rules engine"))
+      {
+        ImGui.BeginGroup();
+        ImGui.Text("Seals-to-gil rate:");
+        ImGui.SameLine();
+        var sealRate = Plugin.Configuration.SealToGilRate;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.InputInt("##sealToGilRate", ref sealRate, 5, 25) && sealRate >= 0)
+        {
+          Plugin.Configuration.SealToGilRate = sealRate;
+          Plugin.Configuration.Save();
+        }
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Rough gil value per GC seal, used to score the churn exit against\n" +
+                           "gil exits. Placeholder until venture-return tracking measures the\n" +
+                           "real gil-per-venture number.");
+          ImGui.EndTooltip();
+        }
+
+        ImGui.BeginGroup();
+        ImGui.Text("Review band (%):");
+        ImGui.SameLine();
+        var reviewBand = Plugin.Configuration.RoutingReviewBandPct;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.SliderInt("##routingReviewBand", ref reviewBand, 0, 50, "%d%%"))
+        {
+          Plugin.Configuration.RoutingReviewBandPct = reviewBand;
+          Plugin.Configuration.Save();
+        }
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("When two exits score within this band, the item goes to the Review\n" +
+                           "pile with both reasons shown instead of a confident guess.");
+          ImGui.EndTooltip();
+        }
+
+        ImGui.BeginGroup();
+        ImGui.Text("Venture bands:");
+        ImGui.SameLine();
+        var bandFull = Plugin.Configuration.VentureBandFull;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandFull", ref bandFull, 0, 0) && bandFull >= 0)
+        {
+          Plugin.Configuration.VentureBandFull = bandFull;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        var bandLow = Plugin.Configuration.VentureBandLow;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandLow", ref bandLow, 0, 0) && bandLow >= 0)
+        {
+          Plugin.Configuration.VentureBandLow = bandLow;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        var bandPanic = Plugin.Configuration.VentureBandPanic;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandPanic", ref bandPanic, 0, 0) && bandPanic >= 0)
+        {
+          Plugin.Configuration.VentureBandPanic = bandPanic;
+          Plugin.Configuration.Save();
+        }
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Venture token stock thresholds, high to low.\n" +
+                           "Above the first: GC competes on pure value.\n" +
+                           "Below the first: borderline calls tilt to churn.\n" +
+                           "Below the second: churn unless the item is worth the floor x multiplier.\n" +
+                           "Below the third: churn everything GC-eligible until stock recovers.");
+          ImGui.EndTooltip();
+        }
+
+        ImGui.TreePop();
+      }
     }
   }
 
