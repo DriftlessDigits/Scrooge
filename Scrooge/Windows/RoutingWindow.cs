@@ -149,7 +149,7 @@ internal sealed class RoutingWindow : Window
   {
     if (!Plugin.Configuration.EnableRoutingBrain)
     {
-      ImGui.TextWrapped("The routing brain is off. Enable it in the Outlier tab of the config (Routing section).");
+      ImGui.TextWrapped("The routing brain is off. Enable it in the config: Pricing tab, \"Routing (advisor preview)\" section at the bottom.");
       return;
     }
 
