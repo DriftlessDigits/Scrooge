@@ -32,7 +32,7 @@ internal sealed class DesynthYieldStore
         VALUES (@started, @mode, @total);
         SELECT last_insert_rowid();",
       _connection);
-    cmd.Parameters.AddWithValue("@started", startedAt.ToUnixTimeMilliseconds());
+    cmd.Parameters.AddWithValue("@started", startedAt.ToUnixTimeSeconds());
     cmd.Parameters.AddWithValue("@mode", mode);
     cmd.Parameters.AddWithValue("@total", totalItems);
     return (long)(cmd.ExecuteScalar() ?? 0L);
@@ -46,7 +46,7 @@ internal sealed class DesynthYieldStore
         SET ended_at = @ended
         WHERE id = @id;",
       _connection);
-    cmd.Parameters.AddWithValue("@ended", endedAt.ToUnixTimeMilliseconds());
+    cmd.Parameters.AddWithValue("@ended", endedAt.ToUnixTimeSeconds());
     cmd.Parameters.AddWithValue("@id", runId);
     cmd.ExecuteNonQuery();
   }
@@ -59,7 +59,7 @@ internal sealed class DesynthYieldStore
         SET ended_at = @ended, aborted_reason = @reason
         WHERE id = @id;",
       _connection);
-    cmd.Parameters.AddWithValue("@ended", endedAt.ToUnixTimeMilliseconds());
+    cmd.Parameters.AddWithValue("@ended", endedAt.ToUnixTimeSeconds());
     cmd.Parameters.AddWithValue("@reason", reason);
     cmd.Parameters.AddWithValue("@id", runId);
     cmd.ExecuteNonQuery();
@@ -83,7 +83,7 @@ internal sealed class DesynthYieldStore
     cmd.Parameters.AddWithValue("@yield", yield.YieldItemId);
     cmd.Parameters.AddWithValue("@qty", yield.YieldQty);
     cmd.Parameters.AddWithValue("@yieldhq", yield.YieldIsHq ? 1 : 0);
-    cmd.Parameters.AddWithValue("@captured", yield.CapturedAt.ToUnixTimeMilliseconds());
+    cmd.Parameters.AddWithValue("@captured", yield.CapturedAt.ToUnixTimeSeconds());
     cmd.ExecuteNonQuery();
   }
 
@@ -120,8 +120,8 @@ internal sealed class DesynthYieldStore
         YieldItemId = (uint)reader.GetInt64(5),
         YieldQty = reader.GetInt32(6),
         YieldIsHq = reader.GetInt32(7) != 0,
-        CapturedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)),
-        RunStartedAt = DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(9)),
+        CapturedAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(8)),
+        RunStartedAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(9)),
       });
     }
     return results;

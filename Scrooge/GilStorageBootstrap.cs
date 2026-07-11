@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 10;
+  private const int CurrentSchemaVersion = 11;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -84,6 +84,12 @@ internal class GilStorageBootstrap
     {
       MigrateV10(connection);
       SetSchemaVersion(connection, 10);
+    }
+
+    if (version < 11)
+    {
+      MigrateV11(connection);
+      SetSchemaVersion(connection, 11);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -755,6 +761,25 @@ internal class GilStorageBootstrap
       connection);
     cmd.ExecuteNonQuery();
     Svc.Log.Info("[Scrooge] V10 migration: created desynth_yields table");
+  }
+
+  /// <summary>
+  /// V11: Convert desynth timestamps from Unix milliseconds to Unix seconds
+  /// so the whole ledger shares one convention (cross-table joins with
+  /// transactions/gil_snapshots). Not a bug fix — the store was internally
+  /// consistent in ms — pure convention cleanup. Diffable: same rows, any
+  /// value that looks like ms (> 1e11) is divided by 1000; second-based
+  /// values pass through untouched, so re-running is a no-op.
+  /// </summary>
+  private static void MigrateV11(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE desynth_runs   SET started_at  = started_at  / 1000 WHERE started_at  > 100000000000;
+        UPDATE desynth_runs   SET ended_at    = ended_at    / 1000 WHERE ended_at    > 100000000000;
+        UPDATE desynth_yields SET captured_at = captured_at / 1000 WHERE captured_at > 100000000000;",
+      connection);
+    var affected = cmd.ExecuteNonQuery();
+    Svc.Log.Info($"[Scrooge] V11 migration: desynth timestamps ms -> s ({affected} values converted)");
   }
 
   // =========================================================================
