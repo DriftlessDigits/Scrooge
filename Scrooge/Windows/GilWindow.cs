@@ -42,6 +42,7 @@ internal sealed class GilWindow: Window
   private GilSnapshot? _cachedSnapshot;
   private int _cachedPendingCount;
   private long? _cachedTodayDelta;
+  private DateTime _todayDeltaLastRefresh = DateTime.MinValue;
   private DateTime _lastRefresh = DateTime.MinValue;
   private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
 
@@ -91,8 +92,14 @@ internal sealed class GilWindow: Window
     {
       _cachedSnapshot = GilStorage.GetLatestSnapshot();
       _cachedPendingCount = GilStorage.GetPendingSaleCount();
-      _cachedTodayDelta = ComputeTodayDelta();
       _lastRefresh = DateTime.UtcNow;
+    }
+
+    // Today-delta walks the full snapshot history — refresh on its own slower cadence.
+    if (DateTime.UtcNow - _todayDeltaLastRefresh > TimeSpan.FromSeconds(30))
+    {
+      _cachedTodayDelta = ComputeTodayDelta();
+      _todayDeltaLastRefresh = DateTime.UtcNow;
     }
 
     DrawMoneyLine();
