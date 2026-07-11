@@ -70,6 +70,36 @@ internal static unsafe class GameSafe
   }
 
   /// <summary>
+  /// Venture token item id. VERIFY in-game (flagged in the venture-returns
+  /// design doc) — believed 21072; a wrong id reads as 0 stock, which the
+  /// rules engine must treat as "unknown", never "panic mode".
+  /// </summary>
+  private const uint VentureTokenItemId = 21072;
+
+  /// <summary>
+  /// Venture token count from the currency container, or null when the
+  /// inventory is unavailable. 0 is ambiguous until the item id is verified
+  /// in-game — callers should prefer "no tilt" over "hard override" on 0.
+  /// </summary>
+  internal static int? VentureTokenCount()
+  {
+    var im = InventoryManager.Instance();
+    if (im == null) return null;
+
+    var currency = im->GetInventoryContainer(InventoryType.Currency);
+    if (currency == null) return null;
+
+    var count = 0;
+    for (int i = 0; i < currency->Size; i++)
+    {
+      var slot = currency->GetInventorySlot(i);
+      if (slot != null && slot->ItemId == VentureTokenItemId)
+        count += (int)slot->Quantity;
+    }
+    return count;
+  }
+
+  /// <summary>
   /// Row count of the RetainerSellList's list component, or null when the addon
   /// isn't open/ready or the node walk (NodeList[10] → list component) fails.
   /// </summary>

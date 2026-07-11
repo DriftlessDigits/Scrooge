@@ -1,5 +1,3 @@
-using ECommons.DalamudServices;
-using Lumina.Excel.Sheets;
 using System.Collections.Generic;
 
 namespace Scrooge;
@@ -50,26 +48,20 @@ internal static class ListingGate
   }
 
   /// <summary>
-  /// Evaluates one inventory item. lastSale is this variant's own-sales
-  /// evidence (null = never sold); meltValue is yield gil per desynth attempt
-  /// from the player's own ledger (null = never melted one).
+  /// Evaluates one item's aggregated inputs (see RoutingInputService).
+  /// Rules only — every piece of evidence arrives pre-gathered.
   /// </summary>
-  internal static Result Evaluate(uint itemId, bool isHq,
-      (int Price, long Timestamp, int? SoldAfterDays)? lastSale,
-      long? meltValue)
+  internal static Result Evaluate(RoutingItemInputs item)
   {
-    if (!Svc.Data.GetExcelSheet<Item>().TryGetRow(itemId, out var item))
-      return new Result(Verdict.None, "");
-
     // Equipment only — the desynth/GC exits are gear exits. Non-gear
     // (mats, consumables) flows through ungated as today.
-    if (item.EquipSlotCategory.RowId == 0)
+    if (!item.IsEquipment)
       return new Result(Verdict.None, "");
 
-    if (lastSale is null)
+    if (item.LastSale is null)
       return new Result(Verdict.Unknown, "No sale history for this variant — no evidence to gate on.");
 
-    var (salePrice, _, soldAfterDays) = lastSale.Value;
+    var (salePrice, _, soldAfterDays) = item.LastSale.Value;
 
     var floor = Plugin.Configuration.ListingFloorGil;
     var velocityDays = Plugin.Configuration.ListingVelocityDays;
@@ -89,11 +81,11 @@ internal static class ListingGate
       ? $"{saleText} — below the {floor:N0} floor"
       : $"{saleText} — slower than {velocityDays}d";
 
-    if (meltValue is long melt && melt > salePrice)
+    if (item.MeltValuePerAttempt is long melt && melt > salePrice)
       return new Result(Verdict.GateDesynth,
         $"Melt: yields ~{melt:N0}/attempt vs sells ~{salePrice:N0}. ({failText}.)");
 
-    if (GcSeals.For(itemId) is int seals)
+    if (item.SealValue is int seals)
       return new Result(Verdict.GateGc,
         $"Churn: {seals:N0} seals. {failText}.");
 

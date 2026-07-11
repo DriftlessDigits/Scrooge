@@ -103,15 +103,10 @@ internal sealed class HawkWindow : Window
         ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (Plugin.Configuration.StalePriceDays * 24L * 3600)
         : 0L;
 
-    // Listing gate inputs (routing brain Increment 0) — melt values come
-    // from the player's own desynth ledger, loaded once per refresh.
+    // Listing gate (routing brain Increment 0) — evidence assembled once
+    // per refresh by the routing input service.
     var gateOn = Plugin.Configuration.EnableRoutingBrain;
-    var meltValues = new Dictionary<(uint, bool), long>();
-    if (gateOn && Plugin.DesynthYieldStore is { } yieldStore)
-    {
-      try { meltValues = ListingGate.BuildMeltValues(yieldStore.ReadSourceSummary(0)); }
-      catch { /* storage unavailable — gate runs without melt evidence */ }
-    }
+    var batch = gateOn ? RoutingInputService.BeginBatch() : null;
 
     unsafe
     {
@@ -166,10 +161,9 @@ internal sealed class HawkWindow : Window
             SlotIndex = i,
             LastSalePrice = hasLastSale ? lastSale.Price : 0,
             LastSaleStale = hasLastSale && staleCutoff > 0 && lastSale.Timestamp < staleCutoff,
-            Gate = gateOn
-              ? ListingGate.Evaluate(itemId, isHq,
-                  hasLastSale ? lastSale : null,
-                  meltValues.TryGetValue((itemId, isHq), out var melt) ? melt : null)
+            Gate = batch != null
+                && RoutingInputService.Collect(batch, itemId, isHq) is { } inputs
+              ? ListingGate.Evaluate(inputs)
               : new ListingGate.Result(ListingGate.Verdict.None, ""),
           });
         }
