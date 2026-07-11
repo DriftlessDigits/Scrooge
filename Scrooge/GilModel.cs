@@ -90,6 +90,27 @@ public record MarketSnapshot
 }
 
 /// <summary>
+/// A persistent triage flag (triage_flags table) - an item Scrooge held or
+/// warned about, kept open across sessions until acted on or dismissed.
+/// </summary>
+public record TriageFlag
+{
+  public long Id { get; init; }
+  public long CreatedAt { get; init; }               // Unix seconds
+  public uint ItemId { get; init; }
+  public bool IsHq { get; init; }
+  public string RetainerName { get; init; } = string.Empty;
+  public int SlotIndex { get; init; } = -1;
+  /// <summary>Machine kind: upward_held | outlier_warn | cap_blocked | ...</summary>
+  public string Reason { get; init; } = string.Empty;
+  /// <summary>Human string shown in the triage row.</summary>
+  public string Detail { get; init; } = string.Empty;
+  public int OldPrice { get; init; }
+  public int FlaggedPrice { get; init; }
+  public string Status { get; init; } = "open";      // open | dismissed | actioned
+}
+
+/// <summary>
 /// An achieved gil goal, kept in config for the dashboard's goal history.
 /// </summary>
 [Serializable]

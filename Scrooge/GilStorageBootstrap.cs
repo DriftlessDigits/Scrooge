@@ -15,7 +15,7 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 11;
+  private const int CurrentSchemaVersion = 12;
 
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
@@ -90,6 +90,12 @@ internal class GilStorageBootstrap
     {
       MigrateV11(connection);
       SetSchemaVersion(connection, 11);
+    }
+
+    if (version < 12)
+    {
+      MigrateV12(connection);
+      SetSchemaVersion(connection, 12);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -761,6 +767,35 @@ internal class GilStorageBootstrap
       connection);
     cmd.ExecuteNonQuery();
     Svc.Log.Info("[Scrooge] V10 migration: created desynth_yields table");
+  }
+
+  /// <summary>
+  /// V12: Add triage_flags table. Persistent triage - outlier warnings,
+  /// upward-reprice holds, and cap blocks survive restarts and stay open
+  /// until acted on (repriced/pulled) or dismissed. One open flag per
+  /// (item, hq, retainer, reason); re-flagging refreshes the row.
+  /// </summary>
+  private static void MigrateV12(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE triage_flags (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at    INTEGER NOT NULL,
+          item_id       INTEGER NOT NULL,
+          is_hq         INTEGER NOT NULL DEFAULT 0,
+          retainer_name TEXT NOT NULL DEFAULT '',
+          slot_index    INTEGER NOT NULL DEFAULT -1,
+          reason        TEXT NOT NULL,
+          detail        TEXT NOT NULL DEFAULT '',
+          old_price     INTEGER NOT NULL DEFAULT 0,
+          flagged_price INTEGER NOT NULL DEFAULT 0,
+          status        TEXT NOT NULL DEFAULT 'open',
+          acted_at      INTEGER
+        );
+        CREATE INDEX ix_triage_flags_status ON triage_flags(status, created_at DESC);",
+      connection);
+    cmd.ExecuteNonQuery();
+    Svc.Log.Info("[Scrooge] V12 migration: created triage_flags table");
   }
 
   /// <summary>
