@@ -87,7 +87,7 @@ internal sealed class DesynthOrchestrator : IDisposable
       {
         try
         {
-          Plugin.DesynthYieldStore.AbortRun(runId, DateTimeOffset.UtcNow,
+          Plugin.DesynthYieldStore?.AbortRun(runId, DateTimeOffset.UtcNow,
             "user-initiated abort or addon closed mid-run");
         }
         catch (Exception ex)
@@ -132,8 +132,8 @@ internal sealed class DesynthOrchestrator : IDisposable
 
     try
     {
-      var runId = Plugin.DesynthYieldStore.StartRun(modeLabel, items.Count, DateTimeOffset.UtcNow);
-      Plugin.CurrentRun.DesynthRunId = runId;
+      Plugin.CurrentRun.DesynthRunId =
+        Plugin.DesynthYieldStore?.StartRun(modeLabel, items.Count, DateTimeOffset.UtcNow);
     }
     catch (Exception ex)
     {
@@ -262,17 +262,16 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// iterate a stack one act at a time without re-firing FireSelectorCallback.
   /// </summary>
   /// <remarks>
-  /// Callback index TBD at smoke. Most likely Int=0 (primary action), with
-  /// Close being a different value. If 0 closes instead of retrying, try 1.
+  /// Int=0 verified in live use (2026-07-11): 50-84 item runs complete
+  /// hands-off, stacks iterate (consecutive same-source attempt_seq rows).
   /// </remarks>
   private static unsafe void FireRetryCallback()
   {
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageResult", out var addon)
         || !GenericHelpers.IsAddonReady(addon)) return;
 
-    // PLACEHOLDER — verify callback index at smoke.
     var values = stackalloc AtkValue[1];
-    values[0] = new AtkValue { Type = AtkValueType.Int, Int = 0 }; // try 0, then 1
+    values[0] = new AtkValue { Type = AtkValueType.Int, Int = 0 };
     addon->FireCallback(1, values, true);
   }
 
@@ -465,7 +464,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     {
       try
       {
-        Plugin.DesynthYieldStore.EndRun(runId, DateTimeOffset.UtcNow);
+        Plugin.DesynthYieldStore?.EndRun(runId, DateTimeOffset.UtcNow);
       }
       catch (Exception ex)
       {

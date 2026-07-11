@@ -45,7 +45,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
-  internal static DesynthYieldStore DesynthYieldStore { get; private set; } = null!;
+  /// <summary>Null when GilStorage failed to initialize — yield persistence disabled.</summary>
+  internal static DesynthYieldStore? DesynthYieldStore { get; private set; }
 
   internal static DesynthYieldTracker DesynthYieldTracker { get; private set; } = null!;
 

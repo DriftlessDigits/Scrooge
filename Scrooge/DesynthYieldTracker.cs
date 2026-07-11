@@ -79,8 +79,8 @@ internal sealed class DesynthYieldTracker : IDisposable
 
     try
     {
-      Plugin.DesynthYieldStore.InsertYield(yield);
-      Plugin.DesynthYieldStore.PublishYieldCaptured(yield);
+      Plugin.DesynthYieldStore?.InsertYield(yield);
+      Plugin.DesynthYieldStore?.PublishYieldCaptured(yield);
       Svc.Log.Debug($"[YieldTracker] captured: type={typeId} src={currentItem.ItemId} yield={itemPayload.ItemId}x{quantity} seq={yield.AttemptSeq}");
     }
     catch (Exception ex)

@@ -17,7 +17,9 @@ internal static class GilStorage
   internal static string DbPath => Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "scrooge.db");
 
   /// <summary>The shared SQLite connection. Borrowers must not Dispose it.</summary>
-  internal static SqliteConnection Connection => _connection!;
+  internal static SqliteConnection Connection =>
+    _connection ?? throw new InvalidOperationException(
+      "GilStorage is not initialized — Initialize() failed or Dispose() already ran");
 
   // =========================================================================
   // Lifecycle
@@ -49,8 +51,18 @@ internal static class GilStorage
   /// <summary>Drops all tables, restores JSON backup if available, and re-runs bootstrap. Debug only.</summary>
   internal static void ResetDatabase()
   {
-    var tables = new[] { "transactions", "retainer_snapshots", "gil_snapshots",
-        "market_snapshots", "listings", "category_groups", "quotes" };
+    // Derive the drop list from the live schema — a hardcoded list goes stale
+    // every migration, leaving orphan tables at user_version 0 that make the
+    // re-run migrations throw.
+    var tables = new List<string>();
+    using (var listCmd = new SqliteCommand(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'", _connection))
+    using (var reader = listCmd.ExecuteReader())
+    {
+      while (reader.Read())
+        tables.Add(reader.GetString(0));
+    }
+
     foreach (var table in tables)
     {
       using var cmd = new SqliteCommand($"DROP TABLE IF EXISTS {table}", _connection);
