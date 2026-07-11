@@ -209,11 +209,8 @@ namespace Scrooge.Windows
           if (item.MbPrice.HasValue)
           {
             var vsMb = (item.VendorPrice - item.MbPrice.Value) * item.Quantity;
-            var vsMbColor = vsMb >= 0
-              ? new Vector4(0.4f, 0.9f, 0.4f, 1f)
-              : new Vector4(1f, 0.4f, 0.4f, 1f);
-            ImGui.PushStyleColor(ImGuiCol.Text, vsMbColor);
-            ImGui.Text($"{vsMb:+#;-#;0}");
+            ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.ForDelta(vsMb));
+            ImGui.Text(Format.SignedGil(vsMb));
             ImGui.PopStyleColor();
           }
           else

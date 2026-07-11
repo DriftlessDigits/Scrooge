@@ -182,19 +182,14 @@ internal sealed class DesynthPreviewWindow : Window
     IsOpen = false;
   }
 
-  private static readonly System.Numerics.Vector4 RedTag    = new(0.95f, 0.35f, 0.35f, 1f);
-  private static readonly System.Numerics.Vector4 YellowTag = new(0.95f, 0.85f, 0.30f, 1f);
-  private static readonly System.Numerics.Vector4 GreenTag  = new(0.45f, 0.85f, 0.45f, 1f);
-  private static readonly System.Numerics.Vector4 FlagTag   = new(0.85f, 0.65f, 0.30f, 1f);
-
   private static void DrawColorTag(DesynthSkillupColor color)
   {
     var (text, tint) = color switch
     {
-      DesynthSkillupColor.Red    => ("Red",    RedTag),
-      DesynthSkillupColor.Yellow => ("Yellow", YellowTag),
-      DesynthSkillupColor.Green  => ("Green",  GreenTag),
-      _                          => ("?",      GreenTag),
+      DesynthSkillupColor.Red    => ("Red",    ScroogeColors.TagRed),
+      DesynthSkillupColor.Yellow => ("Yellow", ScroogeColors.TagYellow),
+      DesynthSkillupColor.Green  => ("Green",  ScroogeColors.TagGreen),
+      _                          => ("?",      ScroogeColors.TagGreen),
     };
     ImGui.PushStyleColor(ImGuiCol.Text, tint);
     ImGui.Text(text);
@@ -203,7 +198,7 @@ internal sealed class DesynthPreviewWindow : Window
 
   private static void DrawFlagIcons(DesynthItem item)
   {
-    ImGui.PushStyleColor(ImGuiCol.Text, FlagTag);
+    ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.TagFlag);
     if (item.IsInGearset)
     {
       ImGui.Text("GS");

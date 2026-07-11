@@ -250,7 +250,7 @@ internal sealed class HawkWindow : Window
         ImGui.TableNextColumn();
         if (item.IsAlwaysVendor)
           ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 1f));
-        ImGui.Text(item.IsHq ? $"{item.Name} \uE03C" : item.Name);
+        ImGui.Text(Format.Hq(item.Name, item.IsHq));
         if (item.IsAlwaysVendor)
           ImGui.PopStyleColor();
 

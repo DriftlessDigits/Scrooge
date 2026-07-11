@@ -267,7 +267,7 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   {
     var addon = (AddonRetainerSell*)args.Addon.Address;
     if (addon == null || addon->ItemName == null) return;
-    _itemHq = addon->ItemName->NodeText.ToString().Contains('\uE03C');
+    _itemHq = addon->ItemName->NodeText.ToString().Contains(Windows.Format.HqChar);
   }
 
   /// <summary>
