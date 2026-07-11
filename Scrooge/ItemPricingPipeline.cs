@@ -58,6 +58,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   internal void ClearState()
   {
     _hotKeyPrice = null;
+    SlowMoverPressure.ResetRun();
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>
@@ -468,6 +469,14 @@ internal sealed class ItemPricingPipeline : IDisposable
       }
       else
       {
+        // Slow-mover pressure (routing brain): deepen the cut for items that
+        // sat listed with a live market; flag dead-market sitters to triage.
+        // Runs before the cut/cap checks so guards see the final price.
+        if (IsPinchRun && Plugin.Configuration.EnableRoutingBrain
+            && Plugin.Configuration.EnableSlowMoverPressure
+            && currentItem != null && currentItem.ItemId != 0)
+          newPrice = SlowMoverPressure.Apply(currentItem, newPrice.Value);
+
         var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
         var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
 
