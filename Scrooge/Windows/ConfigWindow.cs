@@ -124,6 +124,12 @@ public sealed class ConfigWindow : Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Routing"))
+      {
+        DrawRoutingTab();
+        ImGui.EndTabItem();
+      }
+
       ImGui.EndTabBar();
     }
     
@@ -567,10 +573,14 @@ public sealed class ConfigWindow : Window
       }
     }
 
+  }
+
+  private void DrawRoutingTab()
+  {
     SectionHeader("Routing (advisor preview)");
 
     var routingOn = Plugin.Configuration.EnableRoutingBrain;
-    if (ImGui.Checkbox("Enable listing gate", ref routingOn))
+    if (ImGui.Checkbox("Enable routing brain", ref routingOn))
     {
       Plugin.Configuration.EnableRoutingBrain = routingOn;
       Plugin.Configuration.Save();
@@ -580,11 +590,12 @@ public sealed class ConfigWindow : Window
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("First slice of the routing brain. In the Hawk window, equipment whose\n" +
-                       "better exit is desynth (melt) or GC turn-in (churn) gets a Route tag\n" +
-                       "and is left out of Select All. Judged only on YOUR data - own sales,\n" +
-                       "own desynth yields. No evidence = no opinion. Checking a tagged item\n" +
-                       "anyway always wins (and teaches the router).");
+      ImGui.SetTooltip("The whole advisor: the listing gate (Route tags in the Hawk window,\n" +
+                       "gated items left out of Select All) AND the router itself - the Route\n" +
+                       "button / '/scrooge route' pile view with one-confirm execution.\n" +
+                       "Judged only on YOUR data - own sales, own desynth yields, plus the\n" +
+                       "Universalis almanac when enabled. No evidence = no opinion. Overriding\n" +
+                       "a verdict always wins (and teaches the router).");
       ImGui.EndTooltip();
     }
 
@@ -683,6 +694,8 @@ public sealed class ConfigWindow : Window
         ImGui.BeginGroup();
         ImGui.Text("Venture bands:");
         ImGui.SameLine();
+        ImGui.TextDisabled("tilt");
+        ImGui.SameLine();
         var bandFull = Plugin.Configuration.VentureBandFull;
         ImGui.SetNextItemWidth(70);
         if (ImGui.InputInt("##ventureBandFull", ref bandFull, 0, 0) && bandFull >= 0)
@@ -691,6 +704,8 @@ public sealed class ConfigWindow : Window
           Plugin.Configuration.Save();
         }
         ImGui.SameLine();
+        ImGui.TextDisabled("churn");
+        ImGui.SameLine();
         var bandLow = Plugin.Configuration.VentureBandLow;
         ImGui.SetNextItemWidth(70);
         if (ImGui.InputInt("##ventureBandLow", ref bandLow, 0, 0) && bandLow >= 0)
@@ -698,6 +713,8 @@ public sealed class ConfigWindow : Window
           Plugin.Configuration.VentureBandLow = bandLow;
           Plugin.Configuration.Save();
         }
+        ImGui.SameLine();
+        ImGui.TextDisabled("panic");
         ImGui.SameLine();
         var bandPanic = Plugin.Configuration.VentureBandPanic;
         ImGui.SetNextItemWidth(70);
@@ -713,10 +730,10 @@ public sealed class ConfigWindow : Window
         {
           ImGui.BeginTooltip();
           ImGui.SetTooltip("Venture token stock thresholds, high to low.\n" +
-                           "Above the first: GC competes on pure value.\n" +
-                           "Below the first: borderline calls tilt to churn.\n" +
-                           "Below the second: churn unless the item is worth the floor x multiplier.\n" +
-                           "Below the third: churn everything GC-eligible until stock recovers.");
+                           "Above 'tilt': GC competes on pure value.\n" +
+                           "Below 'tilt': borderline calls tilt to churn.\n" +
+                           "Below 'churn': churn unless the item is worth the floor x multiplier.\n" +
+                           "Below 'panic': churn everything GC-eligible until stock recovers.");
           ImGui.EndTooltip();
         }
 
@@ -778,10 +795,10 @@ public sealed class ConfigWindow : Window
       ImGui.Spacing();
       if (ImGui.TreeNode("Slow-mover pressure"))
       {
-        var pressureOn = Plugin.Configuration.EnableSlowMoverPressure;
+        var pressureOn = Plugin.Configuration.SlowMoverPressureOptIn;
         if (ImGui.Checkbox("Pressure slow listings during pinches", ref pressureOn))
         {
-          Plugin.Configuration.EnableSlowMoverPressure = pressureOn;
+          Plugin.Configuration.SlowMoverPressureOptIn = pressureOn;
           Plugin.Configuration.Save();
         }
         ImGui.SameLine();

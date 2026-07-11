@@ -149,7 +149,7 @@ internal sealed class RoutingWindow : Window
   {
     if (!Plugin.Configuration.EnableRoutingBrain)
     {
-      ImGui.TextWrapped("The routing brain is off. Enable it in the config: Pricing tab, \"Routing (advisor preview)\" section at the bottom.");
+      ImGui.TextWrapped("The routing brain is off. Enable it in the config's Routing tab.");
       return;
     }
 
@@ -277,6 +277,14 @@ internal sealed class RoutingWindow : Window
   private int CountPile(RoutingExit exit) => _items.Count(i => !i.InReview && i.Pile == exit);
 
   /// <summary>
+  /// Items currently routed to the Melt pile. The desynth preview window's
+  /// reminder hook — location-session parity with the Churn button (piles
+  /// outlive the window closing, so the reminder survives the walk over).
+  /// </summary>
+  internal int MeltPileCount
+    => Plugin.Configuration.EnableRoutingBrain ? CountPile(RoutingExit.Desynth) : 0;
+
+  /// <summary>
   /// Hands the List and Vendor piles to the Hawk run (assumes the retainer
   /// sell view is open — same contract as the Hawk window's Go). Review,
   /// Melt, and Churn items stay in the window, untouched.
@@ -321,6 +329,7 @@ internal sealed class RoutingWindow : Window
   /// </summary>
   private void ExecuteChurnPile()
   {
+    var gcPile = CountPile(RoutingExit.Gc);
     var churnItems = _items
       .Where(i => !i.InReview && i.Pile == RoutingExit.Gc)
       .Select(i => new GcTurnInOrchestrator.GcTurnInItem(
@@ -328,6 +337,12 @@ internal sealed class RoutingWindow : Window
       .Where(i => i.SealReward > 0)
       .OrderByDescending(i => i.SealReward)
       .ToList();
+
+    // The pile said N; the run takes fewer when a seal value can't be
+    // resolved at queue time. Say so instead of quietly shrinking.
+    var skipped = gcPile - churnItems.Count;
+    if (skipped > 0)
+      Svc.Chat.Print($"[Scrooge] Churn: skipped {skipped} {(skipped == 1 ? "item" : "items")} with no resolvable seal value - {(skipped == 1 ? "it stays" : "they stay")} in your bags.");
     if (churnItems.Count == 0) return;
 
     Plugin.GcTurnIn.StartRun(churnItems);
