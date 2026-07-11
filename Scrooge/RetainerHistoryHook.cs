@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Dalamud;
 using Dalamud.Memory;
 using ECommons.DalamudServices;
 using ECommons.EzHookManager;
@@ -56,19 +57,25 @@ internal sealed class RetainerHistoryHook : IDisposable
     {
       var entries = new List<RetainerHistoryData>();
 
+      // Header layout is unverified; log the first 8 bytes so smoke runs can
+      // reveal a usable record count for a tighter bound later.
+      if (SafeMemory.Read<ulong>(data, out var header))
+        Svc.Log.Debug($"[GilTrack] RetainerHistory header: 0x{header:X16}");
+
       for (var i = 0; i < 20; i++)
       {
-        // Calculate where this record lives in memory
         var offset = 8 + sizeof(RetainerHistoryData) * i;
 
-        // Get a pointer to the struct at that location
-        RetainerHistoryData* entryPtr = (RetainerHistoryData*)(data + offset);
+        // SafeMemory fails cleanly on unreadable memory where a raw pointer
+        // dereference would AV — a corrupted-state exception the catch below
+        // cannot catch, i.e. a client crash.
+        if (!SafeMemory.Read<RetainerHistoryData>(data + offset, out var entry))
+        {
+          Svc.Log.Debug($"[GilTrack] RetainerHistory read stopped at record {i}: unreadable memory");
+          break;
+        }
 
-        // Read the actual struct from that pointer
-        var entry = *entryPtr;
-
-
-        if (entry.ItemID == 0) 
+        if (entry.ItemID == 0)
           break;
 
         entries.Add(entry);
