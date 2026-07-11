@@ -1,0 +1,102 @@
+using ECommons.DalamudServices;
+using Lumina.Excel.Sheets;
+using System.Collections.Generic;
+
+namespace Scrooge;
+
+/// <summary>
+/// Routing brain Increment 0: the listing gate. Advises AGAINST listing
+/// equipment whose better exit is desynth or GC turn-in, judged on local
+/// evidence only (own sales, own yields, seal sheet). Items without evidence
+/// are marked Unknown, never gated — the gate only acts on what it knows.
+/// Verdicts advise; execution of the better exit stays manual until the
+/// era builds the executors.
+/// </summary>
+internal static class ListingGate
+{
+  internal enum Verdict
+  {
+    /// <summary>Not routable (non-equipment) or gate disabled — no opinion.</summary>
+    None,
+    /// <summary>Evidence says it clears the price x velocity floor — list it.</summary>
+    Pass,
+    /// <summary>No local sale history — listing is a coin flip, not gated.</summary>
+    Unknown,
+    /// <summary>Fails the floor with no better exit known — informational only.</summary>
+    BelowFloor,
+    /// <summary>Better exit: desynth (yield value beats the sale price).</summary>
+    GateDesynth,
+    /// <summary>Better exit: GC Expert Delivery (low/slow on the MB, has seal value).</summary>
+    GateGc,
+  }
+
+  internal readonly record struct Result(Verdict Verdict, string Reason)
+  {
+    /// <summary>Gated = advised off the market. Excluded from Select All, defaults unchecked.</summary>
+    public bool IsGated => Verdict is Verdict.GateDesynth or Verdict.GateGc;
+  }
+
+  /// <summary>
+  /// Per-quality melt values from the desynth ledger, keyed by source item.
+  /// Build once per evaluation batch via BuildMeltValues.
+  /// </summary>
+  internal static Dictionary<(uint ItemId, bool IsHq), long> BuildMeltValues(List<DesynthSourceSummary> summaries)
+  {
+    var melts = new Dictionary<(uint, bool), long>();
+    foreach (var s in summaries)
+      if (s.Attempts > 0)
+        melts[(s.SourceItemId, s.SourceIsHq)] = s.YieldValue / s.Attempts;
+    return melts;
+  }
+
+  /// <summary>
+  /// Evaluates one inventory item. lastSale is this variant's own-sales
+  /// evidence (null = never sold); meltValue is yield gil per desynth attempt
+  /// from the player's own ledger (null = never melted one).
+  /// </summary>
+  internal static Result Evaluate(uint itemId, bool isHq,
+      (int Price, long Timestamp, int? SoldAfterDays)? lastSale,
+      long? meltValue)
+  {
+    if (!Svc.Data.GetExcelSheet<Item>().TryGetRow(itemId, out var item))
+      return new Result(Verdict.None, "");
+
+    // Equipment only — the desynth/GC exits are gear exits. Non-gear
+    // (mats, consumables) flows through ungated as today.
+    if (item.EquipSlotCategory.RowId == 0)
+      return new Result(Verdict.None, "");
+
+    if (lastSale is null)
+      return new Result(Verdict.Unknown, "No sale history for this variant — no evidence to gate on.");
+
+    var (salePrice, _, soldAfterDays) = lastSale.Value;
+
+    var floor = Plugin.Configuration.ListingFloorGil;
+    var velocityDays = Plugin.Configuration.ListingVelocityDays;
+    var floorOk = salePrice >= floor;
+    // Unknown sit time gets the benefit of the doubt — evidence only.
+    var velocityOk = soldAfterDays is not int days || days <= velocityDays;
+
+    var saleText = soldAfterDays is int d
+      ? $"sold at {salePrice:N0} after {d}d listed"
+      : $"sold at {salePrice:N0}";
+
+    if (floorOk && velocityOk)
+      return new Result(Verdict.Pass, $"Lists: {saleText}.");
+
+    // Fails price or velocity — is there a better exit with evidence?
+    var failText = !floorOk
+      ? $"{saleText} — below the {floor:N0} floor"
+      : $"{saleText} — slower than {velocityDays}d";
+
+    if (meltValue is long melt && melt > salePrice)
+      return new Result(Verdict.GateDesynth,
+        $"Melt: yields ~{melt:N0}/attempt vs sells ~{salePrice:N0}. ({failText}.)");
+
+    if (GcSeals.For(itemId) is int seals)
+      return new Result(Verdict.GateGc,
+        $"Churn: {seals:N0} seals. {failText}.");
+
+    return new Result(Verdict.BelowFloor, $"{failText}; no better exit known.");
+  }
+}

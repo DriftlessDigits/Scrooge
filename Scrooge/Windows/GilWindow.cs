@@ -262,7 +262,7 @@ internal sealed class GilWindow: Window
   // Desynth tab state
   private List<DesynthSourceSummary>? _cachedDesynthSummary;
   private List<DesynthYieldRow>? _cachedDesynthYields;
-  private Dictionary<uint, (int Price, long Timestamp)>? _cachedSalePrices;
+  private Dictionary<(uint ItemId, bool IsHq), (int Price, long Timestamp, int? SoldAfterDays)>? _cachedSalePrices;
   private long _cachedDesynthYieldCount;
   private int _desynthTimeFilter = 1; // 0=30d, 1=90d, 2=All
   private int _prevDesynthTimeFilter = -1;
@@ -337,7 +337,7 @@ internal sealed class GilWindow: Window
         foreach (var row in summary)
         {
           var yieldPerAttempt = row.Attempts > 0 ? row.YieldValue / row.Attempts : 0;
-          var sourceSale = _cachedSalePrices!.TryGetValue(row.SourceItemId, out var sale) ? sale.Price : (int?)null;
+          var sourceSale = _cachedSalePrices!.TryGetValue((row.SourceItemId, row.SourceIsHq), out var sale) ? sale.Price : (int?)null;
 
           ImGui.TableNextRow();
           ImGui.TableNextColumn();
@@ -388,7 +388,7 @@ internal sealed class GilWindow: Window
 
         foreach (var y in _cachedDesynthYields!)
         {
-          var value = _cachedSalePrices!.TryGetValue(y.YieldItemId, out var p) ? (long)p.Price * y.YieldQty : 0;
+          var value = _cachedSalePrices!.TryGetValue((y.YieldItemId, y.YieldIsHq), out var p) ? (long)p.Price * y.YieldQty : 0;
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(FormatAge(y.CapturedAt.ToUnixTimeSeconds()));
           ImGui.TableNextColumn(); ImGui.Text(Format.Hq(GilTracker.GetItemName(y.SourceItemId), y.SourceIsHq));
