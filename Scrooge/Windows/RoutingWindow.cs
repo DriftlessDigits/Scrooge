@@ -43,6 +43,7 @@ internal sealed class RoutingWindow : Window
 
   private List<RoutedItem> _items = [];
   private int? _ventureStock;
+  private int _uniVersion;
 
   public RoutingWindow()
     : base("Scrooge - Router###RoutingWindow", ImGuiWindowFlags.None)
@@ -66,6 +67,7 @@ internal sealed class RoutingWindow : Window
   public void Refresh()
   {
     _items = [];
+    _uniVersion = UniversalisStats.Version;
     var batch = RoutingInputService.BeginBatch();
     _ventureStock = batch.VentureStock;
     var gearsetIds = DesynthInventoryScanner.SnapshotGearsetItemIds();
@@ -151,6 +153,16 @@ internal sealed class RoutingWindow : Window
       return;
     }
 
+    // Universalis answers land async — re-run the piles when data arrives
+    // so "no evidence" verdicts settle. Never silently while the player is
+    // mid-decision: any pile move or mid-churn state keeps the view stable
+    // and the header shows a hint instead.
+    var uniLanded = UniversalisStats.Version != _uniVersion;
+    var playerTouched = _items.Any(i =>
+      i.OverrideRecorded || i.Pile != i.Verdict.Exit || i.InReview != i.Verdict.IsReview);
+    if (uniLanded && !playerTouched && !Plugin.GcTurnIn.IsRunning)
+      Refresh();
+
     if (_items.Count == 0)
     {
       ImGui.TextWrapped("No routable gear in your bags.");
@@ -200,6 +212,18 @@ internal sealed class RoutingWindow : Window
     {
       ImGui.SameLine();
       ImGui.TextDisabled($"- {stock:N0} venture tokens");
+    }
+
+    var uniPending = UniversalisStats.PendingCount;
+    if (uniPending > 0)
+    {
+      ImGui.SameLine();
+      ImGui.TextDisabled($"- Universalis: checking {uniPending}...");
+    }
+    else if (UniversalisStats.Version != _uniVersion)
+    {
+      ImGui.SameLine();
+      ImGui.TextColored(ScroogeColors.Stale, "- Universalis data arrived - Refresh to re-run the piles");
     }
 
     if (ImGui.Button("Refresh")) Refresh();

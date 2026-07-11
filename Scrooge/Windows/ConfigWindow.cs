@@ -724,6 +724,58 @@ public sealed class ConfigWindow : Window
       }
 
       ImGui.Spacing();
+      if (ImGui.TreeNode("Universalis almanac"))
+      {
+        var uniOn = Plugin.Configuration.EnableUniversalis;
+        if (ImGui.Checkbox("Use Universalis market data (home world)", ref uniOn))
+        {
+          Plugin.Configuration.EnableUniversalis = uniOn;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Community-crowdsourced sale velocity for items you have no history\n" +
+                           "on - fills the routing brain's velocity axis so never-sold gear gets\n" +
+                           "a real verdict instead of a coin flip. Advisor data only: it NEVER\n" +
+                           "sets a pinch or listing price. Offline = local evidence only.");
+          ImGui.EndTooltip();
+        }
+
+        if (uniOn)
+        {
+          var trustDays = Plugin.Configuration.UniversalisTrustDays;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Trust data newer than", ref trustDays, 1, 30, "%dd"))
+          {
+            Plugin.Configuration.UniversalisTrustDays = trustDays;
+            Plugin.Configuration.Save();
+          }
+          ImGui.SameLine();
+          ImGui.TextDisabled("(?)");
+          if (ImGui.IsItemHovered())
+          {
+            ImGui.BeginTooltip();
+            ImGui.SetTooltip("Stale = unknown. Data last uploaded before this window is treated\n" +
+                             "as NO data - thin-market items stay human calls.");
+            ImGui.EndTooltip();
+          }
+
+          var ttlHours = Plugin.Configuration.UniversalisCacheTtlHours;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Refetch after", ref ttlHours, 1, 48, "%dh"))
+          {
+            Plugin.Configuration.UniversalisCacheTtlHours = ttlHours;
+            Plugin.Configuration.Save();
+          }
+        }
+
+        ImGui.TreePop();
+      }
+
+      ImGui.Spacing();
       if (ImGui.TreeNode("Slow-mover pressure"))
       {
         var pressureOn = Plugin.Configuration.EnableSlowMoverPressure;

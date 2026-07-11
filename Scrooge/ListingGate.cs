@@ -53,9 +53,30 @@ internal static class ListingGate
   /// about what "worth listing" means. Unknown sit time gets the benefit of
   /// the doubt — evidence only.
   /// </summary>
-  internal static bool ClearsEquipmentFloor(int salePrice, int? soldAfterDays)
+  internal static bool ClearsEquipmentFloor(int salePrice, int? soldAfterDays,
+    double? marketVelocity = null)
     => salePrice >= Plugin.Configuration.ListingFloorGil
-       && (soldAfterDays is not int days || days <= Plugin.Configuration.ListingVelocityDays);
+       && VelocityAxisClears(soldAfterDays, marketVelocity);
+
+  /// <summary>
+  /// Universalis's home-world velocity (units/day) at or above this rate
+  /// means a unit moves within the configured velocity window.
+  /// </summary>
+  internal static double MarketVelocityFloor()
+    => 1.0 / System.Math.Max(1, Plugin.Configuration.ListingVelocityDays);
+
+  /// <summary>
+  /// The velocity axis: own sit time when captured; else the Universalis
+  /// almanac fills the gap; still unknown = benefit of the doubt.
+  /// </summary>
+  private static bool VelocityAxisClears(int? soldAfterDays, double? marketVelocity)
+  {
+    if (soldAfterDays is int days)
+      return days <= Plugin.Configuration.ListingVelocityDays;
+    if (marketVelocity is double velocity)
+      return velocity >= MarketVelocityFloor();
+    return true;
+  }
 
   /// <summary>
   /// Evaluates one item's aggregated inputs (see RoutingInputService).
@@ -69,7 +90,7 @@ internal static class ListingGate
       return new Result(Verdict.None, "");
 
     if (item.LastSale is null)
-      return new Result(Verdict.Unknown, "No sale history for this variant — no evidence to gate on.");
+      return EvaluateNeverSold(item);
 
     var (salePrice, _, soldAfterDays) = item.LastSale.Value;
 
@@ -80,13 +101,15 @@ internal static class ListingGate
       ? $"sold at {salePrice:N0} after {d}d listed"
       : $"sold at {salePrice:N0}";
 
-    if (ClearsEquipmentFloor(salePrice, soldAfterDays))
+    if (ClearsEquipmentFloor(salePrice, soldAfterDays, item.MarketVelocity))
       return new Result(Verdict.Pass, $"Lists: {saleText}.");
 
     // Fails price or velocity — is there a better exit with evidence?
     var failText = salePrice < floor
       ? $"{saleText} — below the {floor:N0} floor"
-      : $"{saleText} — slower than {velocityDays}d";
+      : soldAfterDays is null && item.MarketVelocity is double mv
+        ? $"{saleText} — market moves ~{mv:0.##}/day here (Universalis), slower than 1 per {velocityDays}d"
+        : $"{saleText} — slower than {velocityDays}d";
 
     if (item.MeltValuePerAttempt is long melt && melt > salePrice)
       return new Result(Verdict.GateDesynth,
@@ -97,5 +120,31 @@ internal static class ListingGate
         $"Churn: {seals:N0} seals. {failText}.");
 
     return new Result(Verdict.BelowFloor, $"{failText}; no better exit known.");
+  }
+
+  /// <summary>
+  /// Never-sold equipment: Universalis widens coverage by answering the
+  /// velocity axis without own history. The price axis stays unknown, so a
+  /// healthy market never auto-Passes — but a dead market with a better exit
+  /// is an honest gate (the item won't sell here at any pace worth waiting).
+  /// </summary>
+  private static Result EvaluateNeverSold(RoutingItemInputs item)
+  {
+    if (item.MarketVelocity is not double velocity)
+      return new Result(Verdict.Unknown, "No sale history for this variant — no evidence to gate on.");
+
+    if (velocity >= MarketVelocityFloor())
+      return new Result(Verdict.Unknown,
+        $"Never sold one, but it moves here (~{velocity:0.##}/day, Universalis) — price it off the live MB.");
+
+    var deadText = $"~{velocity:0.##}/day on your world (Universalis) — slower than 1 per {Plugin.Configuration.ListingVelocityDays}d";
+
+    if (item.MeltValuePerAttempt is long melt && melt > item.VendorPrice)
+      return new Result(Verdict.GateDesynth, $"Melt: yields ~{melt:N0}/attempt. {deadText}.");
+
+    if (item.SealValue is int seals)
+      return new Result(Verdict.GateGc, $"Churn: {seals:N0} seals. {deadText}.");
+
+    return new Result(Verdict.BelowFloor, $"{deadText}; no better exit known.");
   }
 }

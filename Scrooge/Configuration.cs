@@ -303,6 +303,21 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int VentureTokensPerVenture { get; set; } = 2;
 
+  // --- Universalis almanac (advisor data only - never sets a price) ---
+
+  /// <summary>
+  /// Use Universalis (community market data, home world) to fill the velocity
+  /// axis for items with no local history. Consumer only; offline = the
+  /// plugin behaves exactly as if this were off.
+  /// </summary>
+  public bool EnableUniversalis { get; set; } = true;
+
+  /// <summary>Data older than this is treated as NO data (stale = unknown).</summary>
+  public int UniversalisTrustDays { get; set; } = 7;
+
+  /// <summary>Cache TTL - velocity moves slowly, so refetch rarely.</summary>
+  public int UniversalisCacheTtlHours { get; set; } = 18;
+
   // --- DTR / server info bar ---
 
   /// <summary>Show today's gil delta in the server info bar. Click opens the dashboard.</summary>

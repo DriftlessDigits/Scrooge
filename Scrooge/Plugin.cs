@@ -189,6 +189,15 @@ public sealed class Plugin : IDalamudPlugin
       Svc.Log.Warning(ex, "[Scrooge] DTR entry failed - server info bar headline disabled");
     }
 
+    try
+    {
+      UniversalisStats.Initialize();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "[Scrooge] Universalis almanac failed to start - local evidence only this session");
+    }
+
     TriageWindow = new TriageWindow();
     WindowSystem.AddWindow(TriageWindow);
 
@@ -229,6 +238,7 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    UniversalisStats.Dispose();
     _ventureReturnTracker?.Dispose();
     _dtrToday?.Dispose();
     _chatCatchallTracker?.Dispose();
