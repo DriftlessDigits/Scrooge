@@ -265,6 +265,24 @@ public static class Communicator
     Svc.Chat.Print($"[Scrooge] Triage complete — {string.Join(", ", parts)}.");
   }
 
+  /// <summary>
+  /// Celebrates a gil goal crossing — headline in gold, a line of counting-house
+  /// flavor, and a clickable link to the dashboard. Never fires mid-run
+  /// (goal evaluation only runs at snapshot writes).
+  /// </summary>
+  public static void PrintGoalReached(string headline, string flavor)
+  {
+    var seString = new SeStringBuilder()
+        .AddText("[Scrooge] ")
+        .AddUiForeground($"{headline}!", 31)
+        .AddText($" {flavor} ")
+        .Add(Plugin.ConfigLinkPayload)
+        .AddUiForeground("[Dashboard]", 561)
+        .Build();
+
+    Svc.Chat.Print(seString);
+  }
+
   /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
   public static void PrintHistoryFallback(string itemName, int price, int saleCount)
   {

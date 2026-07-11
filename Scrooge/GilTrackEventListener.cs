@@ -167,6 +167,8 @@ internal sealed class GilTrackEventListener : IDisposable
       GilStorage.InsertRetainerSnapshot(snapshotId, name, gil);
 
     Svc.Log.Debug($"[GilTrack] Bell snapshot: {playerGil:N0}g player + retainer balances");
+
+    GilGoals.Evaluate();
   }
 
   // --- Market Board purchase tracking (gil diff approach) ---

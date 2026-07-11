@@ -211,6 +211,29 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int StalePriceDays { get; set; } = 30;
 
+  // --- Gil Goals ---
+  // Three independent buckets; 0 = that goal is off. Set from the dashboard's
+  // Goals tab. Crossings celebrate once per target value — changing a target
+  // re-arms it (see GilGoals).
+
+  /// <summary>Bank target per retainer, in gil. Progress reads "N of M retainers at target".</summary>
+  public long GoalPerRetainer { get; set; } = 0;
+
+  /// <summary>Walking-around player gil target.</summary>
+  public long GoalPlayerGil { get; set; } = 0;
+
+  /// <summary>Total worth target (player + all retainers).</summary>
+  public long GoalTotalGil { get; set; } = 0;
+
+  // Celebration bookkeeping — owned by GilGoals, not user-facing.
+  public long GoalPlayerCelebratedTarget { get; set; } = 0;
+  public long GoalTotalCelebratedTarget { get; set; } = 0;
+  public long GoalPerRetainerBaselineTarget { get; set; } = 0;
+  public int GoalPerRetainerCelebratedCount { get; set; } = 0;
+
+  /// <summary>Achieved-goal history, newest last.</summary>
+  public List<GilGoalRecord> GoalHistory { get; set; } = [];
+
   // --- Text-to-speech ---
 
   public bool TTSWhenAllDone { get; set; } = false;

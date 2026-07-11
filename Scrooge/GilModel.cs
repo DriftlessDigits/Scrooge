@@ -90,6 +90,20 @@ public record MarketSnapshot
 }
 
 /// <summary>
+/// An achieved gil goal, kept in config for the dashboard's goal history.
+/// </summary>
+[Serializable]
+public sealed class GilGoalRecord
+{
+  /// <summary>Goal bucket: "player", "total", or "retainer".</summary>
+  public string Kind { get; set; } = string.Empty;
+  public long Target { get; set; }
+  /// <summary>Human detail at crossing time, e.g. "7 of 9 retainers".</summary>
+  public string Detail { get; set; } = string.Empty;
+  public long AchievedAt { get; set; }               // Unix seconds
+}
+
+/// <summary>
 /// A quote for the ConfigWindow header, selected from the SQLite quotes table.
 /// </summary>
 public record QuoteRecord

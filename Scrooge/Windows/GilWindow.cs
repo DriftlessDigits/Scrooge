@@ -23,9 +23,25 @@ internal sealed class GilWindow: Window
       MinimumSize = new Vector2(400, 300),
       MaximumSize = new Vector2(1200, 1800)
     };
+
+    // The dashboard is the front door; settings live behind the cog.
+    TitleBarButtons.Add(new TitleBarButton
+    {
+      Icon = Dalamud.Interface.FontAwesomeIcon.Cog,
+      IconOffset = new Vector2(2, 1),
+      Click = _ => Plugin.ConfigWindow.Toggle(),
+      ShowTooltip = () =>
+      {
+        ImGui.BeginTooltip();
+        ImGui.Text("Scrooge settings");
+        ImGui.EndTooltip();
+      },
+    });
   }
 
   private GilSnapshot? _cachedSnapshot;
+  private int _cachedPendingCount;
+  private long? _cachedTodayDelta;
   private DateTime _lastRefresh = DateTime.MinValue;
   private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
 
@@ -71,28 +87,15 @@ internal sealed class GilWindow: Window
 
   public override void Draw()
   {
-    // --- Portfolio Summary ---
-    ImGui.Text("Portfolio");
-    ImGui.Separator();
-
     if (DateTime.UtcNow - _lastRefresh > RefreshInterval)
     {
       _cachedSnapshot = GilStorage.GetLatestSnapshot();
+      _cachedPendingCount = GilStorage.GetPendingSaleCount();
+      _cachedTodayDelta = ComputeTodayDelta();
       _lastRefresh = DateTime.UtcNow;
     }
-    var latestGil = _cachedSnapshot;
 
-    if (latestGil != null)
-    {
-      ImGui.Text($"  Player Gil:     {latestGil.PlayerGil:N0}");
-      ImGui.Text($"  Retainer Gil:   {latestGil.RetainerGil.Values.Sum():N0}");
-      ImGui.Separator();
-      ImGui.Text($"  Total Gil:      {latestGil.TotalGil:N0}");
-    }
-    else
-    {
-      ImGui.TextDisabled("No data yet — run a pinch to start tracking.");
-    }
+    DrawMoneyLine();
 
     ImGui.Spacing();
     if (ImGui.BeginTabBar("##GilTabs"))
@@ -145,8 +148,202 @@ internal sealed class GilWindow: Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Goals"))
+      {
+        DrawGoalsTab();
+        ImGui.EndTabItem();
+      }
+
       ImGui.EndTabBar();
     }
+  }
+
+  /// <summary>
+  /// The money line — total worth headlined in gold, today's movement,
+  /// pending sales, the player/retainer split, and goal progress bars.
+  /// </summary>
+  private void DrawMoneyLine()
+  {
+    var snap = _cachedSnapshot;
+    if (snap == null)
+    {
+      ImGui.TextDisabled("No data yet — run a pinch to start tracking.");
+      return;
+    }
+
+    // Headline: total worth, gold, slightly larger
+    ImGui.SetWindowFontScale(1.3f);
+    ImGui.TextColored(ScroogeColors.Gold, Format.GilIcon(snap.TotalGil));
+    ImGui.SetWindowFontScale(1f);
+
+    // Movement row: today's delta + pending sales
+    if (_cachedTodayDelta is long delta && delta != 0)
+      ImGui.TextColored(ScroogeColors.ForDelta(delta), $"Today: {Format.SignedGil(delta)}");
+    else
+      ImGui.TextDisabled("Today: —");
+    ImGui.SameLine(0, 24);
+    if (_cachedPendingCount > 0)
+    {
+      ImGui.TextColored(ScroogeColors.Warning, $"Pending: {_cachedPendingCount} {(_cachedPendingCount == 1 ? "sale" : "sales")}");
+      if (ImGui.IsItemHovered())
+        ImGui.SetTooltip("Visit a summoning bell to confirm retainer and buyer details.");
+    }
+    else
+      ImGui.TextDisabled("Pending: 0");
+
+    // Split row: player vs retainers, per-retainer balances on hover
+    var retainerTotal = snap.RetainerGil.Values.Sum();
+    ImGui.TextDisabled($"Player {Format.Gil(snap.PlayerGil)}   |   Retainers {Format.Gil(retainerTotal)}");
+    if (ImGui.IsItemHovered() && snap.RetainerGil.Count > 0)
+    {
+      ImGui.BeginTooltip();
+      var goal = Plugin.Configuration.GoalPerRetainer;
+      foreach (var (name, gil) in snap.RetainerGil.OrderByDescending(r => r.Value))
+      {
+        if (goal > 0 && gil >= goal)
+          ImGui.TextColored(ScroogeColors.Earned, $"{name}: {gil:N0}");
+        else
+          ImGui.Text($"{name}: {gil:N0}");
+      }
+      if (goal > 0)
+      {
+        ImGui.Separator();
+        ImGui.TextDisabled($"Green = at the {goal:N0} bank mark");
+      }
+      ImGui.EndTooltip();
+    }
+
+    // Goal progress — label + subtle bar per active goal
+    var goals = GilGoals.GetProgress(snap);
+    if (goals.Count > 0)
+    {
+      ImGui.Spacing();
+      foreach (var g in goals)
+      {
+        var labelColor = g.Achieved ? ScroogeColors.Earned : ScroogeColors.Muted;
+        ImGui.TextColored(labelColor, $"{g.Label} — {g.Fraction * 100:0}%");
+        ImGui.PushStyleColor(ImGuiCol.PlotHistogram, g.Achieved ? ScroogeColors.Earned : ScroogeColors.Gold);
+        ImGui.ProgressBar(g.Fraction, new Vector2(-1, 5), "");
+        ImGui.PopStyleColor();
+      }
+    }
+  }
+
+  /// <summary>
+  /// Today's total-gil movement from the daily rollup, or null when the
+  /// newest rollup row isn't from today.
+  /// </summary>
+  private static long? ComputeTodayDelta()
+  {
+    var daily = GilStorage.GetDailyChanges();
+    if (daily.Count < 2) return null;
+
+    var last = daily[^1];
+    var lastDate = DateTime.Parse(last.Date).Date;
+    if (lastDate != DateTime.Now.Date && lastDate != DateTime.UtcNow.Date)
+      return null;
+
+    return last.Delta;
+  }
+
+  /// <summary>
+  /// Goals tab — set the three goal buckets and review the crossings ledger.
+  /// Shapes are generic (per-retainer bank, walking gil, total worth); any,
+  /// all, or none can be active.
+  /// </summary>
+  private void DrawGoalsTab()
+  {
+    var config = Plugin.Configuration;
+
+    ImGui.TextColored(ScroogeColors.Header, "Name your mark. Scrooge keeps count.");
+    ImGui.TextDisabled("Set a target to 0 to retire it. Crossings are celebrated in chat and recorded below.");
+    ImGui.Spacing();
+
+    var perRetainer = config.GoalPerRetainer;
+    if (DrawGoalInput("Bank per retainer", ref perRetainer))
+      config.GoalPerRetainer = perRetainer;
+    if (ImGui.IsItemDeactivatedAfterEdit()) config.Save();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("Every retainer holds at least this much.\nProgress reads \"N of M retainers at target.\"");
+
+    var playerGil = config.GoalPlayerGil;
+    if (DrawGoalInput("Walking-around gil", ref playerGil))
+      config.GoalPlayerGil = playerGil;
+    if (ImGui.IsItemDeactivatedAfterEdit()) config.Save();
+
+    var totalGil = config.GoalTotalGil;
+    if (DrawGoalInput("Total worth", ref totalGil))
+      config.GoalTotalGil = totalGil;
+    if (ImGui.IsItemDeactivatedAfterEdit()) config.Save();
+
+    ImGui.Spacing();
+    ImGui.Separator();
+    ImGui.Spacing();
+
+    ImGui.TextColored(ScroogeColors.Header, "The Ledger of Marks");
+    if (config.GoalHistory.Count == 0)
+    {
+      ImGui.TextDisabled("No marks crossed yet. The vault remembers when you do.");
+      return;
+    }
+
+    if (ImGui.BeginTable("GoalHistory", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+    {
+      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.None, 90);
+      ImGui.TableSetupColumn("Goal", ImGuiTableColumnFlags.None, 110);
+      ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.None, 110);
+      ImGui.TableSetupColumn("Detail", ImGuiTableColumnFlags.None, 180);
+      ImGui.TableHeadersRow();
+
+      var culture = System.Globalization.CultureInfo.CurrentCulture;
+      for (int i = config.GoalHistory.Count - 1; i >= 0; i--)
+      {
+        var rec = config.GoalHistory[i];
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        ImGui.Text(DateTimeOffset.FromUnixTimeSeconds(rec.AchievedAt).LocalDateTime.ToString("d", culture));
+        ImGui.TableNextColumn();
+        ImGui.Text(rec.Kind switch
+        {
+          "retainer" => "Retainer bank",
+          "player" => "Walking gil",
+          "total" => "Total worth",
+          _ => rec.Kind,
+        });
+        ImGui.TableNextColumn();
+        ImGui.TextColored(ScroogeColors.Gold, $"{rec.Target:N0}");
+        ImGui.TableNextColumn();
+        ImGui.Text(rec.Detail);
+      }
+
+      ImGui.EndTable();
+    }
+  }
+
+  /// <summary>Digits-only gil input; returns true when the parsed value changed.</summary>
+  private static bool DrawGoalInput(string label, ref long value)
+  {
+    var text = value > 0 ? value.ToString() : string.Empty;
+    ImGui.SetNextItemWidth(160);
+    if (!ImGui.InputText(label, ref text, 15, ImGuiInputTextFlags.CharsDecimal))
+      return false;
+
+    if (string.IsNullOrWhiteSpace(text))
+    {
+      var changed = value != 0;
+      value = 0;
+      return changed;
+    }
+
+    if (long.TryParse(text, out var parsed) && parsed >= 0 && parsed != value)
+    {
+      value = parsed;
+      return true;
+    }
+
+    return false;
   }
 
   private void DrawGilHistoryTab()
@@ -219,11 +416,7 @@ internal sealed class GilWindow: Window
         }
         else
         {
-          var sign = delta >= 0 ? "+" : "";
-          var color = delta >= 0
-            ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
-            : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
-          ImGui.TextColored(color, $"{sign}{delta:N0}");
+          ImGui.TextColored(ScroogeColors.ForDelta(delta), Format.SignedGil(delta));
         }
       }
 
@@ -441,7 +634,7 @@ internal sealed class GilWindow: Window
         foreach (var sale in recentSales)
         {
           ImGui.TableNextRow();
-          var itemLabel = sale.ItemName + (sale.IsHQ ? " " + (char)SeIconChar.HighQuality : "");
+          var itemLabel = Format.Hq(sale.ItemName, sale.IsHQ);
           if (sale.IsPending) itemLabel += " *";
 
           void RowText(string s) { if (sale.IsPending) ImGui.TextDisabled(s); else ImGui.Text(s); }
@@ -654,7 +847,7 @@ internal sealed class GilWindow: Window
         foreach (var item in slowMovers)
         {
           ImGui.TableNextRow();
-          ImGui.TableNextColumn(); ImGui.Text(item.ItemName + (item.IsHQ ? " " + (char)SeIconChar.HighQuality : ""));
+          ImGui.TableNextColumn(); ImGui.Text(Format.Hq(item.ItemName, item.IsHQ));
           ImGui.TableNextColumn(); ImGui.Text($"{item.UnitPrice:N0}");
           ImGui.TableNextColumn(); ImGui.Text(item.Category);
           ImGui.TableNextColumn(); ImGui.Text(FormatAge(item.FirstSeenTimestamp));
@@ -772,11 +965,8 @@ internal sealed class GilWindow: Window
         ImGui.Text(name);
         DrawCategoryChainTooltipIfHovered(txn.Category);
         ImGui.TableNextColumn();
-        var sign = txn.Direction == "earned" ? "+" : "-";
-        var color = txn.Direction == "earned"
-          ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
-          : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
-        ImGui.TextColored(color, $"{sign}{txn.Amount:N0}");
+        var signedAmount = txn.Direction == "earned" ? txn.Amount : -txn.Amount;
+        ImGui.TextColored(ScroogeColors.ForDelta(signedAmount), Format.SignedGil(signedAmount));
         ImGui.TableNextColumn();
         ImGui.Text(txn.Quantity > 1 ? $"x{txn.Quantity}" : "");
       }
@@ -868,23 +1058,18 @@ internal sealed class GilWindow: Window
     var totalSpent = spent.Sum(s => s.Total);
     var net = totalEarned - totalSpent;
 
-    var netColor = net >= 0
-      ? new Vector4(0.4f, 1.0f, 0.4f, 1.0f)
-      : new Vector4(1.0f, 0.4f, 0.4f, 1.0f);
-    var netSign = net >= 0 ? "+" : "";
-
     ImGui.Spacing();
-    ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"Earned: {totalEarned:N0}");
+    ImGui.TextColored(ScroogeColors.Earned, $"Earned: {Format.Gil(totalEarned)}");
     ImGui.SameLine(200);
-    ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), $"Spent: {totalSpent:N0}");
+    ImGui.TextColored(ScroogeColors.Spent, $"Spent: {Format.Gil(totalSpent)}");
     ImGui.SameLine(400);
-    ImGui.TextColored(netColor, $"Net: {netSign}{net:N0}");
+    ImGui.TextColored(ScroogeColors.ForDelta(net), $"Net: {Format.SignedGil(net)}");
     ImGui.Separator();
 
     if (earned.Count > 0)
     {
       ImGui.Spacing();
-      ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), "Income");
+      ImGui.TextColored(ScroogeColors.Earned, "Income");
       if (ImGui.BeginTable("EvsEarned", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
         ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
@@ -896,7 +1081,7 @@ internal sealed class GilWindow: Window
         {
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(FormatSourceLabel(row.Source));
-          ImGui.TableNextColumn(); ImGui.TextColored(new Vector4(0.4f, 1.0f, 0.4f, 1.0f), $"+{row.Total:N0}");
+          ImGui.TableNextColumn(); ImGui.TextColored(ScroogeColors.Earned, $"+{row.Total:N0}");
           ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
         }
         ImGui.EndTable();
@@ -906,7 +1091,7 @@ internal sealed class GilWindow: Window
     if (spent.Count > 0)
     {
       ImGui.Spacing();
-      ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), "Expenses");
+      ImGui.TextColored(ScroogeColors.Spent, "Expenses");
       if (ImGui.BeginTable("EvsSpent", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
         ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
@@ -918,7 +1103,7 @@ internal sealed class GilWindow: Window
         {
           ImGui.TableNextRow();
           ImGui.TableNextColumn(); ImGui.Text(FormatSourceLabel(row.Source));
-          ImGui.TableNextColumn(); ImGui.TextColored(new Vector4(1.0f, 0.4f, 0.4f, 1.0f), $"-{row.Total:N0}");
+          ImGui.TableNextColumn(); ImGui.TextColored(ScroogeColors.Spent, $"-{row.Total:N0}");
           ImGui.TableNextColumn(); ImGui.Text($"{row.Count}");
         }
         ImGui.EndTable();

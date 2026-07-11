@@ -188,6 +188,8 @@ internal static class GilTracker
 
     Svc.Log.Info($"[GilTrack] Run complete: {_finalItemCount} listings, " +
         $"{_finalListingValue:N0}g on market, {playerGil:N0}g player");
+
+    GilGoals.Evaluate();
   }
 
   // --- Passive Balance Snapshots (called from GilTrackEventListener) ---
@@ -210,6 +212,8 @@ internal static class GilTracker
 
     GilStorage.InsertGilSnapshot(now, playerGil, source);
     Svc.Log.Debug($"[GilTrack] Balance snapshot ({source}): {playerGil:N0}g");
+
+    GilGoals.Evaluate();
   }
 
   // --- Sale History Processing (called from hook) ---
