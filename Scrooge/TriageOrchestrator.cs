@@ -154,6 +154,21 @@ internal sealed class TriageOrchestrator : IDisposable
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(() => Skipped(item) ? true : pricing.ClickComparePrice(), $"RepriceCompare_{item.ItemName}");
     _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
+
+    // The MB response lands via an async event that fills item.FinalPrice -
+    // a flat keep-open delay lost that race once (Carbuncle Chair, Pending).
+    // Wait for the price (or a sentinel result) with a hard deadline, then
+    // let SetNewPrice run either way - its history/own-sales fallbacks handle
+    // a truly silent market.
+    var mbDeadline = DateTime.MinValue;
+    _taskManager.Enqueue(() =>
+    {
+      if (Skipped(item)) return true;
+      if (item.FinalPrice is > 0 || item.Result != PricingResult.Pending) return true;
+      if (mbDeadline == DateTime.MinValue)
+        mbDeadline = DateTime.UtcNow.AddMilliseconds(7000);
+      return DateTime.UtcNow >= mbDeadline;
+    }, $"RepriceAwaitMb_{item.ItemName}");
     _taskManager.Enqueue(() => Skipped(item) ? true : pricing.SetNewPrice(), $"RepriceSetPrice_{item.ItemName}");
 
     // Cleanup: check result and update triage, chain next reprice if any
@@ -179,8 +194,13 @@ internal sealed class TriageOrchestrator : IDisposable
         return true;
       }
 
+      // Last reprice done - close up shop like the vendor/pull path does
+      // (the sell list only needed to stay open BETWEEN reprices).
       _repriceQueue = null;
-      Util.FlashWindow();
+      _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "RepriceFinalCloseSellList");
+      _taskManager.DelayNext(500);
+      _taskManager.Enqueue(GameNavigation.CloseRetainer, "RepriceFinalCloseRetainer");
+      _taskManager.Enqueue(() => { Util.FlashWindow(); return true; }, "RepriceAllDone");
       return true;
     }, "RepriceEnd");
 
