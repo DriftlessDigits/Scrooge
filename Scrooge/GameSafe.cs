@@ -90,26 +90,18 @@ internal static unsafe class GameSafe
   private const uint VentureTokenItemId = 21072;
 
   /// <summary>
-  /// Venture token count from the currency container, or null when the
-  /// inventory is unavailable. 0 is ambiguous until the item id is verified
-  /// in-game — callers should prefer "no tilt" over "hard override" on 0.
+  /// Venture token count, or null when the inventory is unavailable.
+  /// GetInventoryItemCount resolves containers itself — the previous manual
+  /// Currency-container walk read 0 against a real stock of 1300 (shake-out
+  /// finding 8; ventures don't live where that walk looked). 0 stays
+  /// ambiguous for callers: prefer "no tilt" over "hard override" on 0.
   /// </summary>
   internal static int? VentureTokenCount()
   {
     var im = InventoryManager.Instance();
     if (im == null) return null;
 
-    var currency = im->GetInventoryContainer(InventoryType.Currency);
-    if (currency == null) return null;
-
-    var count = 0;
-    for (int i = 0; i < currency->Size; i++)
-    {
-      var slot = currency->GetInventorySlot(i);
-      if (slot != null && slot->ItemId == VentureTokenItemId)
-        count += (int)slot->Quantity;
-    }
-    return count;
+    return im->GetInventoryItemCount(VentureTokenItemId);
   }
 
   /// <summary>
