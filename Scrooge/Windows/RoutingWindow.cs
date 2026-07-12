@@ -285,6 +285,18 @@ internal sealed class RoutingWindow : Window
     => Plugin.Configuration.EnableRoutingBrain ? CountPile(RoutingExit.Desynth) : 0;
 
   /// <summary>
+  /// (ItemId, IsHq) variants in the Melt pile, so the desynth preview can
+  /// mark and pre-select the routed rows instead of just counting them
+  /// (shake-out finding 6). Empty when the gate is off.
+  /// </summary>
+  internal HashSet<(uint ItemId, bool IsHq)> MeltPileVariants()
+  {
+    if (!Plugin.Configuration.EnableRoutingBrain) return [];
+    return _items.Where(i => !i.InReview && i.Pile == RoutingExit.Desynth)
+      .Select(i => (i.ItemId, i.IsHq)).ToHashSet();
+  }
+
+  /// <summary>
   /// Hands the List and Vendor piles to the Hawk run (assumes the retainer
   /// sell view is open — same contract as the Hawk window's Go). Review,
   /// Melt, and Churn items stay in the window, untouched.
