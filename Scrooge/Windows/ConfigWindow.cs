@@ -133,8 +133,12 @@ public sealed class ConfigWindow : Window
       ImGui.EndTabBar();
     }
 
-    ImGui.Spacing();
-    ImGui.TextDisabled($"build {BuildStamp.Line}");
+    // Players care about the version (installer shows it); the exact-commit fingerprint only matters for dev testing.
+    if (Plugin.PluginInterface.IsDev)
+    {
+      ImGui.Spacing();
+      ImGui.TextDisabled($"build {BuildStamp.Line}");
+    }
   }
 
   private void DrawPricingTab()
