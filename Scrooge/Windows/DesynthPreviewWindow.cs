@@ -4,6 +4,7 @@ using ECommons;
 using ECommons.DalamudServices;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Scrooge.Windows;
 
