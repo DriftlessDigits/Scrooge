@@ -718,6 +718,10 @@ internal sealed class GilWindow: Window
 
   private void DrawSinglePlot(string id, string title, double[] y, long[] raw, string yFormat, float height)
   {
+    // Next-plot setup: must precede BeginPlot (ImPlot asserts otherwise, and
+    // the fit request would leak to whatever plot begins next).
+    ImPlot.SetNextAxesToFit();
+
     if (ImPlot.BeginPlot(id, new Vector2(-1, height), ImPlotFlags.NoMouseText))
     {
       ImPlot.SetupAxis(ImAxis.X1, "");
@@ -725,7 +729,6 @@ internal sealed class GilWindow: Window
       ImPlot.SetupAxisFormat(ImAxis.Y1, yFormat);
       if (_historyTickPositions != null && _historyTickLabels != null && _historyTickPositions.Length > 0)
         ImPlot.SetupAxisTicks(ImAxis.X1, ref _historyTickPositions[0], _historyTickPositions.Length, _historyTickLabels);
-      ImPlot.SetNextAxesToFit();
       ImPlot.PlotLine(title, ref _historyX![0], ref y[0], _historyX.Length);
 
       if (ImPlot.IsPlotHovered())
