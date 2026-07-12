@@ -132,7 +132,9 @@ public sealed class ConfigWindow : Window
 
       ImGui.EndTabBar();
     }
-    
+
+    ImGui.Spacing();
+    ImGui.TextDisabled($"build {BuildStamp.Line}");
   }
 
   private void DrawPricingTab()

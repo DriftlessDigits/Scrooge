@@ -94,6 +94,7 @@ public sealed class Plugin : IDalamudPlugin
     PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUI;
 
     ECommonsMain.Init(PluginInterface, this);
+    Svc.Log.Information($"[Scrooge] build {BuildStamp.Line}");
     AutoPinch = new AutoPinch();
     WindowSystem.AddWindow(AutoPinch);
 
