@@ -1,151 +1,124 @@
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
+using Dalamud.Game.Chat;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using ECommons.DalamudServices;
-using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 using System;
-using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Scrooge;
 
 /// <summary>
 /// Venture-return tracking: makes the GC exit numerically honest. Captures
-/// each collected quick-venture result off the RetainerTaskResult dialog,
-/// then derives gil-per-venture and the empirical seals-to-gil rate the
-/// routing engine has been running on a placeholder for.
+/// each collected venture reward, then derives gil-per-venture and the
+/// empirical seals-to-gil rate the routing engine has been running on a
+/// placeholder for.
 ///
-/// The AtkValue layout of RetainerTaskResult is UNMAPPED in this codebase.
-/// The parser tries a best-guess offset first, falls back to a validated
-/// scan, and when both fail it dumps every value to the log tagged
-/// "[Ventures] map needed" - one live venture collection gives the real
-/// offsets. Capture is evidence-only: unparseable dialogs record nothing.
+/// Data source is CHAT, not the addon. Live receipts 2026-07-12: the
+/// RetainerTaskResult addon carries only its button bar in AtkValues
+/// ([0]=2 [1]=Reassign [2]=Confirm) through PostSetup, PostRefresh AND
+/// PostRequestedUpdate - the reward is never in the value array. But the
+/// reward always prints to chat as "You obtain a &lt;item link&gt;" with a
+/// full ItemPayload (id + HQ), whether collected by hand or clicked through
+/// by AutoRetainer in a frame.
 ///
-/// Live receipt 2026-07-12 (shake-out finding 7): at PostSetup the addon
-/// carries only the button bar ([0]=2 [1]=Reassign [2]=Confirm) - the server
-/// fills the reward in later. So the listener also rides PostRefresh and
-/// PostRequestedUpdate; whichever event carries the reward first wins, the
-/// minute-bucket dedup swallows the rest.
+/// So the addon opening ARMS a short capture window (PostSetup provably
+/// fires even under AutoRetainer's instant click-through), and the next
+/// "You obtain" chat line with an ItemPayload inside that window is the
+/// venture reward. Disarms after one capture - one dialog, one reward.
 /// </summary>
 internal sealed class VentureReturnTracker : IDisposable
 {
   private static readonly AddonEvent[] Events =
     [AddonEvent.PostSetup, AddonEvent.PostRefresh, AddonEvent.PostRequestedUpdate];
 
-  // Dedup: the same venture surfaces on several lifecycle events (and a
-  // re-shown dialog) - never double-count it.
-  private (string Retainer, uint ItemId, int Qty, long Minute)? _lastCapture;
+  private static readonly Regex QuantityPattern = new(@"\b(\d+)\b", RegexOptions.Compiled);
+  private static readonly TimeSpan ArmWindow = TimeSpan.FromSeconds(5);
 
-  // Throttle the map-needed dumps to one per event type per dialog showing.
-  private static readonly Dictionary<AddonEvent, long> _lastDumpAt = [];
+  private DateTime _armedUntil = DateTime.MinValue;
+  private string _armedRetainer = "";
+
+  // Dedup: both reward phrasings ("is added to your inventory" / "You obtain")
+  // and re-shown dialogs must never double-count the same venture.
+  private (string Retainer, uint ItemId, int Qty, long Minute)? _lastCapture;
 
   public VentureReturnTracker()
   {
     foreach (var ev in Events)
       Svc.AddonLifecycle.RegisterListener(ev, "RetainerTaskResult", OnTaskResult);
+    Svc.Chat.ChatMessage += OnChatMessage;
   }
 
   public void Dispose()
   {
     foreach (var ev in Events)
       Svc.AddonLifecycle.UnregisterListener(ev, "RetainerTaskResult", OnTaskResult);
+    Svc.Chat.ChatMessage -= OnChatMessage;
   }
 
-  private unsafe void OnTaskResult(AddonEvent type, AddonArgs args)
+  private void OnTaskResult(AddonEvent type, AddonArgs args)
   {
     try
     {
-      var addon = (AtkUnitBase*)(nint)args.Addon;
-      if (addon == null || !addon->IsVisible) return;
-
       var retainer = GameSafe.ActiveRetainerName() ?? "";
       if (retainer.Length == 0)
       {
         // No attribution, no row - but never silently (finding 9).
-        Svc.Log.Debug($"[Ventures] {type}: no active retainer name - capture skipped");
+        Svc.Log.Debug($"[Ventures] {type}: no active retainer name - not arming");
         return;
       }
 
-      if (ParseReward(addon, type) is not { } reward)
+      _armedRetainer = retainer;
+      _armedUntil = DateTime.UtcNow + ArmWindow;
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning($"[Ventures] arm failed: {ex.Message}");
+    }
+  }
+
+  private void OnChatMessage(IHandleableChatMessage chatMessage)
+  {
+    if (DateTime.UtcNow > _armedUntil) return;
+
+    try
+    {
+      var text = chatMessage.Message.TextValue;
+
+      // Verb gate - the reward line in EN. The duplicate "... is added to
+      // your inventory" phrasing is deliberately NOT matched; one line per
+      // reward keeps the capture single-shot.
+      if (!text.StartsWith("You obtain", StringComparison.OrdinalIgnoreCase))
         return;
 
+      var itemPayload = chatMessage.Message.Payloads.OfType<ItemPayload>().FirstOrDefault();
+      if (itemPayload == null)
+      {
+        Svc.Log.Debug($"[Ventures] skipped (no ItemPayload): {text}");
+        return;
+      }
+
+      // Quantity: leading count when present ("You obtain 2 ..."), else 1.
+      var qtyMatch = QuantityPattern.Match(text);
+      var quantity = qtyMatch.Success && int.TryParse(qtyMatch.Groups[1].Value, out var n) && n > 0 ? n : 1;
+
+      var retainer = GameSafe.ActiveRetainerName() ?? _armedRetainer;
       var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-      var key = (retainer, reward.ItemId, reward.Quantity, now / 60);
+      var key = (retainer, itemPayload.ItemId, quantity, now / 60);
       if (_lastCapture == key) return;
       _lastCapture = key;
+      _armedUntil = DateTime.MinValue;
 
-      GilStorage.InsertVentureReturn(now, retainer, reward.ItemId, reward.Quantity, reward.IsHq);
+      GilStorage.InsertVentureReturn(now, retainer, itemPayload.ItemId, quantity, itemPayload.IsHQ);
       VentureReturns.InvalidateCache();
-      Svc.Log.Debug($"[Ventures] {retainer}: {reward.Quantity}x {reward.ItemId}{(reward.IsHq ? " HQ" : "")} (via {type})");
+      Svc.Log.Info($"[Ventures] {retainer}: {quantity}x {itemPayload.ItemId}{(itemPayload.IsHQ ? " HQ" : "")} captured from chat");
     }
     catch (Exception ex)
     {
       Svc.Log.Warning($"[Ventures] capture failed: {ex.Message}");
     }
-  }
-
-  /// <summary>
-  /// Best-guess offsets first (VERIFY in-game), then a validated scan:
-  /// first UInt/Int that is a real Item row (with the +1M HQ convention),
-  /// quantity from the next small positive int. Null = unparseable.
-  /// </summary>
-  private static unsafe (uint ItemId, int Quantity, bool IsHq)? ParseReward(AtkUnitBase* addon, AddonEvent source)
-  {
-    var sheet = Svc.Data.GetExcelSheet<Item>();
-
-    // Guess: value[2] = item id, value[3] = quantity (VERIFY - unmapped).
-    if (addon->AtkValuesCount > 3
-        && TryAsItem(addon->AtkValues[2], sheet) is { } guessed
-        && TryAsQuantity(addon->AtkValues[3]) is int guessedQty)
-      return (guessed.ItemId, guessedQty, guessed.IsHq);
-
-    // Scan fallback: adjacent (item id, quantity) pair anywhere.
-    for (var i = 0; i + 1 < addon->AtkValuesCount; i++)
-      if (TryAsItem(addon->AtkValues[i], sheet) is { } item
-          && TryAsQuantity(addon->AtkValues[i + 1]) is int qty)
-        return (item.ItemId, qty, item.IsHq);
-
-    // Nothing parseable - dump for the live mapping pass, tagged with the
-    // lifecycle event so the pass shows WHICH event carries the reward.
-    // Throttled per event: RequestedUpdate can fire many times per dialog.
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-    if (_lastDumpAt.TryGetValue(source, out var last) && now - last < 5)
-      return null;
-    _lastDumpAt[source] = now;
-
-    var dump = new System.Text.StringBuilder($"[Ventures] map needed - RetainerTaskResult {source} values ({addon->AtkValuesCount}): ");
-    for (var i = 0; i < Math.Min((int)addon->AtkValuesCount, 40); i++)
-      dump.Append($"[{i}]={addon->AtkValues[i].GetValueAsString()} ");
-    Svc.Log.Info(dump.ToString());
-    return null;
-  }
-
-  private static (uint ItemId, bool IsHq)? TryAsItem(AtkValue v, Lumina.Excel.ExcelSheet<Item> sheet)
-  {
-    var raw = v.Type switch
-    {
-      AtkValueType.UInt => v.UInt,
-      AtkValueType.Int when v.Int > 0 => (uint)v.Int,
-      _ => 0u,
-    };
-    if (raw == 0) return null;
-    var isHq = raw >= 1_000_000u;
-    var id = isHq ? raw - 1_000_000u : raw;
-    // Real, obtainable item - excludes flags/indices that happen to be small ints.
-    return id > 19 && sheet.TryGetRow(id, out var row) && row.Name.ByteLength > 0
-      ? (id, isHq)
-      : null;
-  }
-
-  private static int? TryAsQuantity(AtkValue v)
-  {
-    var q = v.Type switch
-    {
-      AtkValueType.UInt => (int)v.UInt,
-      AtkValueType.Int => v.Int,
-      _ => -1,
-    };
-    return q is >= 1 and <= 9999 ? q : null;
   }
 }
 
