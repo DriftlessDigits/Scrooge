@@ -105,6 +105,38 @@ internal static unsafe class GameSafe
   }
 
   /// <summary>
+  /// Visible sell-list row index of the first listing matching (itemId, isHq)
+  /// on the OPEN retainer, plus its stack quantity - or null when the item is
+  /// no longer listed or the container is unavailable. Reads the
+  /// RetainerMarket container in slot order, counting occupied slots; the
+  /// sell list displays occupied slots in that order (VERIFY on the first
+  /// triage pull - a mismatch pulls the wrong row into the player's bags,
+  /// recoverable, and the vendor step re-finds by id so it can never sell
+  /// the wrong item).
+  /// </summary>
+  internal static (int RowIndex, int Quantity)? RetainerMarketRow(uint itemId, bool isHq)
+  {
+    var im = InventoryManager.Instance();
+    if (im == null) return null;
+
+    var market = im->GetInventoryContainer(InventoryType.RetainerMarket);
+    if (market == null) return null;
+
+    var row = 0;
+    for (int i = 0; i < market->Size; i++)
+    {
+      var slot = market->GetInventorySlot(i);
+      if (slot == null || slot->ItemId == 0) continue;
+
+      var slotHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
+      if (slot->ItemId == itemId && slotHq == isHq)
+        return (row, (int)slot->Quantity);
+      row++;
+    }
+    return null;
+  }
+
+  /// <summary>
   /// Row count of the RetainerSellList's list component, or null when the addon
   /// isn't open/ready or the node walk (NodeList[10] → list component) fails.
   /// </summary>
