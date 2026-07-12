@@ -30,4 +30,28 @@
   <ItemGroup>
     <PackageReference Update="DotNet.ReproducibleBuilds" Version="2.0.2" />
   </ItemGroup>
+
+  <!-- Stamps git commit/branch + build time into assembly metadata (read at runtime by BuildStamp.cs).
+       The changing BuildTime value forces AssemblyInfo regeneration, so every build recompiles — the stamp is never stale. -->
+  <Target Name="StampBuildInfo" BeforeTargets="GetAssemblyAttributes">
+    <Exec Command="git rev-parse --short HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitCommit" />
+    </Exec>
+    <Exec Command="git rev-parse --abbrev-ref HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitBranch" />
+    </Exec>
+    <Exec Command="git status --porcelain" ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low" ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitDirty" />
+    </Exec>
+    <PropertyGroup>
+      <_GitCommit Condition="'$(_GitCommit)' == ''">unknown</_GitCommit>
+      <_GitCommit Condition="'$(_GitDirty)' != ''">$(_GitCommit)+dirty</_GitCommit>
+      <_GitBranch Condition="'$(_GitBranch)' == ''">unknown</_GitBranch>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="GitCommit" Value="$(_GitCommit)" />
+      <AssemblyMetadata Include="GitBranch" Value="$(_GitBranch)" />
+      <AssemblyMetadata Include="BuildTime" Value="$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm'))" />
+    </ItemGroup>
+  </Target>
 </Project>
