@@ -107,31 +107,33 @@ internal static unsafe class GameSafe
   /// <summary>
   /// Visible sell-list row index of the first listing matching (itemId, isHq)
   /// on the OPEN retainer, plus its stack quantity - or null when the item is
-  /// no longer listed or the container is unavailable. Reads the
-  /// RetainerMarket container in slot order, counting occupied slots; the
-  /// sell list displays occupied slots in that order (VERIFY on the first
-  /// triage pull - a mismatch pulls the wrong row into the player's bags,
-  /// recoverable, and the vendor step re-finds by id so it can never sell
-  /// the wrong item).
+  /// no longer listed or the addon isn't ready. Reads the RetainerSellList
+  /// addon's own rows (count at AtkValues[9], base 10, stride 13 - the same
+  /// map SnapshotListings uses), so the index is the DISPLAY index the row
+  /// click callback expects. The RetainerMarket container stores slots in a
+  /// different order than the sell list displays (proven 2026-07-12,
+  /// finding #16) - never target rows from the container.
   /// </summary>
-  internal static (int RowIndex, int Quantity)? RetainerMarketRow(uint itemId, bool isHq)
+  internal static (int RowIndex, int Quantity)? SellListRow(uint itemId, bool isHq)
   {
-    var im = InventoryManager.Instance();
-    if (im == null) return null;
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return null;
 
-    var market = im->GetInventoryContainer(InventoryType.RetainerMarket);
-    if (market == null) return null;
-
-    var row = 0;
-    for (int i = 0; i < market->Size; i++)
+    var itemCount = addon->AtkValues[9].Int;
+    for (int i = 0; i < itemCount; i++)
     {
-      var slot = market->GetInventorySlot(i);
-      if (slot == null || slot->ItemId == 0) continue;
+      var baseIdx = 10 + (i * 13);
+      var iconId = addon->AtkValues[baseIdx].Int;
+      var itemName = addon->AtkValues[baseIdx + 1].GetValueAsString();
+      var payload = Communicator.RawItemNameToItemPayload(itemName);
+      if (payload == null || payload.ItemId != itemId) continue;
 
-      var slotHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
-      if (slot->ItemId == itemId && slotHq == isHq)
-        return (row, (int)slot->Quantity);
-      row++;
+      var rowHq = iconId >= 1_000_000;
+      if (rowHq != isHq) continue;
+
+      var quantity = addon->AtkValues[baseIdx + 2].Int;
+      return (i, quantity);
     }
     return null;
   }

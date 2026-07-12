@@ -136,67 +136,64 @@ internal static class GameNavigation
   /// <summary>
   /// Clicks "Return Items to Inventory" in the retainer sell list context menu.
   /// Returns the item from the MB listing to the player's inventory.
+  /// Tri-state: true = clicked; false = menu not open yet (retry);
+  /// null = menu open but entry missing/unselectable (caller fails closed).
   /// </summary>
   internal static unsafe bool? ClickReturnToInventory()
+    => ClickContextMenuEntry("Return Items to Inventory");
+
+  /// <summary>
+  /// Selects a native context-menu entry by text via the proven AddonMaster
+  /// pattern (native + enabled checks, canonical callback args) instead of a
+  /// raw Callback.Fire - Dalamud-injected entries (Scrooge's own Ban button
+  /// lives in this menu) carry callback index -1 and must never be fired at.
+  /// </summary>
+  private static unsafe bool? ClickContextMenuEntry(string entryText)
   {
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon)
-        && GenericHelpers.IsAddonReady(addon))
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return false;
+
+    var menu = new AddonMaster.ContextMenu((nint)addon);
+    foreach (var entry in menu.Entries)
     {
-      var reader = new ReaderContextMenu(addon);
-      for (int i = 0; i < reader.Entries.Count; i++)
-      {
-        if (reader.Entries[i].Name.Equals(
-            "Return Items to Inventory", StringComparison.OrdinalIgnoreCase))
-        {
-          ECommons.Automation.Callback.Fire(addon, true, 0, i, 0, 0, 0);
-          return true;
-        }
-      }
-      Svc.Log.Warning("[Triage] 'Return Items to Inventory' not in context menu");
+      if (!entry.Text.Equals(entryText, StringComparison.OrdinalIgnoreCase))
+        continue;
+      if (entry.Select())
+        return true;
+      Svc.Log.Warning($"[Triage] '{entryText}' found but not selectable (native={entry.IsNativeEntry}, enabled={entry.Enabled})");
       addon->Close(true);
-      return true;
+      return null;
     }
-    return false;
+
+    Svc.Log.Warning($"[Triage] '{entryText}' not in context menu — entries: {string.Join(" | ", menu.Entries.Select(e => e.Text))}");
+    addon->Close(true);
+    return null;
   }
 
   /// <summary>
   /// Clicks "Have Retainer Sell Items" in the context menu for an inventory item.
   /// Standalone version for triage flow (no PricingItem state dependency).
+  /// Tri-state: true = clicked; false = menu not open yet (retry);
+  /// null = menu open but entry missing (caller fails closed - never book a
+  /// vendor sale that didn't happen).
   /// </summary>
   internal static unsafe bool? ClickVendorSellItem()
-  {
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var addon)
-        && GenericHelpers.IsAddonReady(addon))
-    {
-      var reader = new ReaderContextMenu(addon);
-      for (int i = 0; i < reader.Entries.Count; i++)
-      {
-        if (reader.Entries[i].Name.Equals(
-            "Have Retainer Sell Items", StringComparison.OrdinalIgnoreCase))
-        {
-          ECommons.Automation.Callback.Fire(addon, true, 0, i, 0, 0, 0);
-          return true;
-        }
-      }
-      Svc.Log.Warning("[Triage] 'Have Retainer Sell Items' not in context menu");
-      addon->Close(true);
-      return true;
-    }
-    return false;
-  }
+    => ClickContextMenuEntry("Have Retainer Sell Items");
 
   /// <summary>
   /// Right-clicks an item in the player's inventory by item ID.
   /// Scans all 4 inventory bags to find the first matching stack.
+  /// Returns true when the item was found and its context menu opened,
+  /// false when it isn't in the bags (yet) - the caller decides whether to
+  /// retry (pulled items arrive on a server round-trip) or give up.
+  /// Fail-closed: never reports success for an item it didn't find.
   /// </summary>
-  internal static unsafe bool? ClickInventoryItemById(uint itemId, bool isHq)
+  internal static unsafe bool TryClickInventoryItemById(uint itemId, bool isHq)
   {
     var im = InventoryManager.Instance();
     if (im == null)
-    {
-      Svc.Log.Warning("[Triage] InventoryManager unavailable — can't locate item");
-      return true;
-    }
+      return false;
 
     var containers = new[]
     {
@@ -222,7 +219,7 @@ internal static class GameNavigation
           if (agent == null || inventoryAgent == null)
           {
             Svc.Log.Warning("[Triage] Inventory agent unavailable — can't open context menu");
-            return true;
+            return false;
           }
           agent->OpenForItemSlot(containerType, i, 0, inventoryAgent->OpenAddonId);
           return true;
@@ -230,8 +227,7 @@ internal static class GameNavigation
       }
     }
 
-    Svc.Log.Warning($"[Triage] Item {itemId} not found in inventory after pull");
-    return true;
+    return false;
   }
 
   /// <summary>
