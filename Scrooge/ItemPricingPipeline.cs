@@ -492,9 +492,13 @@ internal sealed class ItemPricingPipeline : IDisposable
           var sanityBase = (long)(ownSale ?? oldPrice);
           if (newPrice.Value > sanityBase * Plugin.Configuration.UpwardRepriceMultiplier)
           {
+            // Name the actual trigger: target vs Nx the sanity base. The old
+            // "current -> target exceeds own-sales sanity" wording implied the
+            // SIZE of the move was insane (a +1 gil bump read as madness).
+            var ratio = (float)newPrice.Value / sanityBase;
             var basis = ownSale.HasValue ? $"your last sale {ownSale:N0}" : $"current {oldPrice:N0}";
             Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
-              $"Upward reprice held — market says {newPrice:N0} vs {basis}");
+              $"Upward reprice held — target {newPrice:N0} is {ratio:0.#}x {basis}");
             if (currentItem != null)
             {
               currentItem.Result = PricingResult.UpwardHeld;
@@ -503,7 +507,7 @@ internal sealed class ItemPricingPipeline : IDisposable
               {
                 GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
                   currentItem.RetainerName, currentItem.SlotIndex, "upward_held",
-                  $"Listed {oldPrice:N0} → market {newPrice:N0}; {basis}",
+                  $"Held at {oldPrice:N0} — market target {newPrice:N0} is {ratio:0.#}x {basis}",
                   oldPrice, newPrice.Value);
               }
               catch (Exception ex)

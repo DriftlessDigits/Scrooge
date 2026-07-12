@@ -83,7 +83,7 @@ public sealed class Plugin : IDalamudPlugin
 
     CommandManager.AddHandler("/scrooge", new CommandInfo(OnScroogeCommand)
     {
-      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config for settings)"
+      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config = settings, route = router, triage = inbox)"
     });
 
     // Register chat link handler — clicking Scrooge's chat output opens the dashboard
@@ -261,6 +261,8 @@ public sealed class Plugin : IDalamudPlugin
       ToggleConfigUI();
     else if (args.Trim().Equals("route", StringComparison.OrdinalIgnoreCase))
       RoutingWindow.Toggle();
+    else if (args.Trim().Equals("triage", StringComparison.OrdinalIgnoreCase))
+      TriageWindow.IsOpen = !TriageWindow.IsOpen;
     else
       ToggleMainUi();
   }

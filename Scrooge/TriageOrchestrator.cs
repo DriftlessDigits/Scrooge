@@ -26,6 +26,7 @@ internal sealed class TriageOrchestrator : IDisposable
 
   private Queue<PricingItem>? _triageQueue;
   private List<PricingItem>? _repriceQueue;
+  private RunData? _repriceRun; // temp run owned by QueueReprice - cleared on cleanup
   private IDisposable? _catchallBlock;
   private string? _currentRetainer;
   private int _vendorSoldCount;
@@ -100,6 +101,7 @@ internal sealed class TriageOrchestrator : IDisposable
     var tempRun = new RunData { Mode = RunMode.Pinch, TotalItems = 1 };
     tempRun.CurrentItem = item;
     Plugin.CurrentRun = tempRun;
+    _repriceRun = tempRun;
 
     IsRunning = true;
     _currentRetainer = activeRetainer;
@@ -160,6 +162,7 @@ internal sealed class TriageOrchestrator : IDisposable
       RemoveTalkListeners();
       var success = item.Result == PricingResult.Applied;
       Plugin.CurrentRun = null;
+      _repriceRun = null;
       IsRunning = false;
 
       if (success)
@@ -312,10 +315,36 @@ internal sealed class TriageOrchestrator : IDisposable
   internal void Abort()
   {
     _taskManager.Abort();
+    CleanupRunState();
+  }
+
+  /// <summary>
+  /// Detects a batch that died without cleanup - the TaskManager's
+  /// AbortOnTimeout clears the queue but tells nobody (finding #14: wedged
+  /// "Triage in progress...", leaked catchall block suppressing gil
+  /// tracking). A healthy run always has tasks queued until TriageEnd runs,
+  /// so IsRunning with an idle TaskManager can only mean an abort.
+  /// Called from the Triage window's Draw.
+  /// </summary>
+  internal void RecoverIfStalled()
+  {
+    if (!IsRunning || _taskManager.IsBusy) return;
+    Svc.Log.Warning("[Triage] Batch died mid-flight (task timeout) — recovering state.");
+    Communicator.PrintTriageSummary(_vendorSoldCount, _vendorSoldGil, _pulledCount);
+    CleanupRunState();
+  }
+
+  /// <summary>Shared teardown for abort/stall paths - every resource a run holds.</summary>
+  private void CleanupRunState()
+  {
     IsRunning = false;
     _triageQueue = null;
+    _repriceQueue = null;
     _catchallBlock?.Dispose();
     _catchallBlock = null;
+    if (_repriceRun != null && ReferenceEquals(Plugin.CurrentRun, _repriceRun))
+      Plugin.CurrentRun = null;
+    _repriceRun = null;
     RemoveTalkListeners();
     Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
   }
@@ -386,32 +415,48 @@ internal sealed class TriageOrchestrator : IDisposable
     _taskManager.Enqueue(() => OpenSellListRow(item, isReprice: false),
       $"TriageRightClick_{item.ItemName}");
     _taskManager.DelayNext(500);
-    _taskManager.Enqueue(() => Skipped(item) ? true : GameNavigation.ClickReturnToInventory(),
+    _taskManager.Enqueue(() => Skipped(item) ? true : FailClosed(item, GameNavigation.ClickReturnToInventory()),
       $"TriageReturn_{item.ItemName}");
     _taskManager.DelayNext(1000);
 
     if (item.QueuedAction != TriageAction.Pull)
     {
-      // Vendor: find item in inventory → right-click → "Have Retainer Sell Items"
-      _taskManager.Enqueue(() => Skipped(item) ? true : GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
-        $"TriageClickInv_{item.ItemName}");
+      // Vendor: wait for the pulled item to land in bags (server round-trip,
+      // variable latency), then right-click → "Have Retainer Sell Items".
+      // Returning false retries each tick; a hard deadline marks the ITEM
+      // skipped so one slow arrival costs one item, never the batch. The
+      // item stays in the player's bags either way - nothing is lost.
+      var arrivalDeadline = DateTime.MinValue;
+      _taskManager.Enqueue(() =>
+      {
+        if (Skipped(item)) return true;
+        if (arrivalDeadline == DateTime.MinValue)
+          arrivalDeadline = DateTime.UtcNow.AddMilliseconds(5000);
+        if (GameNavigation.TryClickInventoryItemById(item.ItemId, item.IsHq))
+          return true;
+        if (DateTime.UtcNow < arrivalDeadline)
+          return false; // not in bags yet - retry
+        Svc.Chat.Print($"[Scrooge] {item.ItemName} never arrived in bags — left unvendored (check inventory).");
+        item.QueuedAction = TriageAction.None;
+        return true;
+      }, $"TriageClickInv_{item.ItemName}");
       _taskManager.DelayNext(500);
       _taskManager.Enqueue(() => { if (!Skipped(item)) { _catchallBlock?.Dispose(); _catchallBlock = GilTrackingState.Block("triage_vendor"); } return true; },
         $"TriageBlockCatchall_{item.ItemName}");
-      _taskManager.Enqueue(() => Skipped(item) ? true : GameNavigation.ClickVendorSellItem(),
+      _taskManager.Enqueue(() => Skipped(item) ? true : FailClosed(item, GameNavigation.ClickVendorSellItem()),
         $"TriageVendor_{item.ItemName}");
       _taskManager.DelayNext(500);
 
-      // Track the sale
-      _taskManager.Enqueue(() => { if (!Skipped(item)) TrackVendorSale(item); return true; },
+      // Track the sale and retire the row (flags close on COMPLETION, not queue)
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { TrackVendorSale(item); Plugin.TriageWindow.RemoveItem(item); } return true; },
         $"TriageTrack_{item.ItemName}");
       _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; },
         $"TriageUnblockCatchall_{item.ItemName}");
     }
     else
     {
-      // Pull only — track the pull
-      _taskManager.Enqueue(() => { if (!Skipped(item)) _pulledCount++; return true; },
+      // Pull only — track the pull and retire the row on completion
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { _pulledCount++; Plugin.TriageWindow.RemoveItem(item); } return true; },
         $"TriagePulled_{item.ItemName}");
     }
 
@@ -425,11 +470,26 @@ internal sealed class TriageOrchestrator : IDisposable
     => item.QueuedAction == TriageAction.None || item.Result == PricingResult.Skipped;
 
   /// <summary>
+  /// Translates a context-menu clicker's tri-state for the TaskManager: a
+  /// null (entry missing - fail closed) becomes a per-item skip, because a
+  /// raw null return tells the TaskManager to abort the ENTIRE queue. One
+  /// bad menu costs one item, never the batch.
+  /// </summary>
+  private static bool? FailClosed(PricingItem item, bool? clickResult)
+  {
+    if (clickResult != null) return clickResult;
+    Svc.Chat.Print($"[Scrooge] {item.ItemName} — expected menu entry missing; item skipped (see /xllog).");
+    item.QueuedAction = TriageAction.None;
+    return true;
+  }
+
+  /// <summary>
   /// Opens the sell-list context menu for the item, re-resolving its row by
-  /// (item id, HQ) against the open retainer's market container - recorded
-  /// slot indexes are stale hints, never targeting data. An item that is no
-  /// longer listed (sold since flagging) marks itself skipped; the rest of
-  /// its queued tasks no-op and the batch moves on.
+  /// (item id, HQ) against the sell list's DISPLAYED rows - recorded slot
+  /// indexes are stale hints, never targeting data, and the RetainerMarket
+  /// container orders slots differently than the display (finding #16). An
+  /// item that is no longer listed (sold since flagging) marks itself
+  /// skipped and closes its row; the batch moves on.
   /// </summary>
   private unsafe bool? OpenSellListRow(PricingItem item, bool isReprice)
   {
@@ -437,11 +497,12 @@ internal sealed class TriageOrchestrator : IDisposable
         || !GenericHelpers.IsAddonReady(addon))
       return false; // navigation still in flight - retry
 
-    if (GameSafe.RetainerMarketRow(item.ItemId, item.IsHq) is not { } row)
+    if (GameSafe.SellListRow(item.ItemId, item.IsHq) is not { } row)
     {
       Svc.Chat.Print($"[Scrooge] {item.ItemName} is no longer listed on {item.RetainerName} — skipped (likely sold).");
       if (isReprice) item.Result = PricingResult.Skipped;
       else item.QueuedAction = TriageAction.None;
+      Plugin.TriageWindow.RemoveItem(item); // row is moot - close its flags
       return true;
     }
 

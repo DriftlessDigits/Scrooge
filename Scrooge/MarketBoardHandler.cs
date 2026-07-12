@@ -170,6 +170,7 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
           Plugin.PinchRunLog?.AddOutlierEntry(outlierItemName, (int)currentPrice, (int)nextPrice);
           Plugin.PinchRunLog?.IncrementOutliers();
           Communicator.PrintOutlierDetected(currentOfferings.ItemListings[0].ItemId, (int)currentPrice, (int)nextPrice);
+          LogOutlierEvidence(currentOfferings.ItemListings[0].ItemId, outlierItemName, (int)currentPrice, (int)nextPrice);
           i = j + 1; // skip everything below the cliff
         }
       }
@@ -326,6 +327,40 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
       return null;
 
     return median;
+  }
+
+  /// <summary>
+  /// Calibration evidence for the history-band design: every outlier skip
+  /// gets one log line pairing the decision (skip X, use Y) with the 14-day
+  /// sale history the band WOULD have consulted. The history packet is
+  /// transient - this line is the only durable record of what the market
+  /// actually clears at when the skip fired. Grep /xllog for OutlierEvidence.
+  /// </summary>
+  private void LogOutlierEvidence(uint itemId, string itemName, int skippedPrice, int usedPrice)
+  {
+    if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != itemId)
+    {
+      Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | no history in hand");
+      return;
+    }
+
+    var cutoff = DateTime.UtcNow.AddDays(-14);
+    var recent = _lastHistory
+      .Where(h => h.PurchaseTime >= cutoff)
+      .Where(h => !_useHq || !_itemHq || h.IsHq)
+      .Select(h => (int)h.SalePrice)
+      .OrderBy(p => p)
+      .ToList();
+
+    if (recent.Count == 0)
+    {
+      Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | 14d n=0 (all {_lastHistory.Count} entries older)");
+      return;
+    }
+
+    var median = recent[recent.Count / 2];
+    Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | 14d n={recent.Count} median={median} " +
+      $"skip/median={(median > 0 ? (float)skippedPrice / median : 0):F2} use/median={(median > 0 ? (float)usedPrice / median : 0):F2}");
   }
 
   /// <summary>Clears stored history and outlier flag after use.</summary>

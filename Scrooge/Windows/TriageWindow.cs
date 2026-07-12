@@ -52,6 +52,10 @@ namespace Scrooge.Windows
 
     public override void Draw()
     {
+      // A batch killed by a task timeout leaves IsRunning latched and the
+      // gil-tracking block leaked - detect and recover (finding #14).
+      Plugin.TriageOrchestrator.RecoverIfStalled();
+
       var rows = BuildRows();
 
       if (rows.Count == 0)
@@ -198,17 +202,12 @@ namespace Scrooge.Windows
       if (!Plugin.TriageOrchestrator.QueueTriageBatch(batch))
         return;
 
-      foreach (var (item, action) in batch)
-      {
-        // Vendor/pull items are leaving the MB; reprice rows are removed on
-        // success via the RemoveItem callback.
-        if (action == TriageAction.Vendor || action == TriageAction.Pull)
-          _triageItems.Remove(item);
-        CloseFlagsFor(item);
-      }
+      // Rows and flags are retired per-item ON COMPLETION (the orchestrator
+      // calls RemoveItem as each action lands) - never here at queue time.
+      // A batch that dies mid-flight leaves the unfinished work visible
+      // instead of silently swallowing it (finding #15).
       _actions.Clear();
       _sortedRows = null;
-      RefreshHeldFlags();
     }
 
     private void DrawInbox(List<InboxRow> rows)
@@ -465,7 +464,7 @@ namespace Scrooge.Windows
         PricingResult.UndercutTooDeep =>
           $"Undercut Too Deep ({item.PriceChangePercent:F0}%)",
         PricingResult.UpwardHeld =>
-          $"Upward Held ({item.CurrentListingPrice:N0} → {item.MbPrice:N0} exceeds own-sales sanity)",
+          $"Upward Held (market {item.MbPrice:N0} exceeds {Plugin.Configuration.UpwardRepriceMultiplier:0.#}x own-sales sanity; listed {item.CurrentListingPrice:N0})",
         PricingResult.NoData => "No Data (no listings)",
         _ => "Unknown"
       };
@@ -492,9 +491,10 @@ namespace Scrooge.Windows
     }
 
     /// <summary>
-    /// Removes a row after a successful reprice - or after the orchestrator
-    /// skipped it because it's no longer listed (sold; the row is moot either
-    /// way). Closes any matching held flags too.
+    /// Retires a row on COMPLETION of its action (vendored, pulled, repriced)
+    /// - or when the orchestrator skipped it because it's no longer listed
+    /// (sold; the row is moot either way). Closes any matching held flags.
+    /// This is the ONLY place actions resolve rows - queue time never does.
     /// </summary>
     internal void RemoveItem(PricingItem item)
     {
