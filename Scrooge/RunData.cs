@@ -48,6 +48,9 @@ internal class RunData
   /// <summary>Number of outlier detections during the run.</summary>
   public int OutliersDetected { get; set; }
 
+  /// <summary>Listings whose cut was deepened by slow-mover pressure this run.</summary>
+  public int SlowMoversDeepened { get; set; }
+
   /// <summary>Running total of gil value across all processed listings.</summary>
   public long TotalListingGil { get; set; }
 

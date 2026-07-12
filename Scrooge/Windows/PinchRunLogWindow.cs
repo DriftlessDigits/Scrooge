@@ -18,6 +18,7 @@ namespace Scrooge.Windows
     VendorSold,  // green — vendor-sold through retainer
     Banned,      // blue — on ban list, observed but not changed
     Desynthed,   // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
+    SlowMover,   // info blue — slow-mover pressure deepened the cut (price WAS applied)
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
@@ -169,6 +170,18 @@ namespace Scrooge.Windows
     }
 
     /// <summary>
+    /// Increments the slow-mover deepen counter. Called from SlowMoverPressure.Apply.
+    /// </summary>
+    public void IncrementSlowMovers()
+    {
+      if (!Plugin.Configuration.EnablePinchRunLog)
+        return;
+
+      var run = Run;
+      if (run != null) run.SlowMoversDeepened++;
+    }
+
+    /// <summary>
     /// Adds to the running total of gil currently listed on the market board.
     /// Called from AutoPinch.SetNewPrice for every item — adjusted or skipped.
     /// </summary>
@@ -232,6 +245,9 @@ namespace Scrooge.Windows
 
         if (run.OutliersDetected > 0)
           run.AddRunEntry(RunEvent.Summary, $"{run.OutliersDetected} outliers");
+
+        if (run.SlowMoversDeepened > 0)
+          run.AddRunEntry(RunEvent.Summary, $"{run.SlowMoversDeepened} slow movers deepened");
 
         if (run.VendorSoldCount > 0)
           run.AddRunEntry(RunEvent.Summary, $"{run.VendorSoldCount} vendor-sold for {run.VendorSoldGil:N0} gil");
@@ -405,6 +421,7 @@ namespace Scrooge.Windows
                 ItemOutcome.VendorSold => ScroogeColors.Earned,
                 ItemOutcome.Banned => ScroogeColors.Banned,
                 ItemOutcome.Desynthed => ScroogeColors.Muted,
+                ItemOutcome.SlowMover => ScroogeColors.Info,
                 _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
               };
 
