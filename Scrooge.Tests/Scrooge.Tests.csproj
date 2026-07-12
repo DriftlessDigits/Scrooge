@@ -29,6 +29,8 @@
 
   <ItemGroup>
     <Compile Include="..\Scrooge\RoutingModels.cs" Link="Linked\RoutingModels.cs" />
+    <Compile Include="..\Scrooge\PricingItem.cs" Link="Linked\PricingItem.cs" />
+    <Compile Include="..\Scrooge\ListingAccounting.cs" Link="Linked\ListingAccounting.cs" />
     <Compile Include="..\Scrooge\RoutingRules.cs" Link="Linked\RoutingRules.cs" />
     <Compile Include="..\Scrooge\ListingGate.cs" Link="Linked\ListingGate.cs" />
     <Compile Include="..\Scrooge\DesynthSkillupColor.cs" Link="Linked\DesynthSkillupColor.cs" />

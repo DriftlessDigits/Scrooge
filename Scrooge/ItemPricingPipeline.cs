@@ -359,18 +359,16 @@ internal sealed class ItemPricingPipeline : IDisposable
     {
       var result = currentItem?.Result ?? PricingResult.Pending;
 
-      // Track listing value for run summary
-      if (result != PricingResult.Skipped && result != PricingResult.VendorSell)
+      // Track listing value for run summary. Held results (upward hold, cap
+      // block...) keep the OLD price on the market — count that, never the
+      // rejected reprice target (the 58M troll-wall inflation).
+      var listingValue = ListingAccounting.ListedUnitValue(
+        result, currentItem?.FinalPrice, currentItem?.CurrentListingPrice);
+      if (listingValue > 0)
       {
-        var listingValue = (currentItem?.FinalPrice.HasValue == true && currentItem.FinalPrice > 0)
-          ? currentItem.FinalPrice.Value
-          : currentItem?.CurrentListingPrice ?? 0;
-        if (listingValue > 0)
-        {
-          Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
-          if (!IsHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
-            GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
-        }
+        Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
+        if (!IsHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
+          GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
       }
 
       _hotKeyPrice = null;
