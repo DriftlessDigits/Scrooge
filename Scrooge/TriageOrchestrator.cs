@@ -141,16 +141,18 @@ internal sealed class TriageOrchestrator : IDisposable
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", SkipRetainerDialog);
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", SkipRetainerDialog);
 
-    // Standard pinch item flow: right-click → adjust price → compare prices → set price
+    // Standard pinch item flow: right-click → adjust price → compare prices → set price.
+    // Row re-resolved by id at execution (see OpenSellListRow); a no-longer-
+    // listed item marks itself Skipped and the remaining steps no-op.
     var pricing = Plugin.AutoPinch.Pricing;
-    _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(item.SlotIndex),
+    _taskManager.Enqueue(() => OpenSellListRow(item, isReprice: true),
       $"RepriceRightClick_{item.ItemName}");
     _taskManager.DelayNext(500);
-    _taskManager.Enqueue(pricing.ClickAdjustPrice, $"RepriceAdjust_{item.ItemName}");
+    _taskManager.Enqueue(() => Skipped(item) ? true : pricing.ClickAdjustPrice(), $"RepriceAdjust_{item.ItemName}");
     _taskManager.DelayNext(100);
-    _taskManager.Enqueue(pricing.ClickComparePrice, $"RepriceCompare_{item.ItemName}");
+    _taskManager.Enqueue(() => Skipped(item) ? true : pricing.ClickComparePrice(), $"RepriceCompare_{item.ItemName}");
     _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
-    _taskManager.Enqueue(pricing.SetNewPrice, $"RepriceSetPrice_{item.ItemName}");
+    _taskManager.Enqueue(() => Skipped(item) ? true : pricing.SetNewPrice(), $"RepriceSetPrice_{item.ItemName}");
 
     // Cleanup: check result and update triage, chain next reprice if any
     _taskManager.Enqueue(() =>
@@ -162,6 +164,8 @@ internal sealed class TriageOrchestrator : IDisposable
 
       if (success)
         Plugin.TriageWindow.RemoveItem(item);
+      else if (item.Result == PricingResult.Skipped)
+        Plugin.TriageWindow.RemoveItem(item); // no longer listed - row is moot
       else
         Svc.Chat.PrintError($"[Scrooge] Reprice failed for {item.ItemName}: {item.Result}");
 
@@ -375,28 +379,31 @@ internal sealed class TriageOrchestrator : IDisposable
       _currentRetainer = item.RetainerName;
     }
 
-    // Pull: right-click item in sell list → "Return Items to Inventory"
-    _taskManager.Enqueue(() => GameNavigation.OpenItemContextMenu(item.SlotIndex),
+    // Pull: right-click item in sell list → "Return Items to Inventory".
+    // The row is re-resolved by item id at execution time - recorded slot
+    // indexes go stale the moment anything sells, and held-flag rows can be
+    // days old. Not listed anymore = it sold; skip, never pull blind.
+    _taskManager.Enqueue(() => OpenSellListRow(item, isReprice: false),
       $"TriageRightClick_{item.ItemName}");
     _taskManager.DelayNext(500);
-    _taskManager.Enqueue(GameNavigation.ClickReturnToInventory,
+    _taskManager.Enqueue(() => Skipped(item) ? true : GameNavigation.ClickReturnToInventory(),
       $"TriageReturn_{item.ItemName}");
     _taskManager.DelayNext(1000);
 
-    if (item.QueuedAction == TriageAction.Vendor)
+    if (item.QueuedAction != TriageAction.Pull)
     {
       // Vendor: find item in inventory → right-click → "Have Retainer Sell Items"
-      _taskManager.Enqueue(() => GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
+      _taskManager.Enqueue(() => Skipped(item) ? true : GameNavigation.ClickInventoryItemById(item.ItemId, item.IsHq),
         $"TriageClickInv_{item.ItemName}");
       _taskManager.DelayNext(500);
-      _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = GilTrackingState.Block("triage_vendor"); return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { _catchallBlock?.Dispose(); _catchallBlock = GilTrackingState.Block("triage_vendor"); } return true; },
         $"TriageBlockCatchall_{item.ItemName}");
-      _taskManager.Enqueue(GameNavigation.ClickVendorSellItem,
+      _taskManager.Enqueue(() => Skipped(item) ? true : GameNavigation.ClickVendorSellItem(),
         $"TriageVendor_{item.ItemName}");
       _taskManager.DelayNext(500);
 
       // Track the sale
-      _taskManager.Enqueue(() => { TrackVendorSale(item); return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) TrackVendorSale(item); return true; },
         $"TriageTrack_{item.ItemName}");
       _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; },
         $"TriageUnblockCatchall_{item.ItemName}");
@@ -404,13 +411,42 @@ internal sealed class TriageOrchestrator : IDisposable
     else
     {
       // Pull only — track the pull
-      _taskManager.Enqueue(() => { _pulledCount++; return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) _pulledCount++; return true; },
         $"TriagePulled_{item.ItemName}");
     }
 
     // Continue to next item
     _taskManager.Enqueue(ProcessNext, "TriageProcessNext");
     return true;
+  }
+
+  /// <summary>An item marked skipped mid-batch (no longer listed) - queued follow-up tasks no-op.</summary>
+  private static bool Skipped(PricingItem item)
+    => item.QueuedAction == TriageAction.None || item.Result == PricingResult.Skipped;
+
+  /// <summary>
+  /// Opens the sell-list context menu for the item, re-resolving its row by
+  /// (item id, HQ) against the open retainer's market container - recorded
+  /// slot indexes are stale hints, never targeting data. An item that is no
+  /// longer listed (sold since flagging) marks itself skipped; the rest of
+  /// its queued tasks no-op and the batch moves on.
+  /// </summary>
+  private unsafe bool? OpenSellListRow(PricingItem item, bool isReprice)
+  {
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return false; // navigation still in flight - retry
+
+    if (GameSafe.RetainerMarketRow(item.ItemId, item.IsHq) is not { } row)
+    {
+      Svc.Chat.Print($"[Scrooge] {item.ItemName} is no longer listed on {item.RetainerName} — skipped (likely sold).");
+      if (isReprice) item.Result = PricingResult.Skipped;
+      else item.QueuedAction = TriageAction.None;
+      return true;
+    }
+
+    item.Quantity = row.Quantity; // live stack size (flag rows start unknown)
+    return GameNavigation.OpenItemContextMenu(row.RowIndex);
   }
 
   /// <summary>Finds a retainer by name in the RetainerList and clicks them.</summary>
