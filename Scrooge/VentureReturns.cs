@@ -20,21 +20,35 @@ namespace Scrooge;
 /// scan, and when both fail it dumps every value to the log tagged
 /// "[Ventures] map needed" - one live venture collection gives the real
 /// offsets. Capture is evidence-only: unparseable dialogs record nothing.
+///
+/// Live receipt 2026-07-12 (shake-out finding 7): at PostSetup the addon
+/// carries only the button bar ([0]=2 [1]=Reassign [2]=Confirm) - the server
+/// fills the reward in later. So the listener also rides PostRefresh and
+/// PostRequestedUpdate; whichever event carries the reward first wins, the
+/// minute-bucket dedup swallows the rest.
 /// </summary>
 internal sealed class VentureReturnTracker : IDisposable
 {
-  // Dedup: collecting fires PostSetup once, but a re-shown dialog (or a
-  // PostSetup/PostUpdate double) must not double-count the same venture.
+  private static readonly AddonEvent[] Events =
+    [AddonEvent.PostSetup, AddonEvent.PostRefresh, AddonEvent.PostRequestedUpdate];
+
+  // Dedup: the same venture surfaces on several lifecycle events (and a
+  // re-shown dialog) - never double-count it.
   private (string Retainer, uint ItemId, int Qty, long Minute)? _lastCapture;
+
+  // Throttle the map-needed dumps to one per event type per dialog showing.
+  private static readonly Dictionary<AddonEvent, long> _lastDumpAt = [];
 
   public VentureReturnTracker()
   {
-    Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "RetainerTaskResult", OnTaskResult);
+    foreach (var ev in Events)
+      Svc.AddonLifecycle.RegisterListener(ev, "RetainerTaskResult", OnTaskResult);
   }
 
   public void Dispose()
   {
-    Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "RetainerTaskResult", OnTaskResult);
+    foreach (var ev in Events)
+      Svc.AddonLifecycle.UnregisterListener(ev, "RetainerTaskResult", OnTaskResult);
   }
 
   private unsafe void OnTaskResult(AddonEvent type, AddonArgs args)
@@ -45,9 +59,14 @@ internal sealed class VentureReturnTracker : IDisposable
       if (addon == null || !addon->IsVisible) return;
 
       var retainer = GameSafe.ActiveRetainerName() ?? "";
-      if (retainer.Length == 0) return; // no attribution, no row
+      if (retainer.Length == 0)
+      {
+        // No attribution, no row - but never silently (finding 9).
+        Svc.Log.Debug($"[Ventures] {type}: no active retainer name - capture skipped");
+        return;
+      }
 
-      if (ParseReward(addon) is not { } reward)
+      if (ParseReward(addon, type) is not { } reward)
         return;
 
       var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -57,7 +76,7 @@ internal sealed class VentureReturnTracker : IDisposable
 
       GilStorage.InsertVentureReturn(now, retainer, reward.ItemId, reward.Quantity, reward.IsHq);
       VentureReturns.InvalidateCache();
-      Svc.Log.Debug($"[Ventures] {retainer}: {reward.Quantity}x {reward.ItemId}{(reward.IsHq ? " HQ" : "")}");
+      Svc.Log.Debug($"[Ventures] {retainer}: {reward.Quantity}x {reward.ItemId}{(reward.IsHq ? " HQ" : "")} (via {type})");
     }
     catch (Exception ex)
     {
@@ -70,7 +89,7 @@ internal sealed class VentureReturnTracker : IDisposable
   /// first UInt/Int that is a real Item row (with the +1M HQ convention),
   /// quantity from the next small positive int. Null = unparseable.
   /// </summary>
-  private static unsafe (uint ItemId, int Quantity, bool IsHq)? ParseReward(AtkUnitBase* addon)
+  private static unsafe (uint ItemId, int Quantity, bool IsHq)? ParseReward(AtkUnitBase* addon, AddonEvent source)
   {
     var sheet = Svc.Data.GetExcelSheet<Item>();
 
@@ -86,9 +105,16 @@ internal sealed class VentureReturnTracker : IDisposable
           && TryAsQuantity(addon->AtkValues[i + 1]) is int qty)
         return (item.ItemId, qty, item.IsHq);
 
-    // Nothing parseable - dump for the live mapping pass.
-    var dump = new System.Text.StringBuilder("[Ventures] map needed - RetainerTaskResult values: ");
-    for (var i = 0; i < Math.Min((int)addon->AtkValuesCount, 30); i++)
+    // Nothing parseable - dump for the live mapping pass, tagged with the
+    // lifecycle event so the pass shows WHICH event carries the reward.
+    // Throttled per event: RequestedUpdate can fire many times per dialog.
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    if (_lastDumpAt.TryGetValue(source, out var last) && now - last < 5)
+      return null;
+    _lastDumpAt[source] = now;
+
+    var dump = new System.Text.StringBuilder($"[Ventures] map needed - RetainerTaskResult {source} values ({addon->AtkValuesCount}): ");
+    for (var i = 0; i < Math.Min((int)addon->AtkValuesCount, 40); i++)
       dump.Append($"[{i}]={addon->AtkValues[i].GetValueAsString()} ");
     Svc.Log.Info(dump.ToString());
     return null;
