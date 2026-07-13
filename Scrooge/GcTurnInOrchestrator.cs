@@ -3,10 +3,10 @@ using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
-using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace Scrooge;
 
@@ -114,7 +114,6 @@ internal sealed class GcTurnInOrchestrator
     _queue = new Queue<GcTurnInItem>(items);
     _sealsEarned = 0;
     _turnedIn = 0;
-    _dumpedListThisRun = false;
     IsRunning = true;
     Svc.Framework.Update += OnFrameworkUpdate;
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
@@ -151,34 +150,29 @@ internal sealed class GcTurnInOrchestrator
     }
     _sealsBefore = seals.Current;
 
-    // Re-resolve the item in the agent's delivery list every pass - the
-    // list reshuffles after each turn-in.
-    var index = FindDeliveryIndex(item);
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyList", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return false; // false = keep polling until timeout (null would signal ABORT)
+
+    // Re-resolve the item's DISPLAYED row every pass - the list reshuffles
+    // after each turn-in, and the row-select callback's index space is
+    // display rows, not agent-array positions (live receipt 2026-07-12:
+    // agent index selected the wrong row, finding #16's bug class at the
+    // GC counter; the reward name check aborted the run as designed).
+    var index = FindDisplayIndex(addon, item);
     if (index < 0)
     {
-      // Not in the list (already gone, or ineligible after all) - skip, don't guess.
+      // Not in the displayed list (already gone, filtered out, or
+      // ineligible after all) - skip, don't guess.
       Svc.Chat.Print($"[Scrooge] Skipped {item.Name} - not in the delivery list.");
       _queue.Dequeue();
       _taskManager.Enqueue(ProcessNext, "GcProcessNext");
       return true;
     }
 
-    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyList", out var addon)
-        || !GenericHelpers.IsAddonReady(addon))
-      return false; // false = keep polling until timeout (null would signal ABORT)
-
-    // MAPPING PASS (live receipt 2026-07-12): the callback selects DISPLAY
-    // rows, but FindDeliveryIndex returns AGENT-ARRAY positions - the list
-    // displays sorted (seals desc, player-changeable), so the click landed on
-    // the wrong row and the reward check aborted the run. Same bug class as
-    // finding #16. Dump the addon's AtkValues once per run so the displayed
-    // row layout gets pinned, then row targeting moves to the addon read.
-    DumpSupplyListValues(addon);
-
-    // Select the list row -> pops the reward dialog.
-    // KNOWN WRONG index space (see above) - the reward-dialog name check
-    // keeps this fail-closed until the display-row fix lands.
-    ECommons.Automation.Callback.Fire(addon, true, 1, index);
+    // Select the display row -> pops the reward dialog. The trailing zero
+    // AtkValue matches the event signature the game expects.
+    ECommons.Automation.Callback.Fire(addon, true, 1, index, ECommons.Automation.Callback.ZeroAtkValue);
 
     _taskManager.Enqueue(() => ConfirmReward(item), $"GcConfirm_{item.Name}");
     _taskManager.DelayNext(300);
@@ -189,32 +183,35 @@ internal sealed class GcTurnInOrchestrator
   }
 
   /// <summary>
-  /// Finds the queued item in AgentGrandCompanySupply's current list.
-  /// Match = item id + HQ state of the actual inventory slot the agent
-  /// entry points at. Returns -1 when absent.
+  /// One row of the supply list's DISPLAYED item array, which hangs off the
+  /// addon at +648 in display order - sorted and filtered exactly as the
+  /// player sees it, and the index space the row-select callback expects.
+  /// Layout per AutoRetainer's GCExpectEntry (production-proven).
   /// </summary>
-  private static unsafe int FindDeliveryIndex(GcTurnInItem item)
+  [StructLayout(LayoutKind.Explicit, Size = 152)]
+  private struct DisplayEntry
   {
-    var agent = AgentGrandCompanySupply.Instance();
-    if (agent == null || agent->ItemArray == null) return -1;
+    [FieldOffset(120)] public uint Seals;
+    [FieldOffset(132)] public uint ItemId;
+  }
 
-    var im = InventoryManager.Instance();
-    if (im == null) return -1;
+  /// <summary>
+  /// Finds the queued item's displayed row. Match is by item id only - the
+  /// display array carries no HQ flag, so when NQ and HQ copies coexist the
+  /// row picked may be either variant (same item, same name; the reward
+  /// check passes and the HQ confirm is answered either way). Returns -1
+  /// when absent or the list isn't loaded.
+  /// </summary>
+  private static unsafe int FindDisplayIndex(AtkUnitBase* addon, GcTurnInItem item)
+  {
+    if (addon->AtkValues[0].UInt != 2) return -1; // list still loading
+    var count = (int)addon->AtkValues[6].UInt;
+    var entries = *(DisplayEntry**)((nint)addon + 648);
+    if (entries == null) return -1;
 
-    for (int i = 0; i < agent->NumItems; i++)
-    {
-      var entry = agent->ItemArray[i];
-      if (entry.ItemId != item.ItemId) continue;
-
-      var container = im->GetInventoryContainer(entry.Inventory);
-      if (container == null) continue;
-      var slot = container->GetInventorySlot(entry.Slot);
-      if (slot == null || slot->ItemId != item.ItemId) continue;
-
-      var isHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
-      if (isHq == item.IsHq)
+    for (var i = 0; i < count; i++)
+      if (entries[i].ItemId == item.ItemId)
         return i;
-    }
     return -1;
   }
 
@@ -245,30 +242,6 @@ internal sealed class GcTurnInOrchestrator
 
     new AddonMaster.GrandCompanySupplyReward((nint)addon).Deliver();
     return true;
-  }
-
-  /// <summary>
-  /// One-shot per run: dump GrandCompanySupplyList's AtkValues so the
-  /// displayed-row layout can be pinned from a live run (finding: agent
-  /// index != display index). Chunked to survive log-line limits.
-  /// </summary>
-  private bool _dumpedListThisRun;
-  private unsafe void DumpSupplyListValues(AtkUnitBase* addon)
-  {
-    if (_dumpedListThisRun) return;
-    _dumpedListThisRun = true;
-    var count = (int)addon->AtkValuesCount;
-    Svc.Log.Info($"[GcTurnIn] map needed - GrandCompanySupplyList AtkValues ({count}):");
-    var sb = new System.Text.StringBuilder();
-    for (var i = 0; i < count; i++)
-    {
-      sb.Append($"[{i}]={addon->AtkValues[i].GetValueAsString()} ");
-      if ((i + 1) % 16 == 0 || i == count - 1)
-      {
-        Svc.Log.Info($"[GcTurnIn] {sb}");
-        sb.Clear();
-      }
-    }
   }
 
   /// <summary>Dumps every non-empty string AtkValue of an addon (mismatch evidence).</summary>
@@ -307,10 +280,17 @@ internal sealed class GcTurnInOrchestrator
   /// the retry window = the hand-in didn't happen - stop rather than churn
   /// blind (a stuck dialog or a full wallet both land here).
   /// </summary>
-  private bool? VerifyAndAdvance(GcTurnInItem item)
+  private unsafe bool? VerifyAndAdvance(GcTurnInItem item)
   {
     if (!IsRunning)
       return true;
+
+    // HQ hand-ins pop a confirm ("really trade a high-quality item?") after
+    // Deliver - answer it while waiting for the wallet to move.
+    if (item.IsHq
+        && GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yesno)
+        && GenericHelpers.IsAddonReady(yesno))
+      new AddonMaster.SelectYesno((nint)yesno).Yes();
 
     if (GameSafe.CompanySeals() is not { } seals)
     {
