@@ -35,10 +35,14 @@ internal sealed class DesynthPreviewWindow : Window
 
   /// <summary>
   /// Re-scans AgentSalvage state and opens the window. Idempotent — calling
-  /// while open just refreshes the item list.
+  /// while open just refreshes the item list. Also refreshes the router so
+  /// the desynth-pile banner and tags reflect the bags as they are NOW, not
+  /// as of the last manual Refresh (Sam's call: launching this window IS
+  /// the moment the pile data matters).
   /// </summary>
   public void OpenAndScan()
   {
+    Plugin.RoutingWindow.Refresh();
     _items = DesynthInventoryScanner.Scan();
     IsOpen = true;
   }
