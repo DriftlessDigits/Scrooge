@@ -91,11 +91,15 @@ internal static class RoutingInputService
     var isEquipment = item.EquipSlotCategory.RowId != 0;
     var fullId = isHq ? itemId + 1_000_000u : itemId;
 
-    // Desynth skill state — repair class as the desynthesizable proxy
-    // (equipment with no repair class can't be melted).
+    // Desynth skill state — the sheet's Desynth flag is the real
+    // desynthesizable test; repair class alone is a leaky proxy (finding
+    // #18: current-patch raid gear carries a repair class but Desynth=0,
+    // so the router piled it on an exit the game refuses). The flag is
+    // patch data - when SE lifts the restriction the next scan just
+    // starts routing these to desynth again, no code change.
     DesynthSkillupColor? color = null;
     var repairClass = (byte)item.ClassJobRepair.RowId;
-    if (isEquipment && repairClass != 0)
+    if (isEquipment && repairClass != 0 && item.Desynth != 0)
       color = DesynthSkillup.Classify(
         GameSafe.GetDesynthLevel(repairClass),
         (int)item.LevelItem.RowId);

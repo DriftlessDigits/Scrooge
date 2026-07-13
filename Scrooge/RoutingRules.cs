@@ -200,7 +200,8 @@ internal static class RoutingRules
           return new(RoutingExit.Vendor,
             $"Untradable, no desynth or seal evidence — vendor is the only exit: {uv:N0} gil.");
         return new(RoutingExit.Vendor,
-          "No viable exit known (untradable, can't even vendor it).", IsReview: true);
+          "No gil exit at all (untradable, no desynth, no seals) — current-tier gear is usually for wearing, not selling.",
+          IsReview: true);
       }
 
       if (item.MarketVelocity is double marketV)
