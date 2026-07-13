@@ -2,3 +2,5 @@
 obj/
 bin/
 *.user
+Scrooge.Tests/bin/
+Scrooge.Tests/obj/

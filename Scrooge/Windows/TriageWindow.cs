@@ -7,15 +7,31 @@ using Dalamud.Interface.Windowing;
 namespace Scrooge.Windows
 {
   /// <summary>
-  /// Post-run triage window. Shows skipped items with pricing data
-  /// so the user can assign actions (Vendor, Pull, Reprice) and execute them in batch.
+  /// The action inbox (shake-out findings 4+5, Sam's call 2026-07-11): ONE
+  /// table of everything awaiting the player's judgment. This run's skipped
+  /// items and persistent held flags (V12) are the same list with different
+  /// lifetimes - every row carries its full action set (Vend / Pull /
+  /// Reprice where applicable / Dismiss), fresh rows are marked, and the run
+  /// summary stays as a header line.
+  ///
+  /// Flag-backed rows act through the same orchestrator as live rows: slot
+  /// targeting is re-resolved by item id at execution time (see
+  /// TriageOrchestrator.OpenSellListRow), so stale flag slots can never pull
+  /// the wrong item.
   /// </summary>
   internal sealed class TriageWindow : Window
   {
-    private List<PricingItem>? _sortedItems;
+    /// <summary>One inbox row: a live run item, or a held flag wearing a synthetic PricingItem.</summary>
+    private sealed record InboxRow(PricingItem Item, TriageFlag? Flag)
+    {
+      public bool IsFresh => Flag == null;
+    }
+
     private List<PricingItem> _triageItems = [];
-    private Dictionary<PricingItem, TriageAction> _actions = [];
     private List<TriageFlag> _heldFlags = [];
+    private readonly Dictionary<long, PricingItem> _flagItems = []; // flag id -> synthetic (stable identity for _actions)
+    private Dictionary<PricingItem, TriageAction> _actions = [];
+    private List<InboxRow>? _sortedRows;
 
     internal TriageWindow() : base("Scrooge - Triage")
     {
@@ -24,7 +40,7 @@ namespace Scrooge.Windows
         MinimumSize = new Vector2(600, 200),
         MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
       };
-      Size = new Vector2(1050, 400);
+      Size = new Vector2(1100, 400);
       SizeCondition = ImGuiCond.FirstUseEver;
       IsOpen = false;
     }
@@ -36,16 +52,20 @@ namespace Scrooge.Windows
 
     public override void Draw()
     {
-      if (_triageItems.Count == 0 && _heldFlags.Count == 0)
+      // A batch killed by a task timeout leaves IsRunning latched and the
+      // gil-tracking block leaked - detect and recover (finding #14).
+      Plugin.TriageOrchestrator.RecoverIfStalled();
+
+      var rows = BuildRows();
+
+      if (rows.Count == 0)
       {
         ImGui.TextDisabled("No triage items.");
         return;
       }
 
-      if (_triageItems.Count > 0)
-        DrawRunItems();
-
-      DrawHeldFlags();
+      DrawHeader();
+      DrawInbox(rows);
     }
 
     /// <summary>Loads open persistent flags (V12). Called on window open and after flag mutations.</summary>
@@ -53,6 +73,7 @@ namespace Scrooge.Windows
     {
       try { _heldFlags = GilStorage.GetOpenTriageFlags(); }
       catch { _heldFlags = []; }
+      _sortedRows = null;
     }
 
     /// <summary>Marks any open flags for this item as actioned (it was queued in a triage batch).</summary>
@@ -63,73 +84,83 @@ namespace Scrooge.Windows
     }
 
     /// <summary>
-    /// Persistent held flags (V12) - warnings that survive restarts, open
-    /// until acted on or dismissed. Rows duplicated by a live triage item
-    /// are hidden (the live row carries the actions).
+    /// The unified row list: fresh run items first, then held flags not
+    /// already represented by a live row (the live row carries the actions).
     /// </summary>
-    private void DrawHeldFlags()
+    private List<InboxRow> BuildRows()
     {
-      var visible = _heldFlags.Where(f => !_triageItems.Any(t =>
-          t.ItemId == f.ItemId && t.IsHq == f.IsHq && t.RetainerName == f.RetainerName)).ToList();
-      if (visible.Count == 0) return;
+      var rows = new List<InboxRow>();
+      foreach (var item in _triageItems)
+        rows.Add(new InboxRow(item, null));
 
-      ImGui.Spacing();
-      ImGui.Separator();
-      ImGui.TextColored(ScroogeColors.Header, $"Held flags ({visible.Count})");
-      ImGui.TextDisabled("From earlier sessions - open until you act on or dismiss them.");
-
-      if (ImGui.BeginTable("HeldFlags", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
+      foreach (var flag in _heldFlags)
       {
-        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.WidthFixed, 70);
-        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 1.0f);
-        ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch, 0.7f);
-        ImGui.TableSetupColumn("Detail", ImGuiTableColumnFlags.WidthStretch, 2.0f);
-        ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 60);
-        ImGui.TableHeadersRow();
-
-        long? dismissId = null;
-        foreach (var flag in visible)
-        {
-          ImGui.TableNextRow();
-          ImGui.TableNextColumn();
-          var ageDays = (System.DateTimeOffset.UtcNow.ToUnixTimeSeconds() - flag.CreatedAt) / 86400;
-          ImGui.Text(ageDays < 1 ? "today" : $"{ageDays}d ago");
-          ImGui.TableNextColumn();
-          ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Warning);
-          ImGui.Text(Format.Hq(GilTracker.GetItemName(flag.ItemId), flag.IsHq));
-          ImGui.PopStyleColor();
-          ImGui.TableNextColumn(); ImGui.Text(flag.RetainerName);
-          ImGui.TableNextColumn(); ImGui.Text(flag.Detail);
-          ImGui.TableNextColumn();
-          if (ImGui.SmallButton($"Dismiss##flag{flag.Id}"))
-            dismissId = flag.Id;
-        }
-        ImGui.EndTable();
-
-        if (dismissId is long id)
-        {
-          try { GilStorage.SetTriageFlagStatus(id, "dismissed"); } catch { /* storage unavailable */ }
-          RefreshHeldFlags();
-        }
+        if (_triageItems.Any(t => t.ItemId == flag.ItemId && t.IsHq == flag.IsHq && t.RetainerName == flag.RetainerName))
+          continue;
+        rows.Add(new InboxRow(SyntheticItem(flag), flag));
       }
+      return rows;
     }
 
-    private void DrawRunItems()
+    /// <summary>
+    /// A held flag's actionable stand-in. Quantity starts 0 (unknown - shown
+    /// as a dash; the orchestrator fills the real stack at pull time). The
+    /// Result mapping decides Reprice eligibility: price-hold flags can be
+    /// repriced (guards bypassed), evict flags can only move or dismiss.
+    /// </summary>
+    private PricingItem SyntheticItem(TriageFlag flag)
     {
-      var triageItems = _triageItems;
+      if (_flagItems.TryGetValue(flag.Id, out var cached)) return cached;
+
+      var item = new PricingItem
+      {
+        SlotIndex = flag.SlotIndex, // stale hint only - never used for targeting
+        ItemId = flag.ItemId,
+        IsHq = flag.IsHq,
+        ItemName = GilTracker.GetItemName(flag.ItemId),
+        RetainerName = flag.RetainerName,
+        Quantity = 0,
+        CurrentListingPrice = flag.OldPrice > 0 ? flag.OldPrice : null,
+        MbPrice = flag.FlaggedPrice > 0 ? flag.FlaggedPrice : null,
+        VendorPrice = VendorPriceOf(flag.ItemId),
+        Result = flag.Reason switch
+        {
+          "upward_held" or "outlier_warn" => PricingResult.UpwardHeld,
+          "cap_blocked" => PricingResult.CapBlocked,
+          _ => PricingResult.NoData,
+        },
+      };
+      _flagItems[flag.Id] = item;
+      return item;
+    }
+
+    private static int VendorPriceOf(uint itemId)
+    {
+      try
+      {
+        return (int)ECommons.DalamudServices.Svc.Data
+          .GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(itemId).PriceLow;
+      }
+      catch { return 0; }
+    }
+
+    /// <summary>Run summary + batch buttons. The summary line covers this run's fresh rows only.</summary>
+    private void DrawHeader()
+    {
       var isRunning = Plugin.TriageOrchestrator.IsRunning;
 
-      // Summary line
-      var totalVendorGil = triageItems.Sum(t => t.VendorPrice * t.Quantity);
-      ImGui.Text($"{triageItems.Count} {(triageItems.Count == 1 ? "item" : "items")} skipped — vendoring all would free {triageItems.Count} {(triageItems.Count == 1 ? "slot" : "slots")} and net {totalVendorGil:N0} gil");
+      if (_triageItems.Count > 0)
+      {
+        var totalVendorGil = _triageItems.Sum(t => t.VendorPrice * t.Quantity);
+        ImGui.Text($"{_triageItems.Count} {(_triageItems.Count == 1 ? "item" : "items")} skipped this run — vendoring all would free {_triageItems.Count} {(_triageItems.Count == 1 ? "slot" : "slots")} and net {totalVendorGil:N0} gil");
+      }
+      var flagCount = _heldFlags.Count(f => !_triageItems.Any(t => t.ItemId == f.ItemId && t.IsHq == f.IsHq && t.RetainerName == f.RetainerName));
+      if (flagCount > 0)
+        ImGui.TextDisabled($"{flagCount} held {(flagCount == 1 ? "flag" : "flags")} from earlier sessions — open until you act on or dismiss them.");
       ImGui.Spacing();
-
-      // Bulk action buttons
-      bool dismissAll = false;
 
       if (!isRunning)
       {
-        // Go button — summarize pending actions
         var vendorCount = _actions.Count(a => a.Value == TriageAction.Vendor);
         var pullCount = _actions.Count(a => a.Value == TriageAction.Pull);
         var repriceCount = _actions.Count(a => a.Value == TriageAction.Reprice);
@@ -143,28 +174,17 @@ namespace Scrooge.Windows
           if (repriceCount > 0) parts.Add($"{repriceCount} reprice");
 
           if (ImGui.Button($"Go ({string.Join(", ", parts)})"))
-          {
-            var batch = new Dictionary<PricingItem, TriageAction>(_actions);
-            if (Plugin.TriageOrchestrator.QueueTriageBatch(batch))
-            {
-              // Remove vendor/pull items from triage (they're leaving the MB)
-              foreach (var (item, action) in batch)
-              {
-                if (action == TriageAction.Vendor || action == TriageAction.Pull)
-                  triageItems.Remove(item);
-                // Reprice items are removed on success via RemoveItem callback
-                CloseFlagsFor(item);
-              }
-              _actions.Clear();
-              _sortedItems = null;
-              RefreshHeldFlags();
-            }
-          }
+            ExecuteBatch();
           ImGui.SameLine();
         }
 
-        if (ImGui.Button("Dismiss"))
-          dismissAll = true;
+        if (_triageItems.Count > 0 && ImGui.Button("Dismiss Run Items"))
+        {
+          _triageItems.Clear();
+          _actions = _actions.Where(a => _flagItems.ContainsValue(a.Key))
+            .ToDictionary(a => a.Key, a => a.Value);
+          _sortedRows = null;
+        }
       }
       else
       {
@@ -174,13 +194,35 @@ namespace Scrooge.Windows
         ImGui.TextDisabled("Triage in progress...");
       }
       ImGui.Spacing();
+    }
 
-      if (ImGui.BeginTable("TriageTable", 11,
+    private void ExecuteBatch()
+    {
+      var batch = new Dictionary<PricingItem, TriageAction>(_actions);
+      if (!Plugin.TriageOrchestrator.QueueTriageBatch(batch))
+        return;
+
+      // Rows and flags are retired per-item ON COMPLETION (the orchestrator
+      // calls RemoveItem as each action lands) - never here at queue time.
+      // A batch that dies mid-flight leaves the unfinished work visible
+      // instead of silently swallowing it (finding #15).
+      _actions.Clear();
+      _sortedRows = null;
+    }
+
+    private void DrawInbox(List<InboxRow> rows)
+    {
+      var isRunning = Plugin.TriageOrchestrator.IsRunning;
+      long? dismissFlagId = null;
+      PricingItem? dismissItem = null;
+
+      if (ImGui.BeginTable("TriageInbox", 12,
         ImGuiTableFlags.ScrollY | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH
         | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp
         | ImGuiTableFlags.Sortable | ImGuiTableFlags.SortTristate))
       {
-        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultSort, 1.0f);
+        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.DefaultSort, 55);
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 1.0f);
         ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.WidthStretch, 0.8f);
         ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 30);
         ImGui.TableSetupColumn("Listed", ImGuiTableColumnFlags.WidthFixed, 55);
@@ -190,92 +232,78 @@ namespace Scrooge.Windows
         ImGui.TableSetupColumn("vs MB", ImGuiTableColumnFlags.WidthFixed, 55);
         ImGui.TableSetupColumn("Reason", ImGuiTableColumnFlags.WidthStretch, 2.0f);
         ImGui.TableSetupColumn("Details", ImGuiTableColumnFlags.WidthStretch, 1.5f);
-        ImGui.TableSetupColumn("Action", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.NoSort, 1.0f);
+        ImGui.TableSetupColumn("Action", ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.NoSort, 1.2f);
         ImGui.TableHeadersRow();
 
-        // Column header tooltips (columns 2-9)
-        for (int col = 2; col <= 9; col++)
+        // Column header tooltips
+        for (int col = 0; col <= 10; col++)
         {
           ImGui.TableSetColumnIndex(col);
           if (ImGui.IsItemHovered())
           {
             var tip = col switch
             {
-              2 => "Stack size of the listing",
-              3 => "Your current listing price per unit",
-              4 => "Current market board price per unit",
-              5 => "NPC vendor sell price per unit",
-              6 => "Total gil received if vendor-sold (Vendor/ea × Qty)",
-              7 => "Gil difference if you vendor instead of selling on MB at the listed price",
-              8 => "Why this item was skipped during the run",
-              9 => "Sale history and pricing context for the skip decision",
+              0 => "'new' = from this run; otherwise how long the flag has been open",
+              3 => "Stack size of the listing (— when unknown until pull time)",
+              4 => "Your current listing price per unit",
+              5 => "Current market board price per unit",
+              6 => "NPC vendor sell price per unit",
+              7 => "Total gil received if vendor-sold (Vendor/ea × Qty)",
+              8 => "Gil difference if you vendor instead of selling on MB at the listed price",
+              9 => "Why this row needs your judgment",
+              10 => "Sale history and pricing context",
               _ => ""
             };
-            ImGui.SetTooltip(tip);
+            if (tip.Length > 0) ImGui.SetTooltip(tip);
           }
         }
 
-        // Sorting
-        var sortSpecs = ImGui.TableGetSortSpecs();
-        if (sortSpecs.SpecsDirty || _sortedItems == null || _sortedItems.Count != triageItems.Count)
+        SortRows(rows);
+
+        for (int i = 0; i < _sortedRows!.Count; i++)
         {
-          _sortedItems = new List<PricingItem>(triageItems);
-
-          if (sortSpecs.SpecsCount > 0)
-          {
-            var spec = sortSpecs.Specs;
-            var col = spec.ColumnIndex;
-            var asc = spec.SortDirection == ImGuiSortDirection.Ascending;
-
-            _sortedItems.Sort((a, b) =>
-            {
-              var cmp = col switch
-              {
-                0 => string.Compare(a.ItemName, b.ItemName),
-                1 => string.Compare(a.RetainerName, b.RetainerName),
-                2 => a.Quantity.CompareTo(b.Quantity),
-                3 => (a.CurrentListingPrice ?? 0).CompareTo(b.CurrentListingPrice ?? 0),
-                4 => (a.MbPrice ?? 0).CompareTo(b.MbPrice ?? 0),
-                5 => a.VendorPrice.CompareTo(b.VendorPrice),
-                6 => (a.VendorPrice * a.Quantity).CompareTo(b.VendorPrice * b.Quantity),
-                7 => VsMb(a).CompareTo(VsMb(b)),
-                8 => a.Result.CompareTo(b.Result),
-                9 => a.HistorySaleCount.CompareTo(b.HistorySaleCount),
-                _ => 0
-              };
-              return asc ? cmp : -cmp;
-            });
-          }
-
-          sortSpecs.SpecsDirty = false;
-        }
-
-        for (int i = 0; i < _sortedItems.Count; i++)
-        {
-          var item = _sortedItems[i];
+          var row = _sortedRows[i];
+          var item = row.Item;
           ImGui.TableNextRow();
 
-          var color = item.Result switch
+          // When
+          ImGui.TableNextColumn();
+          if (row.IsFresh)
           {
-            PricingResult.BelowFloor => ScroogeColors.Spent,
-            PricingResult.BelowMinimum => ScroogeColors.Amber,
-            PricingResult.CapBlocked => ScroogeColors.Warning,
-            PricingResult.UndercutTooDeep => ScroogeColors.Warning,
-            PricingResult.UpwardHeld => ScroogeColors.Warning,
-            _ => ScroogeColors.Muted,
-          };
+            ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
+            ImGui.Text("new");
+            ImGui.PopStyleColor();
+          }
+          else
+          {
+            var ageDays = (System.DateTimeOffset.UtcNow.ToUnixTimeSeconds() - row.Flag!.CreatedAt) / 86400;
+            ImGui.TextDisabled(ageDays < 1 ? "today" : $"{ageDays}d ago");
+          }
 
           // Item
           ImGui.TableNextColumn();
+          var color = row.IsFresh
+            ? item.Result switch
+            {
+              PricingResult.BelowFloor => ScroogeColors.Spent,
+              PricingResult.BelowMinimum => ScroogeColors.Amber,
+              PricingResult.CapBlocked => ScroogeColors.Warning,
+              PricingResult.UndercutTooDeep => ScroogeColors.Warning,
+              PricingResult.UpwardHeld => ScroogeColors.Warning,
+              _ => ScroogeColors.Muted,
+            }
+            : ScroogeColors.Warning;
           ImGui.PushStyleColor(ImGuiCol.Text, color);
-          ImGui.Text(item.ItemName);
+          ImGui.Text(Format.Hq(item.ItemName, item.IsHq));
           ImGui.PopStyleColor();
 
           // Retainer, Qty
           ImGui.TableNextColumn(); ImGui.Text(item.RetainerName);
-          ImGui.TableNextColumn(); ImGui.Text($"{item.Quantity}");
+          ImGui.TableNextColumn();
+          if (item.Quantity > 0) ImGui.Text($"{item.Quantity}");
+          else ImGui.TextDisabled("—");
 
-          // Listed (current listing price)
+          // Listed
           ImGui.TableNextColumn();
           ImGui.Text(item.CurrentListingPrice.HasValue ? $"{item.CurrentListingPrice:N0}" : "—");
 
@@ -285,11 +313,12 @@ namespace Scrooge.Windows
 
           // Gil In
           ImGui.TableNextColumn();
-          ImGui.Text($"{item.VendorPrice * item.Quantity:N0}");
+          if (item.Quantity > 0) ImGui.Text($"{item.VendorPrice * item.Quantity:N0}");
+          else ImGui.TextDisabled("—");
 
           // vs MB
           ImGui.TableNextColumn();
-          if (item.MbPrice.HasValue)
+          if (item.MbPrice.HasValue && item.Quantity > 0)
           {
             var vsMb = (item.VendorPrice - item.MbPrice.Value) * item.Quantity;
             ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.ForDelta(vsMb));
@@ -301,13 +330,13 @@ namespace Scrooge.Windows
 
           // Reason
           ImGui.TableNextColumn();
-          ImGui.Text(BuildReason(item));
+          ImGui.TextWrapped(row.IsFresh ? BuildReason(item) : row.Flag!.Detail);
 
           // Details
           ImGui.TableNextColumn();
-          ImGui.Text(BuildDetails(item));
+          ImGui.Text(row.IsFresh ? BuildDetails(item) : "held flag");
 
-          // Action toggle buttons
+          // Actions - the full set on every row
           ImGui.TableNextColumn();
           if (!isRunning)
           {
@@ -322,19 +351,77 @@ namespace Scrooge.Windows
               ImGui.SameLine(0, 2);
               DrawActionToggle(item, i, TriageAction.Reprice, "Reprc", current);
             }
+            ImGui.SameLine(0, 2);
+            if (ImGui.SmallButton($"Dismiss##row{i}"))
+            {
+              if (row.IsFresh) dismissItem = item;
+              else dismissFlagId = row.Flag!.Id;
+            }
           }
         }
         ImGui.EndTable();
       }
 
-      // Process dismiss after table draw
-      if (dismissAll)
+      // Mutations after the table draw
+      if (dismissItem != null)
       {
-        triageItems.Clear();
-        _sortedItems = null;
-        _actions.Clear();
+        _triageItems.Remove(dismissItem);
+        _actions.Remove(dismissItem);
+        _sortedRows = null;
+      }
+      if (dismissFlagId is long id)
+      {
+        try { GilStorage.SetTriageFlagStatus(id, "dismissed"); } catch { /* storage unavailable */ }
+        if (_flagItems.TryGetValue(id, out var stale)) _actions.Remove(stale);
+        _flagItems.Remove(id);
+        RefreshHeldFlags();
       }
     }
+
+    /// <summary>Sorts into _sortedRows. Default: fresh rows first, then flags newest-first.</summary>
+    private void SortRows(List<InboxRow> rows)
+    {
+      var sortSpecs = ImGui.TableGetSortSpecs();
+      if (!sortSpecs.SpecsDirty && _sortedRows != null && _sortedRows.Count == rows.Count)
+        return;
+
+      _sortedRows = new List<InboxRow>(rows);
+
+      if (sortSpecs.SpecsCount > 0)
+      {
+        var spec = sortSpecs.Specs;
+        var col = spec.ColumnIndex;
+        var asc = spec.SortDirection == ImGuiSortDirection.Ascending;
+
+        _sortedRows.Sort((ra, rb) =>
+        {
+          var a = ra.Item;
+          var b = rb.Item;
+          var cmp = col switch
+          {
+            0 => RowAge(ra).CompareTo(RowAge(rb)),
+            1 => string.Compare(a.ItemName, b.ItemName),
+            2 => string.Compare(a.RetainerName, b.RetainerName),
+            3 => a.Quantity.CompareTo(b.Quantity),
+            4 => (a.CurrentListingPrice ?? 0).CompareTo(b.CurrentListingPrice ?? 0),
+            5 => (a.MbPrice ?? 0).CompareTo(b.MbPrice ?? 0),
+            6 => a.VendorPrice.CompareTo(b.VendorPrice),
+            7 => (a.VendorPrice * a.Quantity).CompareTo(b.VendorPrice * b.Quantity),
+            8 => VsMb(a).CompareTo(VsMb(b)),
+            9 => a.Result.CompareTo(b.Result),
+            10 => a.HistorySaleCount.CompareTo(b.HistorySaleCount),
+            _ => 0
+          };
+          return asc ? cmp : -cmp;
+        });
+      }
+
+      sortSpecs.SpecsDirty = false;
+    }
+
+    /// <summary>Sort key for the When column: fresh rows are age 0, flags by age.</summary>
+    private static long RowAge(InboxRow row)
+      => row.IsFresh ? 0 : System.DateTimeOffset.UtcNow.ToUnixTimeSeconds() - row.Flag!.CreatedAt;
 
     /// <summary>Draws a single action toggle button. Highlighted when selected, click to toggle.</summary>
     private void DrawActionToggle(PricingItem item, int rowIndex, TriageAction action, string label, TriageAction current)
@@ -377,7 +464,7 @@ namespace Scrooge.Windows
         PricingResult.UndercutTooDeep =>
           $"Undercut Too Deep ({item.PriceChangePercent:F0}%)",
         PricingResult.UpwardHeld =>
-          $"Upward Held ({item.CurrentListingPrice:N0} → {item.MbPrice:N0} exceeds own-sales sanity)",
+          $"Upward Held (market {item.MbPrice:N0} exceeds {Plugin.Configuration.UpwardRepriceMultiplier:0.#}x own-sales sanity; listed {item.CurrentListingPrice:N0})",
         PricingResult.NoData => "No Data (no listings)",
         _ => "Unknown"
       };
@@ -399,16 +486,23 @@ namespace Scrooge.Windows
     internal void SetRun(RunData run)
     {
       _triageItems = run.TriageItems;
-      _sortedItems = null; // force re-sort on new data
+      _sortedRows = null; // force re-sort on new data
       _actions.Clear();
     }
 
-    /// <summary>Removes an item from the triage list (called after successful reprice).</summary>
+    /// <summary>
+    /// Retires a row on COMPLETION of its action (vendored, pulled, repriced)
+    /// - or when the orchestrator skipped it because it's no longer listed
+    /// (sold; the row is moot either way). Closes any matching held flags.
+    /// This is the ONLY place actions resolve rows - queue time never does.
+    /// </summary>
     internal void RemoveItem(PricingItem item)
     {
       _triageItems.Remove(item);
       _actions.Remove(item);
-      _sortedItems = null;
+      CloseFlagsFor(item);
+      RefreshHeldFlags();
+      _sortedRows = null;
     }
   }
 }

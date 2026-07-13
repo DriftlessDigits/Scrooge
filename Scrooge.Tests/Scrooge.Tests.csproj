@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the routing brain's pure decision core.
+
+    Deliberately NOT in Scrooge.sln: the release workflow msbuilds the
+    solution and must never depend on test packages. CI runs these via
+    .github/workflows/test.yml; locally: dotnet test Scrooge.Tests
+
+    The production files are compiled in as LINKED SOURCES instead of a
+    ProjectReference — Scrooge.csproj references Dalamud DLLs from a local
+    game install, which tests must not inherit. The link doubles as a purity
+    guard: if a game or config static ever leaks back into the decision core,
+    this project stops compiling.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Scrooge\RoutingModels.cs" Link="Linked\RoutingModels.cs" />
+    <Compile Include="..\Scrooge\PricingItem.cs" Link="Linked\PricingItem.cs" />
+    <Compile Include="..\Scrooge\ListingAccounting.cs" Link="Linked\ListingAccounting.cs" />
+    <Compile Include="..\Scrooge\RoutingRules.cs" Link="Linked\RoutingRules.cs" />
+    <Compile Include="..\Scrooge\ListingGate.cs" Link="Linked\ListingGate.cs" />
+    <Compile Include="..\Scrooge\DesynthSkillupColor.cs" Link="Linked\DesynthSkillupColor.cs" />
+  </ItemGroup>
+
+</Project>

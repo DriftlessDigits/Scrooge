@@ -32,6 +32,10 @@ internal sealed class HawkWindow : Window
     public int LastSalePrice { get; init; }
     public bool LastSaleStale { get; init; }
     public bool IsAlwaysVendor { get; init; }
+    /// <summary>Listing-gate verdict (routing brain Increment 0). Verdict.None when the gate is off.</summary>
+    public ListingGate.Result Gate { get; init; }
+    /// <summary>True once an override for this item was recorded this window session — write once, not per click.</summary>
+    public bool OverrideRecorded { get; set; }
   }
 
   public HawkWindow()
@@ -94,7 +98,11 @@ internal sealed class HawkWindow : Window
   public void RefreshInventory()
   {
     _inventory.Clear();
-    var lastSales = GilStorage.GetLastSalePrices();
+
+    // Listing gate evidence doubles as the Last Sale column — one DB pass.
+    var gateOn = Plugin.Configuration.EnableRoutingBrain;
+    var batch = gateOn ? RoutingInputService.BeginBatch() : null;
+    var lastSales = batch?.LastSales ?? GilStorage.GetLastSalePrices();
     var staleCutoff = Plugin.Configuration.StalePriceDays > 0
         ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - (Plugin.Configuration.StalePriceDays * 24L * 3600)
         : 0L;
@@ -138,7 +146,7 @@ internal sealed class HawkWindow : Window
           // Must not be on the ban list
           if (Plugin.Configuration.BannedItemIds.Contains(fullId)) continue;
 
-          var hasLastSale = lastSales.TryGetValue(itemId, out var lastSale);
+          var hasLastSale = lastSales.TryGetValue((itemId, isHq), out var lastSale);
 
           _inventory.Add(new HawkItem
           {
@@ -152,6 +160,10 @@ internal sealed class HawkWindow : Window
             SlotIndex = i,
             LastSalePrice = hasLastSale ? lastSale.Price : 0,
             LastSaleStale = hasLastSale && staleCutoff > 0 && lastSale.Timestamp < staleCutoff,
+            Gate = batch != null
+                && RoutingInputService.Collect(batch, itemId, isHq) is { } inputs
+              ? ListingGate.Evaluate(inputs, batch)
+              : new ListingGate.Result(ListingGate.Verdict.None, ""),
           });
         }
       }
@@ -192,9 +204,11 @@ internal sealed class HawkWindow : Window
     else
       ImGui.Text($"({_availableSlots} slots available)");
 
+    // Select All honors the listing gate: gated items (better exit is
+    // desynth/GC) stay unchecked. Checking one by hand is the override.
     if (ImGui.Button("Select All"))
       foreach (var item in _inventory)
-        if (!item.IsAlwaysVendor) item.Selected = true;
+        if (!item.IsAlwaysVendor && !item.Gate.IsGated) item.Selected = true;
     ImGui.SameLine();
 
     if (ImGui.Button("Deselect All"))
@@ -212,15 +226,33 @@ internal sealed class HawkWindow : Window
     }
     ImGui.EndDisabled();
 
+    // Route: the pile view over the same bags — verdicts for every exit,
+    // not just a listing gate. Only offered when the routing brain is on.
+    if (Plugin.Configuration.EnableRoutingBrain)
+    {
+      ImGui.SameLine();
+      if (ImGui.Button("Route"))
+      {
+        Plugin.RoutingWindow.Refresh();
+        Plugin.RoutingWindow.IsOpen = true;
+      }
+      if (ImGui.IsItemHovered())
+        ImGui.SetTooltip("Open the router's pile view: list / desynth / turn-in / vendor verdicts\nfor the gear in your bags, with reasons. One Go runs the List and\nVendor piles from here.");
+    }
+
     ImGui.Separator();
 
     // --- Item table ---
-    if (ImGui.BeginTable("HawkItems", 5,
+    var gateOn = Plugin.Configuration.EnableRoutingBrain;
+    var columns = gateOn ? 6 : 5;
+    if (ImGui.BeginTable("HawkItems", columns,
         ImGuiTableFlags.ScrollY | ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
     {
       ImGui.TableSetupScrollFreeze(0, 1);
       ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 38);      // checkbox / sell
       ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch);
+      if (gateOn)
+        ImGui.TableSetupColumn("Route", ImGuiTableColumnFlags.WidthFixed, 50);
       ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthFixed, 40);
       ImGui.TableSetupColumn("Last Sale", ImGuiTableColumnFlags.WidthFixed, 90);
       ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, 40);      // ban
@@ -243,7 +275,23 @@ internal sealed class HawkWindow : Window
         {
           var selected = item.Selected;
           if (ImGui.Checkbox($"##check{i}", ref selected))
+          {
             item.Selected = selected;
+
+            // Checking a gated item overrules the router — record the
+            // disagreement (once per window session), then respect the human.
+            if (selected && item.Gate.IsGated && !item.OverrideRecorded)
+            {
+              item.OverrideRecorded = true;
+              var ilvl = (int)_items.GetRow(item.ItemId).LevelItem.RowId;
+              try
+              {
+                GilStorage.InsertRoutingOverride(item.ItemId, item.IsHq, ilvl,
+                  item.Gate.Verdict.ToString(), item.Gate.Reason, "List");
+              }
+              catch { /* storage unavailable — the override still applies, just unrecorded */ }
+            }
+          }
         }
 
         // Item name column — orange for Always Vendor
@@ -253,6 +301,13 @@ internal sealed class HawkWindow : Window
         ImGui.Text(Format.Hq(item.Name, item.IsHq));
         if (item.IsAlwaysVendor)
           ImGui.PopStyleColor();
+
+        // Route column — the gate's verdict tag; hover for the reason
+        if (gateOn)
+        {
+          ImGui.TableNextColumn();
+          DrawGateTag(item.Gate);
+        }
 
         ImGui.TableNextColumn();
         ImGui.Text(item.Quantity.ToString());
@@ -286,5 +341,29 @@ internal sealed class HawkWindow : Window
 
       ImGui.EndTable();
     }
+  }
+
+  /// <summary>
+  /// One-word verdict tag for the Route column. Gated verdicts get caution
+  /// colors; Pass/Unknown/BelowFloor render quiet — advice, not alarm.
+  /// </summary>
+  private static void DrawGateTag(ListingGate.Result gate)
+  {
+    var (label, color) = gate.Verdict switch
+    {
+      ListingGate.Verdict.Pass        => ("list", ScroogeColors.Earned),
+      ListingGate.Verdict.GateDesynth => ("desynth", ScroogeColors.Amber),
+      ListingGate.Verdict.GateGc      => ("turn-in", ScroogeColors.Warning),
+      ListingGate.Verdict.BelowFloor  => ("low", ScroogeColors.Muted),
+      ListingGate.Verdict.Unknown     => ("?", ScroogeColors.Muted),
+      _ => ("", ScroogeColors.Muted),
+    };
+    if (label.Length == 0) return;
+
+    ImGui.PushStyleColor(ImGuiCol.Text, color);
+    ImGui.Text(label);
+    ImGui.PopStyleColor();
+    if (gate.Reason.Length > 0 && ImGui.IsItemHovered())
+      ImGui.SetTooltip(gate.Reason);
   }
 }

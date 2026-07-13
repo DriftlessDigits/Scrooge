@@ -124,9 +124,21 @@ public sealed class ConfigWindow : Window
         ImGui.EndTabItem();
       }
 
+      if (ImGui.BeginTabItem("Routing"))
+      {
+        DrawRoutingTab();
+        ImGui.EndTabItem();
+      }
+
       ImGui.EndTabBar();
     }
-    
+
+    // Players care about the version (installer shows it); the exact-commit fingerprint only matters for dev testing.
+    if (Plugin.PluginInterface.IsDev)
+    {
+      ImGui.Spacing();
+      ImGui.TextDisabled($"build {BuildStamp.Line}");
+    }
   }
 
   private void DrawPricingTab()
@@ -566,6 +578,285 @@ public sealed class ConfigWindow : Window
         ImGui.EndTooltip();
       }
     }
+
+  }
+
+  private void DrawRoutingTab()
+  {
+    SectionHeader("Routing (advisor preview)");
+
+    var routingOn = Plugin.Configuration.EnableRoutingBrain;
+    if (ImGui.Checkbox("Enable routing brain", ref routingOn))
+    {
+      Plugin.Configuration.EnableRoutingBrain = routingOn;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("The whole advisor: the listing gate (Route tags in the Hawk window,\n" +
+                       "gated items left out of Select All) AND the router itself - the Route\n" +
+                       "button / '/scrooge route' pile view with one-confirm execution.\n" +
+                       "Judged only on YOUR data - own sales, own desynth yields, plus the\n" +
+                       "Universalis almanac when enabled. No evidence = no opinion. Overriding\n" +
+                       "a verdict always wins (and teaches the router).");
+      ImGui.EndTooltip();
+    }
+
+    if (Plugin.Configuration.EnableRoutingBrain)
+    {
+      ImGui.BeginGroup();
+      ImGui.Text("Listing floor (gil):");
+      ImGui.SameLine();
+      var floorGil = Plugin.Configuration.ListingFloorGil;
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.InputInt("##listingFloorGil", ref floorGil, 1000, 5000)
+          && floorGil >= 0)
+      {
+        Plugin.Configuration.ListingFloorGil = floorGil;
+        Plugin.Configuration.Save();
+      }
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("Equipment is worth listing when it sells for at least this much.\n" +
+                         "Gear below the floor routes to desynth or turn-in when a better exit exists.");
+        ImGui.EndTooltip();
+      }
+
+      ImGui.BeginGroup();
+      ImGui.Text("Velocity floor (days):");
+      ImGui.SameLine();
+      var velocityDays = Plugin.Configuration.ListingVelocityDays;
+      ImGui.SetNextItemWidth(150);
+      if (ImGui.SliderInt("##listingVelocityDays", ref velocityDays, 1, 30, "%dd"))
+      {
+        Plugin.Configuration.ListingVelocityDays = velocityDays;
+        Plugin.Configuration.Save();
+      }
+      ImGui.EndGroup();
+      ImGui.SameLine();
+      ImGui.TextDisabled("(?)");
+      if (ImGui.IsItemHovered())
+      {
+        ImGui.BeginTooltip();
+        ImGui.SetTooltip("...AND it should move within this many days. Judged from how long\n" +
+                         "the item sat listed before its last sale (captured going forward;\n" +
+                         "older sales have no sit time and get the benefit of the doubt).");
+        ImGui.EndTooltip();
+      }
+
+      ImGui.Spacing();
+      if (ImGui.TreeNode("Rules engine"))
+      {
+        ImGui.BeginGroup();
+        ImGui.Text("Seals-to-gil rate:");
+        ImGui.SameLine();
+        var sealRate = Plugin.Configuration.SealToGilRate;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.InputInt("##sealToGilRate", ref sealRate, 5, 25) && sealRate >= 0)
+        {
+          Plugin.Configuration.SealToGilRate = sealRate;
+          Plugin.Configuration.Save();
+        }
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Rough gil value per GC seal, used to score the turn-in exit against\n" +
+                           "gil exits. Placeholder until venture-return tracking measures the\n" +
+                           "real gil-per-venture number.");
+          ImGui.EndTooltip();
+        }
+
+        ImGui.BeginGroup();
+        ImGui.Text("Review band (%):");
+        ImGui.SameLine();
+        var reviewBand = Plugin.Configuration.RoutingReviewBandPct;
+        ImGui.SetNextItemWidth(150);
+        if (ImGui.SliderInt("##routingReviewBand", ref reviewBand, 0, 50, "%d%%"))
+        {
+          Plugin.Configuration.RoutingReviewBandPct = reviewBand;
+          Plugin.Configuration.Save();
+        }
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("When two exits score within this band, the item goes to the Review\n" +
+                           "pile with both reasons shown instead of a confident guess.");
+          ImGui.EndTooltip();
+        }
+
+        ImGui.BeginGroup();
+        ImGui.Text("Venture bands:");
+        ImGui.SameLine();
+        ImGui.TextDisabled("tilt");
+        ImGui.SameLine();
+        var bandFull = Plugin.Configuration.VentureBandFull;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandFull", ref bandFull, 0, 0) && bandFull >= 0)
+        {
+          Plugin.Configuration.VentureBandFull = bandFull;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("turn in");
+        ImGui.SameLine();
+        var bandLow = Plugin.Configuration.VentureBandLow;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandLow", ref bandLow, 0, 0) && bandLow >= 0)
+        {
+          Plugin.Configuration.VentureBandLow = bandLow;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("panic");
+        ImGui.SameLine();
+        var bandPanic = Plugin.Configuration.VentureBandPanic;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandPanic", ref bandPanic, 0, 0) && bandPanic >= 0)
+        {
+          Plugin.Configuration.VentureBandPanic = bandPanic;
+          Plugin.Configuration.Save();
+        }
+        ImGui.EndGroup();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Venture token stock thresholds, high to low.\n" +
+                           "Above 'tilt': GC competes on pure value.\n" +
+                           "Below 'tilt': borderline calls tilt to turn-in.\n" +
+                           "Below 'turn in': turn in unless the item is worth the floor x multiplier.\n" +
+                           "Below 'panic': turn in everything GC-eligible until stock recovers.");
+          ImGui.EndTooltip();
+        }
+
+        ImGui.TreePop();
+      }
+
+      ImGui.Spacing();
+      if (ImGui.TreeNode("Universalis almanac"))
+      {
+        var uniOn = Plugin.Configuration.EnableUniversalis;
+        if (ImGui.Checkbox("Use Universalis market data (home world)", ref uniOn))
+        {
+          Plugin.Configuration.EnableUniversalis = uniOn;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Community-crowdsourced sale velocity for items you have no history\n" +
+                           "on - fills the routing brain's velocity axis so never-sold gear gets\n" +
+                           "a real verdict instead of a coin flip. Advisor data only: it NEVER\n" +
+                           "sets a pinch or listing price. Offline = local evidence only.");
+          ImGui.EndTooltip();
+        }
+
+        if (uniOn)
+        {
+          var trustDays = Plugin.Configuration.UniversalisTrustDays;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Trust data newer than", ref trustDays, 1, 30, "%dd"))
+          {
+            Plugin.Configuration.UniversalisTrustDays = trustDays;
+            Plugin.Configuration.Save();
+          }
+          ImGui.SameLine();
+          ImGui.TextDisabled("(?)");
+          if (ImGui.IsItemHovered())
+          {
+            ImGui.BeginTooltip();
+            ImGui.SetTooltip("Stale = unknown. Data last uploaded before this window is treated\n" +
+                             "as NO data - thin-market items stay human calls.");
+            ImGui.EndTooltip();
+          }
+
+          var ttlHours = Plugin.Configuration.UniversalisCacheTtlHours;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Refetch after", ref ttlHours, 1, 48, "%dh"))
+          {
+            Plugin.Configuration.UniversalisCacheTtlHours = ttlHours;
+            Plugin.Configuration.Save();
+          }
+        }
+
+        ImGui.TreePop();
+      }
+
+      ImGui.Spacing();
+      if (ImGui.TreeNode("Slow-mover pressure"))
+      {
+        var pressureOn = Plugin.Configuration.SlowMoverPressureOptIn;
+        if (ImGui.Checkbox("Pressure slow listings during pinches", ref pressureOn))
+        {
+          Plugin.Configuration.SlowMoverPressureOptIn = pressureOn;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+        {
+          ImGui.BeginTooltip();
+          ImGui.SetTooltip("Items that sat listed get judged by the 14-day MB history:\n" +
+                           "others are selling = your price is the blocker - the pinch cut deepens.\n" +
+                           "Nobody is buying = cutting destroys value - the item is flagged for\n" +
+                           "eviction in Triage with the router's verdict on where it should go.");
+          ImGui.EndTooltip();
+        }
+
+        if (pressureOn)
+        {
+          var afterDays = Plugin.Configuration.PressureAfterDays;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Deepen after (days)", ref afterDays, 1, 14, "%dd"))
+          {
+            Plugin.Configuration.PressureAfterDays = afterDays;
+            Plugin.Configuration.Save();
+          }
+
+          var pct1 = Plugin.Configuration.PressureDeepenPct;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Deepen by (%)", ref pct1, 1, 10, "%d%%"))
+          {
+            Plugin.Configuration.PressureDeepenPct = pct1;
+            Plugin.Configuration.Save();
+          }
+
+          var pct2 = Plugin.Configuration.PressureDeepenMaxPct;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Deepen at 14d+ (%)", ref pct2, 1, 20, "%d%%"))
+          {
+            Plugin.Configuration.PressureDeepenMaxPct = pct2;
+            Plugin.Configuration.Save();
+          }
+
+          var evictDays = Plugin.Configuration.EvictAfterDays;
+          ImGui.SetNextItemWidth(120);
+          if (ImGui.SliderInt("Evict after (days, dead market)", ref evictDays, 7, 30, "%dd"))
+          {
+            Plugin.Configuration.EvictAfterDays = evictDays;
+            Plugin.Configuration.Save();
+          }
+        }
+
+        ImGui.TreePop();
+      }
+    }
   }
 
   private void DrawTimingTab()
@@ -658,6 +949,19 @@ public sealed class ConfigWindow : Window
 
   private void DrawOutputTab()
   {
+    // --- Server info bar ---
+    var dtrOn = Plugin.Configuration.EnableDtrToday;
+    if (ImGui.Checkbox("Today's gil in the server info bar", ref dtrOn))
+    {
+      Plugin.Configuration.EnableDtrToday = dtrOn;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("One glanceable number: today's total-gil delta. Click it to open the dashboard.");
+    ImGui.Spacing();
+
     // --- Chat Output ---
     ImGui.Columns(2, "##chatOutputColumns", false);
 

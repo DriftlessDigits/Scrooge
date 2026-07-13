@@ -58,6 +58,7 @@ internal sealed class ItemPricingPipeline : IDisposable
   internal void ClearState()
   {
     _hotKeyPrice = null;
+    SlowMoverPressure.ResetRun();
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>
@@ -333,7 +334,7 @@ internal sealed class ItemPricingPipeline : IDisposable
           && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
       {
         (int Price, long Timestamp)? ownSale = null;
-        try { ownSale = GilStorage.GetLastSalePriceWithTime(currentItem.ItemId); } catch { /* storage unavailable */ }
+        try { ownSale = GilStorage.GetLastSalePriceWithTime(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable */ }
 
         if (ownSale is (int salePrice, long saleTs) && salePrice > 0)
         {
@@ -358,18 +359,16 @@ internal sealed class ItemPricingPipeline : IDisposable
     {
       var result = currentItem?.Result ?? PricingResult.Pending;
 
-      // Track listing value for run summary
-      if (result != PricingResult.Skipped && result != PricingResult.VendorSell)
+      // Track listing value for run summary. Held results (upward hold, cap
+      // block...) keep the OLD price on the market — count that, never the
+      // rejected reprice target (the 58M troll-wall inflation).
+      var listingValue = ListingAccounting.ListedUnitValue(
+        result, currentItem?.FinalPrice, currentItem?.CurrentListingPrice);
+      if (listingValue > 0)
       {
-        var listingValue = (currentItem?.FinalPrice.HasValue == true && currentItem.FinalPrice > 0)
-          ? currentItem.FinalPrice.Value
-          : currentItem?.CurrentListingPrice ?? 0;
-        if (listingValue > 0)
-        {
-          Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
-          if (!IsHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
-            GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
-        }
+        Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
+        if (!IsHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
+          GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
       }
 
       _hotKeyPrice = null;
@@ -448,7 +447,7 @@ internal sealed class ItemPricingPipeline : IDisposable
         if (Plugin.Configuration.FlagUpwardRepriceEnabled && currentItem != null && currentItem.ItemId != 0)
         {
           int? ownSale = null;
-          try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId); } catch { /* storage unavailable */ }
+          try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable */ }
           if (ownSale is int sale && sale > 0
               && newPrice.Value > (long)(sale * Plugin.Configuration.UpwardRepriceMultiplier))
           {
@@ -468,6 +467,14 @@ internal sealed class ItemPricingPipeline : IDisposable
       }
       else
       {
+        // Slow-mover pressure (routing brain): deepen the cut for items that
+        // sat listed with a live market; flag dead-market sitters to triage.
+        // Runs before the cut/cap checks so guards see the final price.
+        if (IsPinchRun && Plugin.Configuration.EnableRoutingBrain
+            && Plugin.Configuration.SlowMoverPressureOptIn
+            && currentItem != null && currentItem.ItemId != 0)
+          newPrice = SlowMoverPressure.Apply(currentItem, newPrice.Value);
+
         var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
         var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
 
@@ -480,14 +487,18 @@ internal sealed class ItemPricingPipeline : IDisposable
         {
           int? ownSale = null;
           if (currentItem != null && currentItem.ItemId != 0)
-            try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId); } catch { /* storage unavailable — base on oldPrice */ }
+            try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable — base on oldPrice */ }
 
           var sanityBase = (long)(ownSale ?? oldPrice);
           if (newPrice.Value > sanityBase * Plugin.Configuration.UpwardRepriceMultiplier)
           {
+            // Name the actual trigger: target vs Nx the sanity base. The old
+            // "current -> target exceeds own-sales sanity" wording implied the
+            // SIZE of the move was insane (a +1 gil bump read as madness).
+            var ratio = (float)newPrice.Value / sanityBase;
             var basis = ownSale.HasValue ? $"your last sale {ownSale:N0}" : $"current {oldPrice:N0}";
             Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
-              $"Upward reprice held — market says {newPrice:N0} vs {basis}");
+              $"Upward reprice held — target {newPrice:N0} is {ratio:0.#}x {basis}");
             if (currentItem != null)
             {
               currentItem.Result = PricingResult.UpwardHeld;
@@ -496,7 +507,7 @@ internal sealed class ItemPricingPipeline : IDisposable
               {
                 GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
                   currentItem.RetainerName, currentItem.SlotIndex, "upward_held",
-                  $"Listed {oldPrice:N0} → market {newPrice:N0}; {basis}",
+                  $"Held at {oldPrice:N0} — market target {newPrice:N0} is {ratio:0.#}x {basis}",
                   oldPrice, newPrice.Value);
               }
               catch (Exception ex)

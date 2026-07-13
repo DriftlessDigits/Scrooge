@@ -100,18 +100,141 @@ internal static class GilStorage
   /// snapshots can be linked to it.
   /// </summary>
   internal static long InsertGilSnapshot(long timestamp, long playerGil, string source,
-      SqliteTransaction? transaction = null)
+      SqliteTransaction? transaction = null, int? ventureTokens = null)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO gil_snapshots (timestamp, player_gil, source)
-      VALUES (@ts, @gil, @src);
+      @"INSERT INTO gil_snapshots (timestamp, player_gil, source, venture_tokens)
+      VALUES (@ts, @gil, @src, @vt);
       SELECT last_insert_rowid();",
       _connection);
     cmd.Transaction = transaction;
     cmd.Parameters.AddWithValue("@ts", timestamp);
     cmd.Parameters.AddWithValue("@gil", playerGil);
     cmd.Parameters.AddWithValue("@src", source);
+    cmd.Parameters.AddWithValue("@vt", (object?)ventureTokens ?? DBNull.Value);
     return (long)cmd.ExecuteScalar()!;
+  }
+
+  /// <summary>Records one collected venture result (V15).</summary>
+  internal static void InsertVentureReturn(long capturedAt, string retainerName,
+      uint itemId, int quantity, bool isHq)
+  {
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO venture_returns (captured_at, retainer_name, item_id, quantity, is_hq)
+      VALUES (@ts, @ret, @item, @qty, @hq)",
+      _connection);
+    cmd.Parameters.AddWithValue("@ts", capturedAt);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    cmd.Parameters.AddWithValue("@item", itemId);
+    cmd.Parameters.AddWithValue("@qty", quantity);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>Venture returns captured in the last N days, newest first.</summary>
+  internal static List<(long CapturedAt, string Retainer, uint ItemId, int Quantity, bool IsHq)>
+      GetVentureReturns(int sinceDays)
+  {
+    var rows = new List<(long, string, uint, int, bool)>();
+    var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
+    using var cmd = new SqliteCommand(
+      @"SELECT captured_at, retainer_name, item_id, quantity, is_hq
+        FROM venture_returns WHERE captured_at >= @cutoff
+        ORDER BY captured_at DESC",
+      _connection);
+    cmd.Parameters.AddWithValue("@cutoff", cutoff);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      rows.Add((reader.GetInt64(0), reader.GetString(1), (uint)reader.GetInt64(2),
+        reader.GetInt32(3), reader.GetInt32(4) != 0));
+    return rows;
+  }
+
+  /// <summary>
+  /// Oldest and newest venture-token stock readings in the last N days
+  /// (bell-snapshot piggyback), or null when fewer than two readings exist.
+  /// Burn/acquire rate = the delta over the window.
+  /// </summary>
+  internal static ((long Ts, int Tokens) First, (long Ts, int Tokens) Last)? GetVentureTokenSpan(int sinceDays)
+  {
+    var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
+    using var cmd = new SqliteCommand(
+      @"SELECT timestamp, venture_tokens FROM gil_snapshots
+        WHERE venture_tokens IS NOT NULL AND timestamp >= @cutoff
+        ORDER BY timestamp ASC",
+      _connection);
+    cmd.Parameters.AddWithValue("@cutoff", cutoff);
+    using var reader = cmd.ExecuteReader();
+    (long, int)? first = null, last = null;
+    while (reader.Read())
+    {
+      var row = (reader.GetInt64(0), reader.GetInt32(1));
+      first ??= row;
+      last = row;
+    }
+    return first is { } f && last is { } l && f.Item1 != l.Item1
+      ? ((f.Item1, f.Item2), (l.Item1, l.Item2))
+      : null;
+  }
+
+  /// <summary>
+  /// Upserts one Universalis fetch round for a world (V16). Framework thread
+  /// only — callers marshal here from the fetch worker.
+  /// </summary>
+  internal static void UpsertUniversalisStats(uint worldId, List<UniversalisStat> stats, long fetchedAt)
+  {
+    using var tx = Connection.BeginTransaction();
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO universalis_stats (item_id, world_id, nq_velocity, hq_velocity, last_sale_at, last_upload_at, fetched_at)
+      VALUES (@item, @world, @nq, @hq, @sale, @upload, @fetched)
+      ON CONFLICT (item_id, world_id) DO UPDATE SET
+        nq_velocity = @nq, hq_velocity = @hq, last_sale_at = @sale,
+        last_upload_at = @upload, fetched_at = @fetched",
+      _connection, tx);
+    var pItem = cmd.Parameters.Add("@item", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pWorld = cmd.Parameters.Add("@world", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pNq = cmd.Parameters.Add("@nq", Microsoft.Data.Sqlite.SqliteType.Real);
+    var pHq = cmd.Parameters.Add("@hq", Microsoft.Data.Sqlite.SqliteType.Real);
+    var pSale = cmd.Parameters.Add("@sale", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pUpload = cmd.Parameters.Add("@upload", Microsoft.Data.Sqlite.SqliteType.Integer);
+    var pFetched = cmd.Parameters.Add("@fetched", Microsoft.Data.Sqlite.SqliteType.Integer);
+
+    pWorld.Value = worldId;
+    pFetched.Value = fetchedAt;
+    foreach (var stat in stats)
+    {
+      pItem.Value = stat.ItemId;
+      pNq.Value = stat.NqVelocity;
+      pHq.Value = stat.HqVelocity;
+      pSale.Value = (object?)stat.LastSaleAt ?? DBNull.Value;
+      pUpload.Value = (object?)stat.LastUploadAt ?? DBNull.Value;
+      cmd.ExecuteNonQuery();
+    }
+    tx.Commit();
+  }
+
+  /// <summary>All cached Universalis rows for one world, keyed by item id.</summary>
+  internal static Dictionary<uint, (UniversalisStat Stat, long FetchedAt)> GetUniversalisStats(uint worldId)
+  {
+    var rows = new Dictionary<uint, (UniversalisStat, long)>();
+    using var cmd = new SqliteCommand(
+      @"SELECT item_id, nq_velocity, hq_velocity, last_sale_at, last_upload_at, fetched_at
+        FROM universalis_stats WHERE world_id = @world",
+      _connection);
+    cmd.Parameters.AddWithValue("@world", worldId);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      var itemId = (uint)reader.GetInt64(0);
+      rows[itemId] = (new UniversalisStat(
+        itemId,
+        reader.GetDouble(1),
+        reader.GetDouble(2),
+        reader.IsDBNull(3) ? null : reader.GetInt64(3),
+        reader.IsDBNull(4) ? null : reader.GetInt64(4)),
+        reader.GetInt64(5));
+    }
+    return rows;
   }
 
   /// <summary>Inserts a single retainer's gil balance, linked to a snapshot.</summary>
@@ -882,45 +1005,51 @@ internal static class GilStorage
   }
 
   /// <summary>
-  /// Gets the last sale price and timestamp for each item ever sold via retainer.
+  /// Gets the last sale for each (item, quality) ever sold via retainer.
   /// Reads from the last_sale_prices table (survives transaction pruning).
+  /// SoldAfterDays is how long the listing sat before selling — null for
+  /// sales reconciled before V13 started capturing it.
   /// </summary>
-  internal static Dictionary<uint, (int Price, long Timestamp)> GetLastSalePrices()
+  internal static Dictionary<(uint ItemId, bool IsHq), (int Price, long Timestamp, int? SoldAfterDays)> GetLastSalePrices()
   {
-    var prices = new Dictionary<uint, (int, long)>();
+    var prices = new Dictionary<(uint, bool), (int, long, int?)>();
     using var cmd = new SqliteCommand(
-      "SELECT item_id, unit_price, timestamp FROM last_sale_prices",
+      "SELECT item_id, is_hq, unit_price, timestamp, sold_after_days FROM last_sale_prices",
       _connection);
     using var reader = cmd.ExecuteReader();
     while (reader.Read())
-      prices[(uint)reader.GetInt64(0)] = (reader.GetInt32(1), reader.GetInt64(2));
+      prices[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0)] =
+        (reader.GetInt32(2), reader.GetInt64(3), reader.IsDBNull(4) ? null : reader.GetInt32(4));
     return prices;
   }
 
   /// <summary>
-  /// Last sale price for one item, or null when it has never sold via retainer.
-  /// Single-row variant of GetLastSalePrices for per-event lookups.
+  /// Last sale price for one item at one quality, or null when that variant
+  /// has never sold via retainer. NQ and HQ are separate evidence — an NQ
+  /// sale says nothing about the HQ price.
   /// </summary>
-  internal static int? GetLastSalePrice(uint itemId)
+  internal static int? GetLastSalePrice(uint itemId, bool isHq)
   {
     using var cmd = new SqliteCommand(
-      "SELECT unit_price FROM last_sale_prices WHERE item_id = @iid",
+      "SELECT unit_price FROM last_sale_prices WHERE item_id = @iid AND is_hq = @hq",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     var result = cmd.ExecuteScalar();
     return result == null || result == DBNull.Value ? null : Convert.ToInt32(result);
   }
 
   /// <summary>
-  /// Last sale price AND timestamp for one item - the own-sales pricing
-  /// fallback needs both (staleness gate + "sold Nd ago" label).
+  /// Last sale price AND timestamp for one item at one quality - the own-sales
+  /// pricing fallback needs both (staleness gate + "sold Nd ago" label).
   /// </summary>
-  internal static (int Price, long Timestamp)? GetLastSalePriceWithTime(uint itemId)
+  internal static (int Price, long Timestamp)? GetLastSalePriceWithTime(uint itemId, bool isHq)
   {
     using var cmd = new SqliteCommand(
-      "SELECT unit_price, timestamp FROM last_sale_prices WHERE item_id = @iid",
+      "SELECT unit_price, timestamp FROM last_sale_prices WHERE item_id = @iid AND is_hq = @hq",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     using var reader = cmd.ExecuteReader();
     if (!reader.Read()) return null;
     return (reader.GetInt32(0), reader.GetInt64(1));
@@ -1018,17 +1147,67 @@ internal static class GilStorage
     cmd.ExecuteNonQuery();
   }
 
-  /// <summary>Upserts the last sale price for an item. Called on every retainer sale.</summary>
-  internal static void UpsertLastSalePrice(uint itemId, int unitPrice, long timestamp)
+  /// <summary>
+  /// Upserts the last sale price for an item variant. Called on every retainer
+  /// sale. soldAfterDays (listing sit time, when known) only overwrites when
+  /// provided — a sale without sit-time evidence keeps the previous value.
+  /// </summary>
+  internal static void UpsertLastSalePrice(uint itemId, bool isHq, int unitPrice, long timestamp, int? soldAfterDays = null)
   {
     using var cmd = new SqliteCommand(
-      @"INSERT INTO last_sale_prices (item_id, unit_price, timestamp)
-        VALUES (@iid, @price, @ts)
-        ON CONFLICT(item_id) DO UPDATE SET unit_price = @price, timestamp = @ts",
+      @"INSERT INTO last_sale_prices (item_id, is_hq, unit_price, timestamp, sold_after_days)
+        VALUES (@iid, @hq, @price, @ts, @days)
+        ON CONFLICT(item_id, is_hq) DO UPDATE SET
+          unit_price = @price, timestamp = @ts,
+          sold_after_days = COALESCE(@days, sold_after_days)",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     cmd.Parameters.AddWithValue("@price", unitPrice);
     cmd.Parameters.AddWithValue("@ts", timestamp);
+    cmd.Parameters.AddWithValue("@days", (object?)soldAfterDays ?? DBNull.Value);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// first_seen per (item, quality) currently listed on a retainer — oldest
+  /// wins when the same variant is listed in multiple slots. Read by
+  /// GilTracker.SnapshotListings BEFORE the delete/re-insert so disappeared
+  /// (= likely sold) listings can carry their sit time to sale reconciliation.
+  /// </summary>
+  internal static Dictionary<(uint ItemId, bool IsHq), long> GetRetainerListingAges(string retainerName)
+  {
+    var ages = new Dictionary<(uint, bool), long>();
+    using var cmd = new SqliteCommand(
+      @"SELECT item_id, is_hq, MIN(first_seen) FROM listings
+        WHERE retainer_name = @ret GROUP BY item_id, is_hq",
+      _connection);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      ages[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0)] = reader.GetInt64(2);
+    return ages;
+  }
+
+  /// <summary>
+  /// Records a routing override: the router said one thing, the player did
+  /// another. Written by the Hawk window when a gated item is checked anyway.
+  /// </summary>
+  internal static void InsertRoutingOverride(uint itemId, bool isHq, int ilvl,
+      string routerVerdict, string routerReason, string playerVerdict)
+  {
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO routing_overrides
+          (created_at, item_id, is_hq, ilvl, router_verdict, router_reason, player_verdict)
+        VALUES (@now, @iid, @hq, @ilvl, @rv, @reason, @pv)",
+      _connection);
+    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.Parameters.AddWithValue("@ilvl", ilvl);
+    cmd.Parameters.AddWithValue("@rv", routerVerdict);
+    cmd.Parameters.AddWithValue("@reason", routerReason);
+    cmd.Parameters.AddWithValue("@pv", playerVerdict);
     cmd.ExecuteNonQuery();
   }
 

@@ -13,6 +13,19 @@ namespace Scrooge;
 /// </summary>
 internal static unsafe class GameSafe
 {
+  /// <summary>
+  /// Player's desynthesis skill for the given DoH class job (standard FFXIV
+  /// ids, e.g. 8 = CRP ... 15 = CUL). 0 when PlayerState is unavailable —
+  /// callers classify against 0, which reads as Red (skillup) and never
+  /// gates anything. Moved from DesynthSkillup so that file stays pure.
+  /// </summary>
+  internal static int GetDesynthLevel(byte classJobId)
+  {
+    var ps = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+    if (ps == null) return 0;
+    return (int)ps->GetDesynthesisLevel(classJobId);
+  }
+
   /// <summary>Player gil, or null when InventoryManager isn't available (zoning/startup).</summary>
   internal static long? PlayerGil()
   {
@@ -70,6 +83,62 @@ internal static unsafe class GameSafe
   }
 
   /// <summary>
+  /// Venture token item id. VERIFY in-game (flagged in the venture-returns
+  /// design doc) — believed 21072; a wrong id reads as 0 stock, which the
+  /// rules engine must treat as "unknown", never "panic mode".
+  /// </summary>
+  private const uint VentureTokenItemId = 21072;
+
+  /// <summary>
+  /// Venture token count, or null when the inventory is unavailable.
+  /// GetInventoryItemCount resolves containers itself — the previous manual
+  /// Currency-container walk read 0 against a real stock of 1300 (shake-out
+  /// finding 8; ventures don't live where that walk looked). 0 stays
+  /// ambiguous for callers: prefer "no tilt" over "hard override" on 0.
+  /// </summary>
+  internal static int? VentureTokenCount()
+  {
+    var im = InventoryManager.Instance();
+    if (im == null) return null;
+
+    return im->GetInventoryItemCount(VentureTokenItemId);
+  }
+
+  /// <summary>
+  /// Visible sell-list row index of the first listing matching (itemId, isHq)
+  /// on the OPEN retainer, plus its stack quantity - or null when the item is
+  /// no longer listed or the addon isn't ready. Reads the RetainerSellList
+  /// addon's own rows (count at AtkValues[9], base 10, stride 13 - the same
+  /// map SnapshotListings uses), so the index is the DISPLAY index the row
+  /// click callback expects. The RetainerMarket container stores slots in a
+  /// different order than the sell list displays (proven 2026-07-12,
+  /// finding #16) - never target rows from the container.
+  /// </summary>
+  internal static (int RowIndex, int Quantity)? SellListRow(uint itemId, bool isHq)
+  {
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return null;
+
+    var itemCount = addon->AtkValues[9].Int;
+    for (int i = 0; i < itemCount; i++)
+    {
+      var baseIdx = 10 + (i * 13);
+      var iconId = addon->AtkValues[baseIdx].Int;
+      var itemName = addon->AtkValues[baseIdx + 1].GetValueAsString();
+      var payload = Communicator.RawItemNameToItemPayload(itemName);
+      if (payload == null || payload.ItemId != itemId) continue;
+
+      var rowHq = iconId >= 1_000_000;
+      if (rowHq != isHq) continue;
+
+      var quantity = addon->AtkValues[baseIdx + 2].Int;
+      return (i, quantity);
+    }
+    return null;
+  }
+
+  /// <summary>
   /// Row count of the RetainerSellList's list component, or null when the addon
   /// isn't open/ready or the node walk (NodeList[10] → list component) fails.
   /// </summary>
@@ -85,5 +154,23 @@ internal static unsafe class GameSafe
     if (listComponent == null) return null;
 
     return listComponent->ListLength;
+  }
+
+  /// <summary>
+  /// The player's GC seal wallet: current, max for their rank, and the GC id.
+  /// Null when PlayerState/InventoryManager are unavailable or the player
+  /// has no Grand Company.
+  /// </summary>
+  internal static (uint Current, uint Max, byte GcId)? CompanySeals()
+  {
+    var ps = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
+    if (ps == null) return null;
+    var gc = ps->GrandCompany;
+    if (gc == 0) return null;
+
+    var im = InventoryManager.Instance();
+    if (im == null) return null;
+
+    return (im->GetCompanySeals(gc), im->GetMaxCompanySeals(gc), gc);
   }
 }

@@ -91,7 +91,7 @@ internal static class DesynthInventoryScanner
       byte classJob = (byte)luminaItem.ClassJobRepair.RowId;
       string abbrev = ClassJobAbbrev.TryGetValue(classJob, out var a) ? a : "ALL";
 
-      int playerLevel = DesynthSkillup.GetDesynthLevel(classJob);
+      int playerLevel = GameSafe.GetDesynthLevel(classJob);
       int itemLevel = (int)luminaItem.LevelItem.RowId;
       var color = DesynthSkillup.Classify(playerLevel, itemLevel);
 
@@ -128,8 +128,9 @@ internal static class DesynthInventoryScanner
   /// <summary>
   /// Returns the set of (itemId+1M for HQ, itemId for NQ) ids referenced by
   /// any saved gearset. Conservative match key — see scanner notes.
+  /// Shared with the routing window's protection scan.
   /// </summary>
-  private static unsafe HashSet<uint> SnapshotGearsetItemIds()
+  internal static unsafe HashSet<uint> SnapshotGearsetItemIds()
   {
     var ids = new HashSet<uint>();
     var module = RaptureGearsetModule.Instance();

@@ -4,6 +4,7 @@ using ECommons;
 using ECommons.DalamudServices;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Scrooge.Windows;
 
@@ -20,6 +21,7 @@ internal sealed class DesynthPreviewWindow : Window
   private List<DesynthItem> _items = [];
   private bool _confirmModalOpen;
   private List<DesynthItem> _pendingProtected = [];
+  private HashSet<(uint ItemId, bool IsHq)> _meltPile = [];
 
   public DesynthPreviewWindow()
     : base("Desynth Preview###DesynthPreview", ImGuiWindowFlags.None)
@@ -33,10 +35,14 @@ internal sealed class DesynthPreviewWindow : Window
 
   /// <summary>
   /// Re-scans AgentSalvage state and opens the window. Idempotent — calling
-  /// while open just refreshes the item list.
+  /// while open just refreshes the item list. Also refreshes the router so
+  /// the desynth-pile banner and tags reflect the bags as they are NOW, not
+  /// as of the last manual Refresh (Sam's call: launching this window IS
+  /// the moment the pile data matters).
   /// </summary>
   public void OpenAndScan()
   {
+    Plugin.RoutingWindow.Refresh();
     _items = DesynthInventoryScanner.Scan();
     IsOpen = true;
   }
@@ -50,6 +56,27 @@ internal sealed class DesynthPreviewWindow : Window
       {
         IsOpen = false;
         return;
+      }
+    }
+
+    // Location-session parity with the GC counter's Churn button: the
+    // router's Melt pile meets its executor here — remind, mark the rows,
+    // and offer one-click selection (protections still excluded).
+    _meltPile = Plugin.RoutingWindow.MeltPileVariants();
+    if (_meltPile.Count > 0)
+    {
+      var visible = _items.Count(i => _meltPile.Contains((i.ItemId, i.IsHq)));
+      ImGui.TextColored(ScroogeColors.Amber,
+        $"Router desynth pile: {_meltPile.Count} {(_meltPile.Count == 1 ? "item" : "items")} routed here"
+        + (visible < _meltPile.Count ? $" ({visible} visible under the current in-game filter)." : "."));
+      if (visible > 0)
+      {
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Select Desynth Pile"))
+        {
+          foreach (var it in _items)
+            it.Selected = !it.IsProtected && _meltPile.Contains((it.ItemId, it.IsHq));
+        }
       }
     }
 
@@ -245,6 +272,14 @@ internal sealed class DesynthPreviewWindow : Window
         item.Selected = sel;
 
       ImGui.TableNextColumn();
+      if (_meltPile.Contains((item.ItemId, item.IsHq)))
+      {
+        ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
+        ImGui.Text("desynth");
+        ImGui.PopStyleColor();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("In the router's desynth pile");
+        ImGui.SameLine();
+      }
       ImGui.Text(item.IsHq ? $"{item.Name} " : item.Name);
 
       ImGui.TableNextColumn();

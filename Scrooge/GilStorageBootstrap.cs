@@ -15,8 +15,6 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  private const int CurrentSchemaVersion = 12;
-
   /// <summary>Entry point — runs all bootstrap steps in order.</summary>
   internal static void Run(SqliteConnection connection)
   {
@@ -98,6 +96,30 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 12);
     }
 
+    if (version < 13)
+    {
+      MigrateV13(connection);
+      SetSchemaVersion(connection, 13);
+    }
+
+    if (version < 14)
+    {
+      MigrateV14(connection);
+      SetSchemaVersion(connection, 14);
+    }
+
+    if (version < 15)
+    {
+      MigrateV15(connection);
+      SetSchemaVersion(connection, 15);
+    }
+
+    if (version < 16)
+    {
+      MigrateV16(connection);
+      SetSchemaVersion(connection, 16);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -128,7 +150,28 @@ internal class GilStorageBootstrap
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER NOT NULL,
                 player_gil INTEGER NOT NULL,
-                source TEXT NOT NULL DEFAULT 'pinch_run'
+                source TEXT NOT NULL DEFAULT 'pinch_run',
+                venture_tokens INTEGER
+            )",
+            @"CREATE TABLE IF NOT EXISTS venture_returns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                captured_at INTEGER NOT NULL,
+                retainer_name TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                is_hq INTEGER NOT NULL DEFAULT 0
+            )",
+            @"CREATE INDEX IF NOT EXISTS ix_venture_returns_captured
+                ON venture_returns(captured_at DESC)",
+            @"CREATE TABLE IF NOT EXISTS universalis_stats (
+                item_id INTEGER NOT NULL,
+                world_id INTEGER NOT NULL,
+                nq_velocity REAL NOT NULL DEFAULT 0,
+                hq_velocity REAL NOT NULL DEFAULT 0,
+                last_sale_at INTEGER,
+                last_upload_at INTEGER,
+                fetched_at INTEGER NOT NULL,
+                PRIMARY KEY (item_id, world_id)
             )",
             @"CREATE TABLE IF NOT EXISTS retainer_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,9 +220,12 @@ internal class GilStorageBootstrap
                 display_group TEXT NOT NULL
             )",
             @"CREATE TABLE IF NOT EXISTS last_sale_prices (
-                item_id INTEGER PRIMARY KEY,
+                item_id INTEGER NOT NULL,
+                is_hq INTEGER NOT NULL DEFAULT 0,
                 unit_price INTEGER NOT NULL,
-                timestamp INTEGER NOT NULL
+                timestamp INTEGER NOT NULL,
+                sold_after_days INTEGER,
+                PRIMARY KEY (item_id, is_hq)
             )",
             @"CREATE TABLE IF NOT EXISTS quotes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -815,6 +861,147 @@ internal class GilStorageBootstrap
       connection);
     var affected = cmd.ExecuteNonQuery();
     Svc.Log.Info($"[Scrooge] V11 migration: desynth timestamps ms -> s ({affected} values converted)");
+  }
+
+  /// <summary>
+  /// V13: Split last_sale_prices by quality. NQ and HQ sell at different
+  /// prices and rates (the listing gate judges them separately), so the key
+  /// becomes (item_id, is_hq). Also adds sold_after_days — how long the
+  /// listing sat before selling, captured forward from sale reconciliation
+  /// (null for historical rows). Backfill: per-quality latest sale from
+  /// transactions; rows only present in the old table (pruned transactions)
+  /// carry over as NQ rather than being dropped.
+  /// </summary>
+  private static void MigrateV13(SqliteConnection connection)
+  {
+    // The one destructive migration (DROP + RENAME): atomic or not at all.
+    // Without the transaction, a crash between DROP and RENAME leaves
+    // user_version=12 with the v13 table present - the bare CREATE then
+    // throws on every subsequent boot and storage is dead permanently.
+    using var tx = connection.BeginTransaction();
+
+    // Rows only the old table knows (their transactions were pruned) carry
+    // over as NQ - their HQ split is unknowable. Count them for the log so a
+    // "why is my HQ history blind" question has an answer on record.
+    using var countCmd = new SqliteCommand(
+      @"SELECT COUNT(*) FROM last_sale_prices WHERE item_id NOT IN (
+          SELECT DISTINCT item_id FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0)",
+      connection, tx);
+    var carriedAsNq = Convert.ToInt32(countCmd.ExecuteScalar());
+
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE last_sale_prices_v13 (
+          item_id         INTEGER NOT NULL,
+          is_hq           INTEGER NOT NULL DEFAULT 0,
+          unit_price      INTEGER NOT NULL,
+          timestamp       INTEGER NOT NULL,
+          sold_after_days INTEGER,
+          PRIMARY KEY (item_id, is_hq)
+        );
+        INSERT OR REPLACE INTO last_sale_prices_v13 (item_id, is_hq, unit_price, timestamp)
+          SELECT item_id, is_hq, unit_price, MAX(timestamp)
+          FROM transactions
+          WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0
+          GROUP BY item_id, is_hq;
+        INSERT OR IGNORE INTO last_sale_prices_v13 (item_id, is_hq, unit_price, timestamp)
+          SELECT item_id, 0, unit_price, timestamp FROM last_sale_prices;
+        DROP TABLE last_sale_prices;
+        ALTER TABLE last_sale_prices_v13 RENAME TO last_sale_prices;",
+      connection, tx);
+    cmd.ExecuteNonQuery();
+    tx.Commit();
+    Svc.Log.Info("[Scrooge] V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
+    if (carriedAsNq > 0)
+      Svc.Log.Info($"[Scrooge] V13: {carriedAsNq} pruned-history rows carried over as NQ - their HQ price history starts fresh at the next HQ sale");
+  }
+
+  /// <summary>
+  /// V14: Add routing_overrides table. Every time the player overrules a
+  /// routing verdict (checks a gated item in the Hawk window), the disagreement
+  /// is recorded — recurring overrides suggest config tweaks, and the history
+  /// is the context a future judgment hook would need. Day-one requirement of
+  /// the routing brain design.
+  /// </summary>
+  private static void MigrateV14(SqliteConnection connection)
+  {
+    using var cmd = new SqliteCommand(
+      @"CREATE TABLE routing_overrides (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at     INTEGER NOT NULL,
+          item_id        INTEGER NOT NULL,
+          is_hq          INTEGER NOT NULL DEFAULT 0,
+          ilvl           INTEGER NOT NULL DEFAULT 0,
+          router_verdict TEXT NOT NULL,
+          router_reason  TEXT NOT NULL DEFAULT '',
+          player_verdict TEXT NOT NULL
+        );
+        CREATE INDEX ix_routing_overrides_item ON routing_overrides(item_id, is_hq);",
+      connection);
+    cmd.ExecuteNonQuery();
+    Svc.Log.Info("[Scrooge] V14 migration: created routing_overrides table");
+  }
+
+  /// <summary>
+  /// V15: venture-return tracking. New venture_returns table (one row per
+  /// collected quick-venture result) + nullable venture_tokens column on
+  /// gil_snapshots so token stock rides the existing bell snapshots.
+  /// Fresh installs get both via CreateTables; the ALTER is guarded so a
+  /// fresh DB that already has the column migrates cleanly.
+  /// </summary>
+  private static void MigrateV15(SqliteConnection connection)
+  {
+    using (var cmd = new SqliteCommand(
+      @"CREATE TABLE IF NOT EXISTS venture_returns (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          captured_at   INTEGER NOT NULL,
+          retainer_name TEXT NOT NULL,
+          item_id       INTEGER NOT NULL,
+          quantity      INTEGER NOT NULL,
+          is_hq         INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS ix_venture_returns_captured
+          ON venture_returns(captured_at DESC);",
+      connection))
+      cmd.ExecuteNonQuery();
+
+    var hasColumn = false;
+    using (var check = new SqliteCommand("PRAGMA table_info(gil_snapshots);", connection))
+    using (var reader = check.ExecuteReader())
+      while (reader.Read())
+        if (reader.GetString(1) == "venture_tokens") { hasColumn = true; break; }
+
+    if (!hasColumn)
+      using (var alter = new SqliteCommand(
+        "ALTER TABLE gil_snapshots ADD COLUMN venture_tokens INTEGER;", connection))
+        alter.ExecuteNonQuery();
+
+    Svc.Log.Info("[Scrooge] V15 migration: venture_returns table + gil_snapshots.venture_tokens");
+  }
+
+  /// <summary>
+  /// V16: the Universalis almanac cache. One row per (item, world) holding
+  /// per-quality sale velocity, most recent sale, and lastUploadTime for the
+  /// trust gate — so routing verdicts survive restarts without refetching.
+  /// Null last_upload_at = Universalis has no data for the item.
+  /// </summary>
+  private static void MigrateV16(SqliteConnection connection)
+  {
+    using (var cmd = new SqliteCommand(
+      @"CREATE TABLE IF NOT EXISTS universalis_stats (
+          item_id        INTEGER NOT NULL,
+          world_id       INTEGER NOT NULL,
+          nq_velocity    REAL NOT NULL DEFAULT 0,
+          hq_velocity    REAL NOT NULL DEFAULT 0,
+          last_sale_at   INTEGER,
+          last_upload_at INTEGER,
+          fetched_at     INTEGER NOT NULL,
+          PRIMARY KEY (item_id, world_id)
+        );",
+      connection))
+      cmd.ExecuteNonQuery();
+
+    Svc.Log.Info("[Scrooge] V16 migration: universalis_stats cache table");
   }
 
   // =========================================================================

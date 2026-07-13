@@ -224,6 +224,111 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int StalePriceDays { get; set; } = 30;
 
+  // --- Routing brain (advisor era; master toggle stays off until the era ships) ---
+
+  /// <summary>
+  /// Master toggle for routing-brain features. Increment 0 is the listing
+  /// gate: Hawk items whose better exit is desynth or GC turn-in get a
+  /// routing verdict, are excluded from Select All, and default unchecked.
+  /// </summary>
+  public bool EnableRoutingBrain { get; set; } = false;
+
+  /// <summary>
+  /// Equipment listing floor in gil. Gear whose own-sales evidence lands
+  /// below this is a gate candidate (when a better exit exists).
+  /// </summary>
+  public int ListingFloorGil { get; set; } = 15000;
+
+  /// <summary>
+  /// Equipment velocity floor in days. Gear that took longer than this to
+  /// sell last time is a gate candidate (when a better exit exists).
+  /// </summary>
+  public int ListingVelocityDays { get; set; } = 10;
+
+  /// <summary>
+  /// Non-gear listing floor in gil (simple, no velocity axis). Rules-engine
+  /// input; gear uses ListingFloorGil x ListingVelocityDays instead.
+  /// </summary>
+  public int ListingWorthGil { get; set; } = 5000;
+
+  /// <summary>
+  /// Placeholder seals-to-gil conversion rate for scoring the GC exit.
+  /// Replaced by the empirical gil-per-venture number once venture-return
+  /// tracking ships — until then this is an honest rough cut.
+  /// </summary>
+  public int SealToGilRate { get; set; } = 25;
+
+  /// <summary>
+  /// Ambiguity band, percent. When the winning exit's gil score and the
+  /// runner-up land within this band, the item goes to Review with both
+  /// reasons instead of a confident guess.
+  /// </summary>
+  public int RoutingReviewBandPct { get; set; } = 15;
+
+  // Venture tilt bands (BP4 Q5) — configurable defaults, not product rules.
+  // Above Full: GC competes on pure value. Below Full: borderline calls tilt
+  // to churn. Below Low: churn unless the item is worth
+  // ListingFloorGil x VenturePanicValueMultiplier. Below Panic: churn
+  // everything GC-eligible until stock recovers.
+
+  public int VentureBandFull { get; set; } = 1250;
+
+  public int VentureBandLow { get; set; } = 750;
+
+  public int VentureBandPanic { get; set; } = 500;
+
+  public float VenturePanicValueMultiplier { get; set; } = 3.0f;
+
+  // Slow-mover pressure - the routing brain pointed at already-listed
+  // inventory. Rides the pinch run; gated by EnableRoutingBrain too.
+
+  /// <summary>
+  /// Master toggle for slow-mover pressure (deepen cuts / evict flags).
+  /// Default OFF: this is the one advisor-era feature that changes real
+  /// listing prices, so it never activates silently with the routing brain -
+  /// it gets its own explicit opt-in. (Renamed from EnableSlowMoverPressure
+  /// at the era review precisely to drop the old default-on stored value.)
+  /// </summary>
+  public bool SlowMoverPressureOptIn { get; set; } = false;
+
+  /// <summary>Days listed before pressure starts deepening the pinch cut.</summary>
+  public int PressureAfterDays { get; set; } = 7;
+
+  /// <summary>Extra undercut percent at PressureAfterDays (market alive).</summary>
+  public int PressureDeepenPct { get; set; } = 2;
+
+  /// <summary>Extra undercut percent at 14+ days listed (market alive).</summary>
+  public int PressureDeepenMaxPct { get; set; } = 5;
+
+  /// <summary>Days listed with a dead 14-day MB history before the item is flagged for eviction.</summary>
+  public int EvictAfterDays { get; set; } = 14;
+
+  /// <summary>
+  /// Venture tokens consumed per quick venture (VERIFY in-game; believed 2).
+  /// Feeds the empirical seals-to-gil conversion.
+  /// </summary>
+  public int VentureTokensPerVenture { get; set; } = 2;
+
+  // --- Universalis almanac (advisor data only - never sets a price) ---
+
+  /// <summary>
+  /// Use Universalis (community market data, home world) to fill the velocity
+  /// axis for items with no local history. Consumer only; offline = the
+  /// plugin behaves exactly as if this were off.
+  /// </summary>
+  public bool EnableUniversalis { get; set; } = true;
+
+  /// <summary>Data older than this is treated as NO data (stale = unknown).</summary>
+  public int UniversalisTrustDays { get; set; } = 7;
+
+  /// <summary>Cache TTL - velocity moves slowly, so refetch rarely.</summary>
+  public int UniversalisCacheTtlHours { get; set; } = 18;
+
+  // --- DTR / server info bar ---
+
+  /// <summary>Show today's gil delta in the server info bar. Click opens the dashboard.</summary>
+  public bool EnableDtrToday { get; set; } = true;
+
   // --- Gil Goals ---
   // Three independent buckets; 0 = that goal is off. Set from the dashboard's
   // Goals tab. Crossings celebrate once per target value — changing a target

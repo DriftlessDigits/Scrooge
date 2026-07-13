@@ -45,6 +45,10 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
+  internal static RoutingWindow RoutingWindow { get; private set; } = null!;
+
+  internal static GcTurnInOrchestrator GcTurnIn { get; private set; } = null!;
+
   /// <summary>Null when GilStorage failed to initialize — yield persistence disabled.</summary>
   internal static DesynthYieldStore? DesynthYieldStore { get; private set; }
 
@@ -60,6 +64,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static DesynthLauncher DesynthLauncher { get; private set; } = null!;
 
+  private VentureReturnTracker? _ventureReturnTracker;
+  private DtrToday? _dtrToday;
   private RetainerHistoryHook? _retainerHistoryHook;
   private GilTrackEventListener? _gilTrackListener;
   private ExchangeTracker? _exchangeTracker;
@@ -77,7 +83,7 @@ public sealed class Plugin : IDalamudPlugin
 
     CommandManager.AddHandler("/scrooge", new CommandInfo(OnScroogeCommand)
     {
-      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config for settings)"
+      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config = settings, route = router, triage = inbox)"
     });
 
     // Register chat link handler — clicking Scrooge's chat output opens the dashboard
@@ -88,6 +94,7 @@ public sealed class Plugin : IDalamudPlugin
     PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUI;
 
     ECommonsMain.Init(PluginInterface, this);
+    Svc.Log.Information($"[Scrooge] build {BuildStamp.Line}");
     AutoPinch = new AutoPinch();
     WindowSystem.AddWindow(AutoPinch);
 
@@ -160,6 +167,38 @@ public sealed class Plugin : IDalamudPlugin
     HawkWindow = new HawkWindow();
     WindowSystem.AddWindow(HawkWindow);
 
+    RoutingWindow = new RoutingWindow();
+    WindowSystem.AddWindow(RoutingWindow);
+
+    GcTurnIn = new GcTurnInOrchestrator();
+
+    try
+    {
+      _ventureReturnTracker = new VentureReturnTracker();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "[Scrooge] VentureReturnTracker failed - venture capture disabled this session");
+    }
+
+    try
+    {
+      _dtrToday = new DtrToday();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "[Scrooge] DTR entry failed - server info bar headline disabled");
+    }
+
+    try
+    {
+      UniversalisStats.Initialize();
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "[Scrooge] Universalis almanac failed to start - local evidence only this session");
+    }
+
     TriageWindow = new TriageWindow();
     WindowSystem.AddWindow(TriageWindow);
 
@@ -193,6 +232,7 @@ public sealed class Plugin : IDalamudPlugin
 
   public void Dispose()
   {
+    GcTurnIn?.Abort(); // ends a live churn run + unsubscribes its watchdog
     ContextMenu.OnMenuOpened -= OnContextMenuOpened;
     TriageOrchestrator.Dispose();
     DesynthYieldTracker?.Dispose();
@@ -200,6 +240,9 @@ public sealed class Plugin : IDalamudPlugin
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
+    UniversalisStats.Dispose();
+    _ventureReturnTracker?.Dispose();
+    _dtrToday?.Dispose();
     _chatCatchallTracker?.Dispose();
     _specialExchangeTracker?.Dispose();
     _exchangeTracker?.Dispose();
@@ -216,6 +259,10 @@ public sealed class Plugin : IDalamudPlugin
     if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase)
         || args.Trim().Equals("settings", StringComparison.OrdinalIgnoreCase))
       ToggleConfigUI();
+    else if (args.Trim().Equals("route", StringComparison.OrdinalIgnoreCase))
+      RoutingWindow.Toggle();
+    else if (args.Trim().Equals("triage", StringComparison.OrdinalIgnoreCase))
+      TriageWindow.IsOpen = !TriageWindow.IsOpen;
     else
       ToggleMainUi();
   }

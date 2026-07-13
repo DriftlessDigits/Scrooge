@@ -160,7 +160,10 @@ internal sealed class GilTrackEventListener : IDisposable
     if (last.HasValue && (now - last.Value.Timestamp) < 60 && last.Value.Gil == playerGil)
       return;
 
-    var snapshotId = GilStorage.InsertGilSnapshot(now, playerGil, "summoning_bell");
+    // Venture-token stock piggybacks the bell snapshot (V15) - burn/acquire
+    // rate falls out of the deltas. Null when the read fails; never guessed.
+    var snapshotId = GilStorage.InsertGilSnapshot(now, playerGil, "summoning_bell",
+      ventureTokens: GameSafe.VentureTokenCount());
 
     // At the bell, retainer balances are populated
     foreach (var (name, gil) in GameSafe.RetainerBalances())

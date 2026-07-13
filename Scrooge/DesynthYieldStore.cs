@@ -147,7 +147,7 @@ internal sealed class DesynthYieldStore
                COUNT(DISTINCT y.run_id || '-' || y.attempt_seq) AS attempts,
                SUM(y.yield_qty * COALESCE(p.unit_price, 0)) AS yield_value
         FROM desynth_yields y
-        LEFT JOIN last_sale_prices p ON p.item_id = y.yield_item_id
+        LEFT JOIN last_sale_prices p ON p.item_id = y.yield_item_id AND p.is_hq = y.yield_is_hq
         WHERE y.captured_at >= @since
         GROUP BY y.source_item_id, y.source_is_hq
         ORDER BY attempts DESC;",

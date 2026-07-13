@@ -1,5 +1,3 @@
-using FFXIVClientStructs.FFXIV.Client.Game.UI;
-
 namespace Scrooge;
 
 /// <summary>
@@ -18,7 +16,9 @@ internal enum DesynthSkillupColor
 }
 
 /// <summary>
-/// Pure logic for computing the SimpleTweaks-style skillup color for a desynth target.
+/// Pure logic for computing the SimpleTweaks-style skillup color for a desynth
+/// target. The PlayerState skill read lives in GameSafe.GetDesynthLevel —
+/// this file stays game-free so the test project can link it.
 /// </summary>
 internal static class DesynthSkillup
 {
@@ -38,18 +38,6 @@ internal static class DesynthSkillup
     if (playerLevel < itemLevel + 50)
       return DesynthSkillupColor.Yellow;
     return DesynthSkillupColor.Green;
-  }
-
-  /// <summary>
-  /// Reads the player's desynthesis skill for the given DoH class job.
-  /// Class job ids are the standard FFXIV ids (e.g. 8 = CRP, 9 = BSM, ..., 15 = CUL).
-  /// Returns 0 if PlayerState is unavailable or class is out of range.
-  /// </summary>
-  internal static unsafe int GetDesynthLevel(byte classJobId)
-  {
-    var ps = PlayerState.Instance();
-    if (ps == null) return 0;
-    return (int)ps->GetDesynthesisLevel(classJobId);
   }
 
   /// <summary>True if the color would still grant skillup (red or yellow).</summary>
