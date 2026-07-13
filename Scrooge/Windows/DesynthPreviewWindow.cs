@@ -63,12 +63,12 @@ internal sealed class DesynthPreviewWindow : Window
     {
       var visible = _items.Count(i => _meltPile.Contains((i.ItemId, i.IsHq)));
       ImGui.TextColored(ScroogeColors.Amber,
-        $"Router melt pile: {_meltPile.Count} {(_meltPile.Count == 1 ? "item" : "items")} routed here"
+        $"Router desynth pile: {_meltPile.Count} {(_meltPile.Count == 1 ? "item" : "items")} routed here"
         + (visible < _meltPile.Count ? $" ({visible} visible under the current in-game filter)." : "."));
       if (visible > 0)
       {
         ImGui.SameLine();
-        if (ImGui.SmallButton("Select Melt Pile"))
+        if (ImGui.SmallButton("Select Desynth Pile"))
         {
           foreach (var it in _items)
             it.Selected = !it.IsProtected && _meltPile.Contains((it.ItemId, it.IsHq));
@@ -271,9 +271,9 @@ internal sealed class DesynthPreviewWindow : Window
       if (_meltPile.Contains((item.ItemId, item.IsHq)))
       {
         ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
-        ImGui.Text("melt");
+        ImGui.Text("desynth");
         ImGui.PopStyleColor();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("In the router's melt pile");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("In the router's desynth pile");
         ImGui.SameLine();
       }
       ImGui.Text(item.IsHq ? $"{item.Name} " : item.Name);

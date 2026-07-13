@@ -177,9 +177,9 @@ internal sealed class RoutingWindow : Window
       "Too close to call, or no evidence - your decision resolves these.");
     DrawPile("List", RoutingExit.List, ScroogeColors.Earned, defaultOpen: true,
       "Earns real gil on the market board. Executed by the Hawk run.");
-    DrawPile("Melt", RoutingExit.Desynth, ScroogeColors.Amber, defaultOpen: true,
+    DrawPile("Desynth", RoutingExit.Desynth, ScroogeColors.Amber, defaultOpen: true,
       "Skillup value or yields beat the alternatives. Run from the desynth window.");
-    DrawPile("Churn", RoutingExit.Gc, ScroogeColors.Warning, defaultOpen: true,
+    DrawPile("Turn In", RoutingExit.Gc, ScroogeColors.Warning, defaultOpen: true,
       "Seals beat gil (or venture stock demands it). Expert Delivery at your GC.");
     DrawPile("Vendor", RoutingExit.Vendor, ScroogeColors.Muted, defaultOpen: true,
       "No better exit in evidence. Executed by the Hawk run (retainer vendor sell).");
@@ -248,18 +248,18 @@ internal sealed class RoutingWindow : Window
       ImGui.SameLine();
       if (Plugin.GcTurnIn.IsRunning)
       {
-        if (ImGui.Button("Cancel churn"))
+        if (ImGui.Button("Cancel turn-in"))
           Plugin.GcTurnIn.Abort();
       }
       else
       {
         var atGc = GcTurnInOrchestrator.AtExpertDelivery();
         ImGui.BeginDisabled(!atGc);
-        if (ImGui.Button($"Churn ({gcCount})"))
+        if (ImGui.Button($"Turn In ({gcCount})"))
           ExecuteChurnPile();
         ImGui.EndDisabled();
         if (!atGc && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-          ImGui.SetTooltip("Open your GC personnel officer's Expert Delivery window to execute the Churn pile.");
+          ImGui.SetTooltip("Open your GC personnel officer's Expert Delivery window to execute the Turn In pile.");
       }
     }
 
@@ -268,8 +268,8 @@ internal sealed class RoutingWindow : Window
     {
       var waiting = new List<string>();
       if (reviewCount > 0) waiting.Add($"{reviewCount} in review");
-      if (meltCount > 0) waiting.Add($"{meltCount} to melt (desynth window)");
-      if (gcCount > 0) waiting.Add($"{gcCount} to churn (Churn button lights up at Expert Delivery)");
+      if (meltCount > 0) waiting.Add($"{meltCount} to desynth (desynth window)");
+      if (gcCount > 0) waiting.Add($"{gcCount} to turn in (Turn In button lights up at Expert Delivery)");
       ImGui.TextDisabled(string.Join("  |  ", waiting));
     }
   }
@@ -325,9 +325,9 @@ internal sealed class RoutingWindow : Window
     var meltCount = CountPile(RoutingExit.Desynth);
     var gcCount = CountPile(RoutingExit.Gc);
     if (meltCount > 0)
-      Svc.Chat.Print($"[Scrooge] Melt pile: {meltCount} items - run them from the desynth window.");
+      Svc.Chat.Print($"[Scrooge] Desynth pile: {meltCount} items - run them from the desynth window.");
     if (gcCount > 0)
-      Svc.Chat.Print($"[Scrooge] Churn pile: {gcCount} items - reopen the router at an Expert Delivery counter.");
+      Svc.Chat.Print($"[Scrooge] Turn In pile: {gcCount} items - reopen the router at an Expert Delivery counter.");
 
     Plugin.AutoPinch.StartHawkRun(hawkItems);
     IsOpen = false;
@@ -354,7 +354,7 @@ internal sealed class RoutingWindow : Window
     // resolved at queue time. Say so instead of quietly shrinking.
     var skipped = gcPile - churnItems.Count;
     if (skipped > 0)
-      Svc.Chat.Print($"[Scrooge] Churn: skipped {skipped} {(skipped == 1 ? "item" : "items")} with no resolvable seal value - {(skipped == 1 ? "it stays" : "they stay")} in your bags.");
+      Svc.Chat.Print($"[Scrooge] Turn-in: skipped {skipped} {(skipped == 1 ? "item" : "items")} with no resolvable seal value - {(skipped == 1 ? "it stays" : "they stay")} in your bags.");
     if (churnItems.Count == 0) return;
 
     Plugin.GcTurnIn.StartRun(churnItems);
@@ -417,7 +417,7 @@ internal sealed class RoutingWindow : Window
   {
     DrawMoveButton(item, RoutingExit.List, "List");
     ImGui.SameLine(0, 2);
-    DrawMoveButton(item, RoutingExit.Desynth, "Melt");
+    DrawMoveButton(item, RoutingExit.Desynth, "Desynth");
     ImGui.SameLine(0, 2);
     DrawMoveButton(item, RoutingExit.Gc, "GC");
     ImGui.SameLine(0, 2);

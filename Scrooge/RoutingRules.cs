@@ -80,7 +80,7 @@ internal static class RoutingRules
 
     if (item.SealValue is int panicSeals && stock is int panicStock && panicStock < cfg.VentureBandPanic)
       return new(RoutingExit.Gc,
-        $"Venture panic: {panicStock:N0} tokens (< {cfg.VentureBandPanic:N0}) — churning everything GC-eligible. {panicSeals:N0} seals.");
+        $"Venture panic: {panicStock:N0} tokens (< {cfg.VentureBandPanic:N0}) — turning in everything GC-eligible. {panicSeals:N0} seals.");
 
     // --- Value rules: gil-equivalent scores from local evidence ---
 
@@ -90,11 +90,11 @@ internal static class RoutingRules
     var rateTag = batch.SealRateEmpirical ? "" : ", rough";
     var gcScore = item.SealValue is int seals ? (long)seals * sealRate : (long?)null;
     var gcReason = item.SealValue is int gs
-      ? $"Churn: {gs:N0} seals (~{gcScore:N0} gil at {sealRate} gil/seal{rateTag})."
+      ? $"Turn in: {gs:N0} seals (~{gcScore:N0} gil at {sealRate} gil/seal{rateTag})."
       : "";
 
     var meltScore = item.MeltValuePerAttempt;
-    var meltReason = meltScore is long mv ? $"Melt: yields ~{mv:N0} gil/attempt from your ledger." : "";
+    var meltReason = meltScore is long mv ? $"Desynth: yields ~{mv:N0} gil/attempt from your ledger." : "";
 
     var vendorScore = item.VendorPrice > 0 ? (long)item.VendorPrice : (long?)null;
     var vendorReason = vendorScore is long vv ? $"Vendor: {vv:N0} gil." : "";
@@ -124,7 +124,7 @@ internal static class RoutingRules
       if (gcScore is not null && stock is int lowStock && lowStock < cfg.VentureBandLow
           && list < (long)(cfg.ListingFloorGil * cfg.VenturePanicValueMultiplier))
         return new(RoutingExit.Gc,
-          $"Venture low: {lowStock:N0} tokens (< {cfg.VentureBandLow:N0}) — churning unless it's worth {(long)(cfg.ListingFloorGil * cfg.VenturePanicValueMultiplier):N0}+. {gcReason}",
+          $"Venture low: {lowStock:N0} tokens (< {cfg.VentureBandLow:N0}) — turning in unless it's worth {(long)(cfg.ListingFloorGil * cfg.VenturePanicValueMultiplier):N0}+. {gcReason}",
           RunnerUp: RoutingExit.List, RunnerUpReason: listReason);
 
       return Resolve(RoutingExit.List, list, listReason,
@@ -154,7 +154,7 @@ internal static class RoutingRules
         var alt = BestOf((RoutingExit.Desynth, meltScore, meltReason),
                          (RoutingExit.Vendor, vendorScore, vendorReason));
         return new(RoutingExit.Gc,
-          $"Venture low: {lowStock2:N0} tokens (< {cfg.VentureBandLow:N0}) — churning unless it's worth {lowCeiling:N0}+. {gcReason}",
+          $"Venture low: {lowStock2:N0} tokens (< {cfg.VentureBandLow:N0}) — turning in unless it's worth {lowCeiling:N0}+. {gcReason}",
           RunnerUp: alt.Score is not null ? alt.Exit : null,
           RunnerUpReason: alt.Score is not null ? alt.Reason : "");
       }
@@ -178,7 +178,7 @@ internal static class RoutingRules
       if (melt > vendorFloor)
         return new(RoutingExit.Desynth, meltReason, IsReview: true,
           RunnerUp: RoutingExit.Vendor,
-          RunnerUpReason: $"{vendorReason} Melt lead is thin — attempt time may not pay.");
+          RunnerUpReason: $"{vendorReason} Desynth lead is thin — attempt time may not pay.");
     }
 
     // Evidence-only: gear the router knows nothing about is YOUR call,
@@ -198,7 +198,7 @@ internal static class RoutingRules
       {
         if (vendorScore is long uv)
           return new(RoutingExit.Vendor,
-            $"Untradable, no melt or seal evidence — vendor is the only exit: {uv:N0} gil.");
+            $"Untradable, no desynth or seal evidence — vendor is the only exit: {uv:N0} gil.");
         return new(RoutingExit.Vendor,
           "No viable exit known (untradable, can't even vendor it).", IsReview: true);
       }
@@ -214,7 +214,7 @@ internal static class RoutingRules
           RunnerUpReason: "List anyway if you think the almanac is wrong.");
       }
       return new(RoutingExit.List,
-        "No local evidence for this gear — never sold or melted one. Check the MB if it looks valuable.",
+        "No local evidence for this gear — never sold or desynthed one. Check the MB if it looks valuable.",
         IsReview: true, RunnerUp: RoutingExit.Vendor, RunnerUpReason: vendorReason);
     }
 
@@ -265,7 +265,7 @@ internal static class RoutingRules
         ? (winnerReason, runnerUp.Exit, runnerUp.Reason)
         : (runnerUp.Reason, winner, winnerReason);
       return new(RoutingExit.Gc,
-        $"{reason} Borderline vs {other} — tilted to churn ({stock:N0} tokens < {cfg.VentureBandFull:N0}).",
+        $"{reason} Borderline vs {other} — tilted to turn-in ({stock:N0} tokens < {cfg.VentureBandFull:N0}).",
         RunnerUp: other, RunnerUpReason: otherReason);
     }
 

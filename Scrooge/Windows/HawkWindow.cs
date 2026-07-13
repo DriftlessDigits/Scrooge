@@ -237,7 +237,7 @@ internal sealed class HawkWindow : Window
         Plugin.RoutingWindow.IsOpen = true;
       }
       if (ImGui.IsItemHovered())
-        ImGui.SetTooltip("Open the router's pile view: list / melt / churn / vendor verdicts\nfor the gear in your bags, with reasons. One Go runs the List and\nVendor piles from here.");
+        ImGui.SetTooltip("Open the router's pile view: list / desynth / turn-in / vendor verdicts\nfor the gear in your bags, with reasons. One Go runs the List and\nVendor piles from here.");
     }
 
     ImGui.Separator();
@@ -352,8 +352,8 @@ internal sealed class HawkWindow : Window
     var (label, color) = gate.Verdict switch
     {
       ListingGate.Verdict.Pass        => ("list", ScroogeColors.Earned),
-      ListingGate.Verdict.GateDesynth => ("melt", ScroogeColors.Amber),
-      ListingGate.Verdict.GateGc      => ("churn", ScroogeColors.Warning),
+      ListingGate.Verdict.GateDesynth => ("desynth", ScroogeColors.Amber),
+      ListingGate.Verdict.GateGc      => ("turn-in", ScroogeColors.Warning),
       ListingGate.Verdict.BelowFloor  => ("low", ScroogeColors.Muted),
       ListingGate.Verdict.Unknown     => ("?", ScroogeColors.Muted),
       _ => ("", ScroogeColors.Muted),
