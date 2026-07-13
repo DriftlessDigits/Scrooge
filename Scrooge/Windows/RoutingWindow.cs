@@ -250,6 +250,15 @@ internal sealed class RoutingWindow : Window
       {
         if (ImGui.Button("Cancel turn-in"))
           Plugin.GcTurnIn.Abort();
+
+        // Run readout - one grammar for every executor once the ledger
+        // lands; this is the prototype (done/total, value, ETA).
+        var (done, total, seals, eta) = Plugin.GcTurnIn.Progress;
+        ImGui.SameLine();
+        var etaText = eta is { } t
+          ? t.TotalMinutes >= 1 ? $" — ~{(int)t.TotalMinutes}m {t.Seconds}s left" : $" — ~{t.Seconds}s left"
+          : "";
+        ImGui.TextColored(ScroogeColors.Earned, $"Turning in {done}/{total} — {seals:N0} seals{etaText}");
       }
       else
       {
