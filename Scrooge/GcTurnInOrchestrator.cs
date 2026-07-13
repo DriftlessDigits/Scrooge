@@ -25,10 +25,12 @@ internal sealed class GcTurnInOrchestrator
   internal sealed record GcTurnInItem(uint ItemId, bool IsHq, string Name, int SealReward);
 
   private readonly TaskManager _taskManager;
+  private readonly System.Random _random = new();
   private Queue<GcTurnInItem>? _queue;
   private uint _sealsBefore;
   private long _sealsEarned;
   private int _turnedIn;
+  private int _itemsUntilLongPause;
 
   internal bool IsRunning { get; private set; }
 
@@ -114,6 +116,7 @@ internal sealed class GcTurnInOrchestrator
     _queue = new Queue<GcTurnInItem>(items);
     _sealsEarned = 0;
     _turnedIn = 0;
+    _itemsUntilLongPause = _random.Next(8, 16);
     IsRunning = true;
     Svc.Framework.Update += OnFrameworkUpdate;
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
@@ -175,11 +178,27 @@ internal sealed class GcTurnInOrchestrator
     ECommons.Automation.Callback.Fire(addon, true, 1, index, ECommons.Automation.Callback.ZeroAtkValue);
 
     _taskManager.Enqueue(() => ConfirmReward(item), $"GcConfirm_{item.Name}");
-    _taskManager.DelayNext(300);
+    _taskManager.DelayNext(Jitter(350, 150));
     _taskManager.Enqueue(() => VerifyAndAdvance(item), $"GcVerify_{item.Name}");
-    _taskManager.DelayNext(400);
+
+    // Inter-item beat - humanized base + jitter, plus an occasional longer
+    // pause, mirroring the desynth orchestrator's pacing grammar.
+    var interItemMs = Jitter(900, 400);
+    if (--_itemsUntilLongPause <= 0)
+    {
+      interItemMs += _random.Next(3000, 8001);
+      _itemsUntilLongPause = _random.Next(8, 16);
+    }
+    _taskManager.DelayNext(interItemMs);
     _taskManager.Enqueue(ProcessNext, "GcProcessNext");
     return true;
+  }
+
+  /// <summary>Base +- uniform jitter, floored at 1ms (desynth's pacing helper).</summary>
+  private int Jitter(int baseMs, int band)
+  {
+    var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * band);
+    return System.Math.Max(1, baseMs + offset);
   }
 
   /// <summary>
@@ -286,11 +305,25 @@ internal sealed class GcTurnInOrchestrator
       return true;
 
     // HQ hand-ins pop a confirm ("really trade a high-quality item?") after
-    // Deliver - answer it while waiting for the wallet to move.
-    if (item.IsHq
-        && GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yesno)
+    // Deliver. Queued HQ -> intended, answer Yes. Queued NQ -> the id-only
+    // display match landed on the item's HQ twin (the array carries no HQ
+    // flag); answer No and skip rather than donate the wrong variant.
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yesno)
         && GenericHelpers.IsAddonReady(yesno))
-      new AddonMaster.SelectYesno((nint)yesno).Yes();
+    {
+      if (item.IsHq)
+      {
+        new AddonMaster.SelectYesno((nint)yesno).Yes();
+      }
+      else
+      {
+        new AddonMaster.SelectYesno((nint)yesno).No();
+        CloseRewardDialog();
+        Svc.Chat.Print($"[Scrooge] Skipped {item.Name} - the list offered the HQ copy but the NQ one was queued.");
+        _queue?.Dequeue();
+        return true;
+      }
+    }
 
     if (GameSafe.CompanySeals() is not { } seals)
     {
