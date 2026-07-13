@@ -47,8 +47,26 @@ internal sealed class GcTurnInOrchestrator
   private long _sealsEarned;
   private int _turnedIn;
   private int _itemsUntilLongPause;
+  private System.DateTime _runStarted;
 
   internal bool IsRunning { get; private set; }
+
+  /// <summary>Live progress for the routing window's run readout.</summary>
+  internal (int Done, int Total, long Seals, System.TimeSpan? Eta) Progress
+  {
+    get
+    {
+      var total = _turnedIn + _remaining;
+      // Self-calibrating ETA: observed pace so far spread over what's left.
+      System.TimeSpan? eta = null;
+      if (_turnedIn > 0 && _remaining > 0)
+      {
+        var elapsed = System.DateTime.UtcNow - _runStarted;
+        eta = elapsed * ((double)_remaining / _turnedIn);
+      }
+      return (_turnedIn, total, _sealsEarned, eta);
+    }
+  }
 
   public GcTurnInOrchestrator()
   {
@@ -142,6 +160,7 @@ internal sealed class GcTurnInOrchestrator
     _sealsEarned = 0;
     _turnedIn = 0;
     _itemsUntilLongPause = _random.Next(8, 16);
+    _runStarted = System.DateTime.UtcNow;
     IsRunning = true;
     Svc.Framework.Update += OnFrameworkUpdate;
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
