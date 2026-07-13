@@ -301,7 +301,7 @@ internal sealed class GilWindow: Window
         ImGui.SameLine();
         ImGui.TextColored(ScroogeColors.Earned, $"{rate} gil/seal (measured)");
         if (ImGui.IsItemHovered())
-          ImGui.SetTooltip("The routing brain uses this measured rate for the churn exit\ninstead of the config placeholder.");
+          ImGui.SetTooltip("The routing brain uses this measured rate for the turn-in exit\ninstead of the config placeholder.");
       }
       else
       {
@@ -473,7 +473,7 @@ internal sealed class GilWindow: Window
             {
               ImGui.TextColored(ScroogeColors.Earned, $"{salePrice:N0}");
               if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Last sale beats the melt value — this one may deserve the market board.");
+                ImGui.SetTooltip("Last sale beats the desynth value — this one may deserve the market board.");
             }
             else
               ImGui.Text($"{salePrice:N0}");

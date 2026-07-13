@@ -66,7 +66,7 @@ internal sealed class GcTurnInOrchestrator
       Svc.Framework.Update -= OnFrameworkUpdate;
       if (how != "complete")
         CloseRewardDialog();
-      Svc.Chat.Print($"[Scrooge] Churn run {how}: {_turnedIn} items, {_sealsEarned:N0} seals.");
+      Svc.Chat.Print($"[Scrooge] Turn-in run {how}: {_turnedIn} items, {_sealsEarned:N0} seals.");
     }
     IsRunning = false;
   }
@@ -116,7 +116,7 @@ internal sealed class GcTurnInOrchestrator
     _turnedIn = 0;
     IsRunning = true;
     Svc.Framework.Update += OnFrameworkUpdate;
-    Svc.Chat.Print($"[Scrooge] Churning {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
+    Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
     _taskManager.Enqueue(ProcessNext, "GcProcessNext");
   }
 

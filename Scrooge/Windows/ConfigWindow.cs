@@ -625,7 +625,7 @@ public sealed class ConfigWindow : Window
       {
         ImGui.BeginTooltip();
         ImGui.SetTooltip("Equipment is worth listing when it sells for at least this much.\n" +
-                         "Gear below the floor routes to melt or churn when a better exit exists.");
+                         "Gear below the floor routes to desynth or turn-in when a better exit exists.");
         ImGui.EndTooltip();
       }
 
@@ -670,7 +670,7 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
         {
           ImGui.BeginTooltip();
-          ImGui.SetTooltip("Rough gil value per GC seal, used to score the churn exit against\n" +
+          ImGui.SetTooltip("Rough gil value per GC seal, used to score the turn-in exit against\n" +
                            "gil exits. Placeholder until venture-return tracking measures the\n" +
                            "real gil-per-venture number.");
           ImGui.EndTooltip();
@@ -710,7 +710,7 @@ public sealed class ConfigWindow : Window
           Plugin.Configuration.Save();
         }
         ImGui.SameLine();
-        ImGui.TextDisabled("churn");
+        ImGui.TextDisabled("turn in");
         ImGui.SameLine();
         var bandLow = Plugin.Configuration.VentureBandLow;
         ImGui.SetNextItemWidth(70);
@@ -737,9 +737,9 @@ public sealed class ConfigWindow : Window
           ImGui.BeginTooltip();
           ImGui.SetTooltip("Venture token stock thresholds, high to low.\n" +
                            "Above 'tilt': GC competes on pure value.\n" +
-                           "Below 'tilt': borderline calls tilt to churn.\n" +
-                           "Below 'churn': churn unless the item is worth the floor x multiplier.\n" +
-                           "Below 'panic': churn everything GC-eligible until stock recovers.");
+                           "Below 'tilt': borderline calls tilt to turn-in.\n" +
+                           "Below 'turn in': turn in unless the item is worth the floor x multiplier.\n" +
+                           "Below 'panic': turn in everything GC-eligible until stock recovers.");
           ImGui.EndTooltip();
         }
 

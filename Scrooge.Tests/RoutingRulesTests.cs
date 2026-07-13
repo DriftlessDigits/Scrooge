@@ -152,7 +152,7 @@ public class ReviewBandTests
     // gc = 720 x 25 = 18000, inside the band vs list 20000; stock < full band.
     var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)), T.Batch(stock: 1_200));
     Assert.Equal(RoutingExit.Gc, v.Exit);
-    Assert.Contains("tilted to churn", v.Reason);
+    Assert.Contains("tilted to turn-in", v.Reason);
   }
 
   [Fact]
