@@ -12,21 +12,37 @@ namespace Scrooge;
 
 /// <summary>
 /// The fifth executor: GC Expert Delivery turn-in. Consumes the routing
-/// window's Churn pile while the player stands at their GC's personnel
-/// officer with the Expert Delivery tab open. Every step fails closed:
-/// item not in the delivery list -> skipped and reported; reward dialog
-/// shows a different item than expected -> run aborts; seal wallet about
-/// to overflow -> run stops with the remainder counted. The batch confirm
-/// in the routing window is the safety rail (BP4 Q4) - this just executes.
+/// window's Turn In pile while the player stands at their GC's personnel
+/// officer with the Expert Delivery tab open.
+///
+/// Model: WALK THE DISPLAYED LIST, not a private queue (Sam's call,
+/// 2026-07-12, after the queue-order model lost two rounds to list
+/// rebuilds). The approved pile is a checklist; each pass scans the
+/// displayed rows top-down and turns in the first row still on the
+/// checklist - rows the router said keep are walked past. Click-what-
+/// you-see makes list reshuffles and reload windows harmless by
+/// construction. Every step still fails closed: reward dialog must name
+/// the clicked item; wallet must grow; unapproved HQ twins get No; a
+/// full scan with no checklist rows ends the run, reporting any items
+/// that never appeared. The batch confirm in the routing window is the
+/// safety rail (BP4 Q4) - this just executes.
 /// </summary>
 internal sealed class GcTurnInOrchestrator
 {
-  /// <summary>One confirmed churn-pile item. SealReward from the sheet at queue time.</summary>
+  /// <summary>One confirmed turn-in-pile item. SealReward from the sheet at queue time.</summary>
   internal sealed record GcTurnInItem(uint ItemId, bool IsHq, string Name, int SealReward);
 
   private readonly TaskManager _taskManager;
   private readonly System.Random _random = new();
-  private Queue<GcTurnInItem>? _queue;
+
+  // The checklist: approved entries by item id, ticked off as deliveries
+  // verify. _passedOver = ids we deliberately walk past for the rest of
+  // the run (HQ row offered, no HQ approval).
+  private Dictionary<uint, List<GcTurnInItem>>? _approved;
+  private readonly HashSet<uint> _passedOver = [];
+  private int _remaining;
+  private bool _pendingHqDelivery;
+
   private uint _sealsBefore;
   private long _sealsEarned;
   private int _turnedIn;
@@ -62,7 +78,8 @@ internal sealed class GcTurnInOrchestrator
   /// </summary>
   private unsafe void FinishState(string how)
   {
-    _queue = null;
+    _approved = null;
+    _passedOver.Clear();
     if (IsRunning)
     {
       Svc.Framework.Update -= OnFrameworkUpdate;
@@ -113,7 +130,15 @@ internal sealed class GcTurnInOrchestrator
       return;
     }
 
-    _queue = new Queue<GcTurnInItem>(items);
+    _approved = [];
+    foreach (var it in items)
+    {
+      if (!_approved.TryGetValue(it.ItemId, out var list))
+        _approved[it.ItemId] = list = [];
+      list.Add(it);
+    }
+    _remaining = items.Count;
+    _passedOver.Clear();
     _sealsEarned = 0;
     _turnedIn = 0;
     _itemsUntilLongPause = _random.Next(8, 16);
@@ -124,21 +149,63 @@ internal sealed class GcTurnInOrchestrator
   }
 
   /// <summary>
-  /// One item per pass: check wallet room, find the item in the delivery
-  /// list, click it, then hand off to the reward-dialog steps.
+  /// One delivery per pass: scan the DISPLAYED list top-down, click the
+  /// first row still on the checklist, hand off to the reward-dialog
+  /// steps. No checklist row in a loaded list = the run is done.
   /// </summary>
   private unsafe bool? ProcessNext()
   {
     if (!IsRunning)
       return true; // run ended from an earlier task - queued follow-ups no-op
 
-    if (_queue == null || _queue.Count == 0)
+    if (_approved == null || _remaining == 0)
     {
       FinishState("complete");
       return true;
     }
 
-    var item = _queue.Peek();
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyList", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return false; // false = keep polling until timeout (null would signal ABORT)
+
+    // The displayed list REBUILDS after every delivery. While it reloads,
+    // this pass is not-ready - poll, never conclude (live receipt
+    // 2026-07-12: treating "loading" as "absent" burned queue items into
+    // 'not in the delivery list' skips during each reload window).
+    if (addon->AtkValues[0].UInt != 2)
+      return false;
+    var entries = *(DisplayEntry**)((nint)addon + 648);
+    if (entries == null)
+      return false;
+
+    // Walk the displayed rows - the callback's index space - and take the
+    // first one still on the checklist. Rows the router said keep (and ids
+    // passed over for HQ mismatch) are walked past.
+    var count = (int)addon->AtkValues[6].UInt;
+    var index = -1;
+    GcTurnInItem? item = null;
+    for (var i = 0; i < count; i++)
+    {
+      var id = entries[i].ItemId;
+      if (_passedOver.Contains(id)) continue;
+      if (_approved.TryGetValue(id, out var list) && list.Count > 0)
+      {
+        index = i;
+        // NQ-preferred candidate: an un-confirmed delivery is an NQ trade,
+        // so tick NQ entries first and let the HQ confirm identify HQ rows.
+        item = list.Find(e => !e.IsHq) ?? list[0];
+        break;
+      }
+    }
+    if (index < 0 || item == null)
+    {
+      // Loaded list, no checklist rows left - done. Anything unticked never
+      // appeared (filtered out, already gone, or ineligible) - say so.
+      FinishState(_remaining > 0
+        ? $"complete - {_remaining} approved {(_remaining == 1 ? "item" : "items")} never appeared in the delivery list"
+        : "complete");
+      return true;
+    }
 
     // Wallet room - stop before the game starts eating the overflow.
     if (GameSafe.CompanySeals() is not { } seals)
@@ -148,30 +215,11 @@ internal sealed class GcTurnInOrchestrator
     }
     if (seals.Current + (uint)item.SealReward > seals.Max)
     {
-      FinishState($"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_queue.Count} items left");
+      FinishState($"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_remaining} items left");
       return true;
     }
     _sealsBefore = seals.Current;
-
-    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyList", out var addon)
-        || !GenericHelpers.IsAddonReady(addon))
-      return false; // false = keep polling until timeout (null would signal ABORT)
-
-    // Re-resolve the item's DISPLAYED row every pass - the list reshuffles
-    // after each turn-in, and the row-select callback's index space is
-    // display rows, not agent-array positions (live receipt 2026-07-12:
-    // agent index selected the wrong row, finding #16's bug class at the
-    // GC counter; the reward name check aborted the run as designed).
-    var index = FindDisplayIndex(addon, item);
-    if (index < 0)
-    {
-      // Not in the displayed list (already gone, filtered out, or
-      // ineligible after all) - skip, don't guess.
-      Svc.Chat.Print($"[Scrooge] Skipped {item.Name} - not in the delivery list.");
-      _queue.Dequeue();
-      _taskManager.Enqueue(ProcessNext, "GcProcessNext");
-      return true;
-    }
+    _pendingHqDelivery = false;
 
     // Select the display row -> pops the reward dialog. The trailing zero
     // AtkValue matches the event signature the game expects.
@@ -212,26 +260,6 @@ internal sealed class GcTurnInOrchestrator
   {
     [FieldOffset(120)] public uint Seals;
     [FieldOffset(132)] public uint ItemId;
-  }
-
-  /// <summary>
-  /// Finds the queued item's displayed row. Match is by item id only - the
-  /// display array carries no HQ flag, so when NQ and HQ copies coexist the
-  /// row picked may be either variant (same item, same name; the reward
-  /// check passes and the HQ confirm is answered either way). Returns -1
-  /// when absent or the list isn't loaded.
-  /// </summary>
-  private static unsafe int FindDisplayIndex(AtkUnitBase* addon, GcTurnInItem item)
-  {
-    if (addon->AtkValues[0].UInt != 2) return -1; // list still loading
-    var count = (int)addon->AtkValues[6].UInt;
-    var entries = *(DisplayEntry**)((nint)addon + 648);
-    if (entries == null) return -1;
-
-    for (var i = 0; i < count; i++)
-      if (entries[i].ItemId == item.ItemId)
-        return i;
-    return -1;
   }
 
   /// <summary>
@@ -305,22 +333,25 @@ internal sealed class GcTurnInOrchestrator
       return true;
 
     // HQ hand-ins pop a confirm ("really trade a high-quality item?") after
-    // Deliver. Queued HQ -> intended, answer Yes. Queued NQ -> the id-only
-    // display match landed on the item's HQ twin (the array carries no HQ
-    // flag); answer No and skip rather than donate the wrong variant.
+    // Deliver - the row was the HQ copy (the display array carries no HQ
+    // flag). HQ approval on the checklist -> intended, answer Yes and tick
+    // the HQ entry. No HQ approval -> answer No and walk past this id for
+    // the rest of the run rather than donate the wrong variant.
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yesno)
         && GenericHelpers.IsAddonReady(yesno))
     {
-      if (item.IsHq)
+      var hqApproved = _approved?.GetValueOrDefault(item.ItemId)?.Exists(e => e.IsHq) == true;
+      if (hqApproved)
       {
+        _pendingHqDelivery = true;
         new AddonMaster.SelectYesno((nint)yesno).Yes();
       }
       else
       {
         new AddonMaster.SelectYesno((nint)yesno).No();
         CloseRewardDialog();
-        Svc.Chat.Print($"[Scrooge] Skipped {item.Name} - the list offered the HQ copy but the NQ one was queued.");
-        _queue?.Dequeue();
+        _passedOver.Add(item.ItemId);
+        Svc.Chat.Print($"[Scrooge] Passed over {item.Name} - the list offered the HQ copy but only the NQ one was approved.");
         return true;
       }
     }
@@ -336,8 +367,24 @@ internal sealed class GcTurnInOrchestrator
 
     _sealsEarned += seals.Current - _sealsBefore;
     _turnedIn++;
-    _queue?.Dequeue();
+    TickOff(item.ItemId);
     return true;
+  }
+
+  /// <summary>
+  /// Removes one checklist entry for a delivered id - the HQ entry when the
+  /// HQ confirm fired, otherwise an NQ entry first (an unconfirmed delivery
+  /// is an NQ trade).
+  /// </summary>
+  private void TickOff(uint itemId)
+  {
+    if (_approved?.GetValueOrDefault(itemId) is not { Count: > 0 } list)
+      return;
+    var entry = _pendingHqDelivery
+      ? list.Find(e => e.IsHq) ?? list[0]
+      : list.Find(e => !e.IsHq) ?? list[0];
+    list.Remove(entry);
+    _remaining--;
   }
 
   internal static unsafe bool AtExpertDelivery()
