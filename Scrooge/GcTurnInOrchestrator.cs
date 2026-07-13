@@ -114,6 +114,7 @@ internal sealed class GcTurnInOrchestrator
     _queue = new Queue<GcTurnInItem>(items);
     _sealsEarned = 0;
     _turnedIn = 0;
+    _dumpedListThisRun = false;
     IsRunning = true;
     Svc.Framework.Update += OnFrameworkUpdate;
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
@@ -166,8 +167,17 @@ internal sealed class GcTurnInOrchestrator
         || !GenericHelpers.IsAddonReady(addon))
       return false; // false = keep polling until timeout (null would signal ABORT)
 
+    // MAPPING PASS (live receipt 2026-07-12): the callback selects DISPLAY
+    // rows, but FindDeliveryIndex returns AGENT-ARRAY positions - the list
+    // displays sorted (seals desc, player-changeable), so the click landed on
+    // the wrong row and the reward check aborted the run. Same bug class as
+    // finding #16. Dump the addon's AtkValues once per run so the displayed
+    // row layout gets pinned, then row targeting moves to the addon read.
+    DumpSupplyListValues(addon);
+
     // Select the list row -> pops the reward dialog.
-    // VERIFY in-game: (1, index) as the row-select event on this addon.
+    // KNOWN WRONG index space (see above) - the reward-dialog name check
+    // keeps this fail-closed until the display-row fix lands.
     ECommons.Automation.Callback.Fire(addon, true, 1, index);
 
     _taskManager.Enqueue(() => ConfirmReward(item), $"GcConfirm_{item.Name}");
@@ -224,6 +234,10 @@ internal sealed class GcTurnInOrchestrator
 
     if (!RewardDialogShows(addon, item.Name))
     {
+      // Evidence before the abort: what DID the dialog say? Settles whether
+      // the wrong row was clicked (different item's strings) or the dialog
+      // doesn't carry names in AtkValues at all (RetainerTaskResult disease).
+      DumpAddonStrings("GrandCompanySupplyReward", addon);
       addon->Close(true);
       FinishState($"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
       return true;
@@ -231,6 +245,43 @@ internal sealed class GcTurnInOrchestrator
 
     new AddonMaster.GrandCompanySupplyReward((nint)addon).Deliver();
     return true;
+  }
+
+  /// <summary>
+  /// One-shot per run: dump GrandCompanySupplyList's AtkValues so the
+  /// displayed-row layout can be pinned from a live run (finding: agent
+  /// index != display index). Chunked to survive log-line limits.
+  /// </summary>
+  private bool _dumpedListThisRun;
+  private unsafe void DumpSupplyListValues(AtkUnitBase* addon)
+  {
+    if (_dumpedListThisRun) return;
+    _dumpedListThisRun = true;
+    var count = (int)addon->AtkValuesCount;
+    Svc.Log.Info($"[GcTurnIn] map needed - GrandCompanySupplyList AtkValues ({count}):");
+    var sb = new System.Text.StringBuilder();
+    for (var i = 0; i < count; i++)
+    {
+      sb.Append($"[{i}]={addon->AtkValues[i].GetValueAsString()} ");
+      if ((i + 1) % 16 == 0 || i == count - 1)
+      {
+        Svc.Log.Info($"[GcTurnIn] {sb}");
+        sb.Clear();
+      }
+    }
+  }
+
+  /// <summary>Dumps every non-empty string AtkValue of an addon (mismatch evidence).</summary>
+  private static unsafe void DumpAddonStrings(string name, AtkUnitBase* addon)
+  {
+    var sb = new System.Text.StringBuilder($"[GcTurnIn] {name} strings: ");
+    for (var i = 0; i < addon->AtkValuesCount; i++)
+    {
+      var text = addon->AtkValues[i].GetValueAsString();
+      if (!string.IsNullOrEmpty(text))
+        sb.Append($"[{i}]={text} ");
+    }
+    Svc.Log.Info(sb.ToString());
   }
 
   /// <summary>
