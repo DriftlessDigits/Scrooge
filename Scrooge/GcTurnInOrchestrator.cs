@@ -262,6 +262,38 @@ internal sealed class GcTurnInOrchestrator
     [FieldOffset(132)] public uint ItemId;
   }
 
+  /// <summary>Outcome of an HQ-confirm check: no dialog, answered Yes, or refused.</summary>
+  private enum HqAnswer { None, AnsweredYes, PassedOver }
+
+  /// <summary>
+  /// Answers the "really trade a high-quality item?" confirm wherever it
+  /// appears in the flow. Live receipt 2026-07-12: for HQ rows it pops on
+  /// ROW-SELECT, before the reward dialog opens (it blocked ConfirmReward's
+  /// poll into a timeout twice) - so both ConfirmReward and VerifyAndAdvance
+  /// call this. HQ approval on the checklist -> Yes and the HQ entry gets
+  /// ticked on delivery. No HQ approval -> No, and the id is walked past
+  /// for the rest of the run rather than donate the wrong variant.
+  /// </summary>
+  private unsafe HqAnswer AnswerHqConfirm(GcTurnInItem item)
+  {
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yesno)
+        || !GenericHelpers.IsAddonReady(yesno))
+      return HqAnswer.None;
+
+    if (_approved?.GetValueOrDefault(item.ItemId)?.Exists(e => e.IsHq) == true)
+    {
+      _pendingHqDelivery = true;
+      new AddonMaster.SelectYesno((nint)yesno).Yes();
+      return HqAnswer.AnsweredYes;
+    }
+
+    new AddonMaster.SelectYesno((nint)yesno).No();
+    CloseRewardDialog();
+    _passedOver.Add(item.ItemId);
+    Svc.Chat.Print($"[Scrooge] Passed over {item.Name} - the list offered the HQ copy but only the NQ one was approved.");
+    return HqAnswer.PassedOver;
+  }
+
   /// <summary>
   /// The reward dialog is up - verify it shows the item we clicked before
   /// touching Deliver. A mismatch means the list event did something we
@@ -271,6 +303,11 @@ internal sealed class GcTurnInOrchestrator
   {
     if (!IsRunning)
       return true;
+
+    // The HQ confirm can pop on row-select and modally block the reward
+    // dialog - answer it here or the poll below times the run out.
+    if (AnswerHqConfirm(item) == HqAnswer.PassedOver)
+      return true; // skipped; the queued ProcessNext moves on
 
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("GrandCompanySupplyReward", out var addon)
         || !GenericHelpers.IsAddonReady(addon))
@@ -332,29 +369,10 @@ internal sealed class GcTurnInOrchestrator
     if (!IsRunning)
       return true;
 
-    // HQ hand-ins pop a confirm ("really trade a high-quality item?") after
-    // Deliver - the row was the HQ copy (the display array carries no HQ
-    // flag). HQ approval on the checklist -> intended, answer Yes and tick
-    // the HQ entry. No HQ approval -> answer No and walk past this id for
-    // the rest of the run rather than donate the wrong variant.
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("SelectYesno", out var yesno)
-        && GenericHelpers.IsAddonReady(yesno))
-    {
-      var hqApproved = _approved?.GetValueOrDefault(item.ItemId)?.Exists(e => e.IsHq) == true;
-      if (hqApproved)
-      {
-        _pendingHqDelivery = true;
-        new AddonMaster.SelectYesno((nint)yesno).Yes();
-      }
-      else
-      {
-        new AddonMaster.SelectYesno((nint)yesno).No();
-        CloseRewardDialog();
-        _passedOver.Add(item.ItemId);
-        Svc.Chat.Print($"[Scrooge] Passed over {item.Name} - the list offered the HQ copy but only the NQ one was approved.");
-        return true;
-      }
-    }
+    // The HQ confirm normally fires on row-select (handled in
+    // ConfirmReward), but answer it here too if it surfaces late.
+    if (AnswerHqConfirm(item) == HqAnswer.PassedOver)
+      return true;
 
     if (GameSafe.CompanySeals() is not { } seals)
     {
