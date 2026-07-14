@@ -40,6 +40,7 @@ internal static class ListingAccounting
     PricingResult.CapBlocked => true,
     PricingResult.UndercutTooDeep => true,
     PricingResult.UpwardHeld => true,
+    PricingResult.LaneHeld => true,
     PricingResult.NoData => true,
     PricingResult.Banned => true,
     _ => false,

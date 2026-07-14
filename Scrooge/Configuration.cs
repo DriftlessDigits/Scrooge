@@ -96,46 +96,42 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int MinimumListingPrice { get; set; } = 0;
 
-  // --- Outlier detection ---
+  // --- Lane pricing ---
+  // "Listings are what people want; sales are what people paid." The lane
+  // (recency-weighted clearing price from settled sales) is the pricing model;
+  // the board is positioning only. Replaced outlier/gap-geometry detection
+  // (deleted 2026-07-13 per the lane design - no dormant fallback).
 
   /// <summary>
-  /// When enabled, detects and skips abnormally low "bait" listings on the MB.
-  /// Uses largest gap detection across the top listings to find suspicious price drops.
-  /// </summary>
-  public bool OutlierDetection { get; set; } = true;
-
-  /// <summary>
-  /// Threshold for outlier detection. A price cliff is detected when the gap between
-  /// two adjacent listings exceeds this percentage.
-  /// Example: 50 means a listing at 40 gil is bait if the next is 100 gil (60% gap > 50%).
-  /// Higher = more tolerant. Lower = catches smaller gaps.
-  /// </summary>
-  public float OutlierThresholdPercent { get; set; } = 50f;
-
-  /// <summary>
-  /// How many additional listings past the first to check for a price cliff.
-  /// Range 1–9. A value of 3 means: compare the first listing against the next 3.
-  /// </summary>
-  public int OutlierSearchWindow { get; set; } = 3;
-
-  /// <summary>
-  /// When enabled, scales the outlier search window proportionally for batches
-  /// smaller than 10 listings. The slider value is used as-is for full batches.
-  /// </summary>
-  public bool RelativeOutlierWindow { get; set; } = false;
-
-  /// <summary>
-  /// When enabled, a pinch that would raise an existing listing's price past
-  /// own-sales sanity (UpwardRepriceMultiplier) is held: price kept, item
-  /// flagged to triage. A human priced that listing — never auto-multiply it.
-  /// </summary>
-  public bool FlagUpwardRepriceEnabled { get; set; } = true;
-
-  /// <summary>
-  /// Upward sanity multiplier. Hold the reprice when the new price exceeds
-  /// (own last sale x this), or (current listing x this) when no sale history.
+  /// Lane ceiling multiplier (promoted from the old upward-reprice sanity):
+  /// board listings above (lane median x this) are walls and never anchor a
+  /// price. One idea system-wide: 3x what it actually sells for = suspicious,
+  /// in every direction.
   /// </summary>
   public float UpwardRepriceMultiplier { get; set; } = 3.0f;
+
+  /// <summary>Lane floor: listings below (lane median x this) are bait and never anchor a price.</summary>
+  public float LaneFloorPct { get; set; } = 0.5f;
+
+  /// <summary>
+  /// Minimum settled sales needed to build a lane. Below this the lane
+  /// abstains: hold-and-flag instead of pricing off an unvalidated board.
+  /// </summary>
+  public int LaneMinHistorySamples { get; set; } = 3;
+
+  /// <summary>
+  /// Recency half-life (days) for lane weighting. SEED value - resolver v0
+  /// returns this for every item; receipts derive per-item values later.
+  /// Seeded 30d from the 2026-07-13 sale-age query (median lane evidence ~42d
+  /// old; erring long fails toward holding).
+  /// </summary>
+  public float LaneHalfLifeDays { get; set; } = 30f;
+
+  /// <summary>
+  /// Sales/day at or above which an all-below-lane board is a race worth
+  /// joining; below it Scrooge declines and waits at the lane floor.
+  /// </summary>
+  public float LaneRaceJoinVelocityPerDay { get; set; } = 0.1f;
 
   // --- Timing ---
 
@@ -191,8 +187,6 @@ public sealed class Configuration : IPluginConfiguration
   public bool ShowErrorsInChat { get; set; } = true;
 
   public bool ShowPriceAdjustmentsMessages { get; set; } = true;
-
-  public bool ShowOutlierDetectionMessages { get; set; } = true;
 
   public bool ShowRetainerNames { get; set; } = true;
 

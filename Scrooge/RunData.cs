@@ -45,9 +45,6 @@ internal class RunData
   /// <summary>Items that were successfully repriced or listed.</summary>
   public int ItemsAdjusted { get; set; }
 
-  /// <summary>Number of outlier detections during the run.</summary>
-  public int OutliersDetected { get; set; }
-
   /// <summary>Listings whose cut was deepened by slow-mover pressure this run.</summary>
   public int SlowMoversDeepened { get; set; }
 
@@ -111,17 +108,6 @@ internal class RunData
     LogEntries.Add(new LogEntry(outcome, CurrentRetainer, itemName, message));
   }
 
-  /// <summary>Adds an outlier entry with bait/used prices for colored rendering.</summary>
-  public void AddOutlierEntry(string itemName, int baitPrice, int usedPrice)
-  {
-    InsertRetainerHeaderIfNeeded();
-    LogEntries.Add(new LogEntry(ItemOutcome.Outlier, CurrentRetainer, itemName, "")
-    {
-      BaitPrice = baitPrice,
-      UsedPrice = usedPrice,
-    });
-  }
-
   /// <summary>Adds a run-level event entry (start, end, summary).</summary>
   public void AddRunEntry(RunEvent eventType, string message)
   {
@@ -155,6 +141,9 @@ internal class RunData
   /// <summary>Number of items with no MB data.</summary>
   public int NoDataCount => LogEntries.OfType<LogEntry>().Count(e => e.Outcome == ItemOutcome.NoData);
 
+  /// <summary>Count of log entries with the given outcome. Powers the per-type lane summary lines.</summary>
+  public int CountOutcome(ItemOutcome outcome) => LogEntries.OfType<LogEntry>().Count(e => e.Outcome == outcome);
+
   // --- Triage (Phase 2) ---
 
   /// <summary>Collected PricingItems for skipped/error results. Powers the post-run triage UI.</summary>
@@ -168,6 +157,7 @@ internal class RunData
     PricingResult.CapBlocked => true,
     PricingResult.UndercutTooDeep => true,
     PricingResult.UpwardHeld => true,
+    PricingResult.LaneHeld => true,
     PricingResult.NoData => true,
     _ => false,
   };

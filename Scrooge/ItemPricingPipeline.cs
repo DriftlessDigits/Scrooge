@@ -11,6 +11,7 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using Scrooge.Windows;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using static ECommons.UIHelpers.AtkReaderImplementations.ReaderContextMenu;
 
 namespace Scrooge;
@@ -230,10 +231,14 @@ internal sealed class ItemPricingPipeline : IDisposable
       if (_cachedPrices.TryGetValue(itemName, out int? value) && value > 0)
       {
         Svc.Log.Debug($"{itemName}: using cached price");
-        // Cache hit skips the MB query entirely — MBHandler never fires, so no
-        // outlier detection and no history fallback.
+        // Cache hit skips the MB query entirely — MBHandler never fires and the
+        // lane block skips (the item was lane-decided when first priced this run).
         var currentItem = Plugin.CurrentRun?.CurrentItem;
-        if (currentItem != null) currentItem.FinalPrice = value;
+        if (currentItem != null)
+        {
+          currentItem.FinalPrice = value;
+          currentItem.FromPriceCache = true;
+        }
         return true;
       }
       else
@@ -299,38 +304,102 @@ internal sealed class ItemPricingPipeline : IDisposable
         }
       }
 
-      // History fallback — history data arrives for free with Compare Prices.
-      // If no valid price was found (outliers, zero listings, no matching quality),
-      // try the sale history median. Skip if price failed floor/min checks — those
-      // are definitive answers.
+      // --- Lane decision: the pricing spine ---
+      // "Listings are what people want; sales are what people paid." The lane
+      // (recency-weighted clearing price from the MB history packet) is the
+      // model; the board is positioning only. ONE decision function, both
+      // pricing paths — safety references are lane-relative, so the fresh
+      // Hawk listing door gets the same protection as the reprice door (the
+      // fence was written through the door with different rules).
+      // Runs for triage-reprice bypass items too: bypass skips HOLDS and caps,
+      // never the anchor choice — a bypassed reprice must not price off bait
+      // or a wall (the old triage-Reprc-off-the-fence disease).
+      var laneBoardCount = -1; // -1 = lane block didn't run
       if (currentItem != null
-          && currentItem.Result != PricingResult.BelowMinimum
-          && currentItem.Result != PricingResult.BelowFloor
-          && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
+          && currentItem.ItemId != 0
+          && !currentItem.FromPriceCache)
       {
-        var historyPrice = (_mbHandler.HistoryItemId == currentItem.ItemId)
-          ? _mbHandler.GetHistoryPrice()
-          : null;
-
-        if (historyPrice.HasValue && historyPrice > 0)
+        var laneCfg = new LaneConfig
         {
-          currentItem.HistoryPrice = historyPrice;
-          currentItem.FinalPrice = historyPrice;
-          currentItem.Result = PricingResult.Pending;
-          Communicator.PrintHistoryFallback(
-            currentItem.ItemName, historyPrice.Value, _mbHandler.HistoryListingCount);
+          FloorPct = Plugin.Configuration.LaneFloorPct,
+          CeilingMult = Plugin.Configuration.UpwardRepriceMultiplier,
+          MinHistorySamples = Plugin.Configuration.LaneMinHistorySamples,
+          HalfLifeDays = LaneHalfLife.Resolve(currentItem.ItemId),
+          RaceJoinMinVelocityPerDay = Plugin.Configuration.LaneRaceJoinVelocityPerDay,
+        };
+        var hqPricing = Plugin.Configuration.HQ && currentItem.IsHq;
+        var sales = _mbHandler.GetLaneSales(currentItem.ItemId);
+        var lane = LanePricing.BuildLane(sales, hqPricing, laneCfg,
+          DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var board = _mbHandler.GetBoard(currentItem.ItemId, hqPricing);
+        laneBoardCount = board.Count;
+        var velocity = _mbHandler.GetPacketVelocityPerDay(currentItem.ItemId)
+          ?? UniversalisStats.TryGet(currentItem.ItemId, currentItem.IsHq)?.Velocity;
+
+        var decision = LanePricing.Decide(board, lane, velocity, laneCfg,
+          currentItem.CurrentListingPrice);
+        currentItem.Lane = decision;
+
+        if (decision.Outcome == LaneOutcome.HeldThinHistory)
+        {
+          if (currentItem.BypassPriceGuards)
+          {
+            // Sam ordered this reprice; with no lane to consult, his call
+            // rides the first-pass anchor. Bypass beats the hold, not the lane.
+          }
+          else
+          {
+            // No lane anywhere — never act on a guess wearing numbers. The
+            // own-sales fallback below may still price a fully SILENT market;
+            // otherwise the item holds and flags for Sam.
+            currentItem.FinalPrice = null;
+            currentItem.Result = PricingResult.LaneHeld;
+          }
         }
-        _mbHandler.ClearHistory();
+        else if (decision.Anchor is long anchor)
+        {
+          var anchorInt = (int)Math.Min(anchor, int.MaxValue);
+          var isOwnAnchor = decision.AnchorIsListing && !Plugin.Configuration.UndercutSelf
+            && board.Any(b => b.IsOwn && b.UnitPrice == anchor);
+          var price = decision.AnchorIsListing
+            ? _mbHandler.ApplyUndercutMode(anchorInt, isOwnAnchor)
+            : anchorInt;
+
+          // Existing floors stay as downstream backstops (design: guards
+          // survive, the lane replaces only the anchor choice).
+          var floorPrice = Plugin.Configuration.PriceFloorMode == PriceFloorMode.None ? 0
+            : Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave
+              ? currentItem.VendorPrice * 2 : currentItem.VendorPrice;
+          if (floorPrice > 0 && price < floorPrice)
+          {
+            currentItem.FinalPrice = null;
+            currentItem.Result = PricingResult.BelowFloor;
+          }
+          else if (Plugin.Configuration.MinimumListingPrice > 0
+                   && price < Plugin.Configuration.MinimumListingPrice)
+          {
+            currentItem.FinalPrice = null;
+            currentItem.Result = PricingResult.BelowMinimum;
+          }
+          else
+          {
+            currentItem.FinalPrice = price;
+            currentItem.Result = PricingResult.Pending;
+          }
+        }
       }
 
       // Own-sales fallback — when the market is fully silent (no listings AND
-      // no MB history), the player's own last sale prices the item. Staleness-
-      // gated by StalePriceDays, never discounted (sole seller = premium
-      // position), always labeled in chat. Locked spec 2026-07-10.
+      // no usable history), the player's own last sale prices the item.
+      // Staleness-gated by StalePriceDays, never discounted (sole seller =
+      // premium position), always labeled in chat. Locked spec 2026-07-10.
+      // A lane hold with listings PRESENT does not fall back — pricing a
+      // thin-history item off one stale own sale is the convicted baseline.
       if (currentItem != null
           && currentItem.ItemId != 0
           && currentItem.Result != PricingResult.BelowMinimum
           && currentItem.Result != PricingResult.BelowFloor
+          && (currentItem.Result != PricingResult.LaneHeld || laneBoardCount == 0)
           && (currentItem.FinalPrice == null || currentItem.FinalPrice <= 0))
       {
         (int Price, long Timestamp)? ownSale = null;
@@ -348,7 +417,10 @@ internal sealed class ItemPricingPipeline : IDisposable
         }
       }
 
-      var newPrice = currentItem?.FinalPrice ?? _hotKeyPrice;
+      // Hotkey path (no CurrentItem) rides _hotKeyPrice. With an item in hand,
+      // FinalPrice is authoritative — a lane hold nulls it, and falling back to
+      // the first-pass _hotKeyPrice would price the held item anyway.
+      var newPrice = currentItem != null ? currentItem.FinalPrice : _hotKeyPrice;
       var confirmed = ApplyPriceDecision(retainerSell, currentItem, itemName, newPrice);
 
       ECommons.Automation.Callback.Fire(&retainerSell->AtkUnitBase, true, confirmed ? 0 : 1);
@@ -372,6 +444,7 @@ internal sealed class ItemPricingPipeline : IDisposable
       }
 
       _hotKeyPrice = null;
+      _mbHandler.ClearHistory(); // history + captured board are per-item
 
       // Triage collection — save skipped items for post-run review
       if (currentItem != null && RunData.IsTriageResult(result))
@@ -440,30 +513,10 @@ internal sealed class ItemPricingPipeline : IDisposable
         Communicator.PrintPriceUpdate(itemName, currentItem?.CurrentListingPrice, newPrice.Value, 0f);
         Plugin.PinchRunLog?.IncrementAdjusted();
         if (currentItem != null) currentItem.Result = PricingResult.Listed;
-
-        // Warn-and-list (locked 2026-07-10): new listings always ride the
-        // market price, but when it dwarfs own sale history the discrepancy
-        // gets a persistent flag - "listed 900k; your history says ~120k".
-        if (Plugin.Configuration.FlagUpwardRepriceEnabled && currentItem != null && currentItem.ItemId != 0)
-        {
-          int? ownSale = null;
-          try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable */ }
-          if (ownSale is int sale && sale > 0
-              && newPrice.Value > (long)(sale * Plugin.Configuration.UpwardRepriceMultiplier))
-          {
-            try
-            {
-              GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
-                currentItem.RetainerName, currentItem.SlotIndex, "outlier_warn",
-                $"Listed at {newPrice:N0} - your last sale was {sale:N0}; market may be a troll wall",
-                sale, newPrice.Value);
-            }
-            catch (Exception ex)
-            {
-              Svc.Log.Warning($"[Triage] Failed to persist outlier-warn flag: {ex.Message}");
-            }
-          }
-        }
+        LogLaneOutcome(currentItem, cleanName);
+        // Warn-and-list died with the lane (2026-07-13): thin-history items
+        // now HOLD instead of listing at an unguarded anchor, and walls are
+        // ignored by construction — nothing suspicious gets listed to warn about.
       }
       else
       {
@@ -478,46 +531,10 @@ internal sealed class ItemPricingPipeline : IDisposable
         var oldPrice = currentItem?.CurrentListingPrice ?? retainerSell->AskingPrice->Value;
         var cutPercentage = oldPrice > 0 ? ((float)newPrice.Value - oldPrice) / oldPrice * 100f : 0f;
 
-        // Upward-reprice sanity: a human priced this listing — never multiply
-        // it upward on one packet of possibly-bad data (troll walls). Hold the
-        // price, flag to persistent triage.
-        if (Plugin.Configuration.FlagUpwardRepriceEnabled
-            && currentItem?.BypassPriceGuards != true
-            && oldPrice > 0 && newPrice.Value > oldPrice)
-        {
-          int? ownSale = null;
-          if (currentItem != null && currentItem.ItemId != 0)
-            try { ownSale = GilStorage.GetLastSalePrice(currentItem.ItemId, currentItem.IsHq); } catch { /* storage unavailable — base on oldPrice */ }
-
-          var sanityBase = (long)(ownSale ?? oldPrice);
-          if (newPrice.Value > sanityBase * Plugin.Configuration.UpwardRepriceMultiplier)
-          {
-            // Name the actual trigger: target vs Nx the sanity base. The old
-            // "current -> target exceeds own-sales sanity" wording implied the
-            // SIZE of the move was insane (a +1 gil bump read as madness).
-            var ratio = (float)newPrice.Value / sanityBase;
-            var basis = ownSale.HasValue ? $"your last sale {ownSale:N0}" : $"current {oldPrice:N0}";
-            Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
-              $"Upward reprice held — target {newPrice:N0} is {ratio:0.#}x {basis}");
-            if (currentItem != null)
-            {
-              currentItem.Result = PricingResult.UpwardHeld;
-              currentItem.PriceChangePercent = cutPercentage;
-              try
-              {
-                GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
-                  currentItem.RetainerName, currentItem.SlotIndex, "upward_held",
-                  $"Held at {oldPrice:N0} — market target {newPrice:N0} is {ratio:0.#}x {basis}",
-                  oldPrice, newPrice.Value);
-              }
-              catch (Exception ex)
-              {
-                Svc.Log.Warning($"[Triage] Failed to persist upward-held flag: {ex.Message}");
-              }
-            }
-            return true; // confirm keeps the old price (no-op)
-          }
-        }
+        // The upward-hold guard died with the lane (2026-07-13): its
+        // own-last-sale baseline was one stale data point (~half of live holds
+        // were false positives), and it blocked downward deepens too. The lane
+        // ceiling carries the 3x discipline with an absolute reference now.
 
         if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage
             || currentItem?.BypassPriceGuards == true)
@@ -539,6 +556,7 @@ internal sealed class ItemPricingPipeline : IDisposable
             Communicator.PrintPriceUpdate(itemName, oldPrice, newPrice.Value, cutPercentage);
             Plugin.PinchRunLog?.IncrementAdjusted();
             if (currentItem != null) currentItem.Result = PricingResult.Applied;
+            LogLaneOutcome(currentItem, cleanName);
           }
         }
         else
@@ -558,6 +576,32 @@ internal sealed class ItemPricingPipeline : IDisposable
 
     switch (result)
     {
+      case PricingResult.LaneHeld:
+      {
+        // "Held (thin history)" — verdicts unify, execution stays local:
+        // keep-price-and-flag at the pinch, don't-auto-price in a Hawk run.
+        var evidence = currentItem?.Lane?.Evidence ?? "history too thin to build a lane";
+        Plugin.PinchRunLog?.AddEntry(ItemOutcome.LaneHeld, cleanName, $"Held (thin history) — {evidence}");
+        Communicator.PrintLaneHeld(itemName, evidence);
+        if (currentItem != null && currentItem.ItemId != 0)
+        {
+          try
+          {
+            GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
+              currentItem.RetainerName, currentItem.SlotIndex, "lane_held",
+              $"Held (thin history) — {evidence}",
+              currentItem.CurrentListingPrice ?? 0, 0);
+          }
+          catch (Exception ex)
+          {
+            Svc.Log.Warning($"[Triage] Failed to persist lane-held flag: {ex.Message}");
+          }
+        }
+        // Pinch: confirm keeps the old price (no-op). Hawk: cancel — never
+        // list at an unguarded anchor (warn-and-list's replacement).
+        return !IsHawkRun;
+      }
+
       case PricingResult.BelowMinimum:
       case PricingResult.BelowFloor:
         if (IsHawkRun && Plugin.Configuration.AutoVendorSellOnPriceCheckFail)
@@ -589,6 +633,30 @@ internal sealed class ItemPricingPipeline : IDisposable
     }
 
     return false; // cancel
+  }
+
+  /// <summary>
+  /// One run-log line per non-routine lane outcome, named with its evidence —
+  /// never a generic costume (disguised lines make features look unbuilt, and
+  /// these lines double as calibration data). InLane stays quiet: that is the
+  /// ordinary adjusted path the run log already counts.
+  /// </summary>
+  private static void LogLaneOutcome(PricingItem? item, string cleanName)
+  {
+    if (item?.Lane is not { } lane)
+      return;
+
+    var outcome = lane.Outcome switch
+    {
+      LaneOutcome.WallIgnored => ItemOutcome.WallIgnored,
+      LaneOutcome.BaitIgnored => ItemOutcome.BaitIgnored,
+      LaneOutcome.LaneOwned => ItemOutcome.LaneOwned,
+      LaneOutcome.RaceJoined => ItemOutcome.RaceJoined,
+      LaneOutcome.RaceDeclined => ItemOutcome.RaceDeclined,
+      _ => (ItemOutcome?)null,
+    };
+    if (outcome is { } o)
+      Plugin.PinchRunLog?.AddEntry(o, cleanName, lane.Evidence);
   }
 
   private void OnNewPriceReceived(object? sender, NewPriceEventArgs e)

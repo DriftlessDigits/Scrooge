@@ -44,6 +44,12 @@ public enum PricingResult
   /// priced this listing, a robot must not multiply it on one bad packet.
   /// </summary>
   UpwardHeld,
+  /// <summary>
+  /// Lane held: history too thin to build a lane (local and community).
+  /// Pinch keeps the price and flags; a Hawk run does not auto-list.
+  /// Never act on a guess wearing numbers.
+  /// </summary>
+  LaneHeld,
   /// <summary>Below floor + auto vendor sell enabled — will vendor-sell.</summary>
   VendorSell,
   /// <summary>Item is on the ban list — observed but not repriced.</summary>
@@ -86,9 +92,6 @@ internal class PricingItem
   /// <summary>Calculated MB undercut price (from MarketBoardHandler). Null if not yet received.</summary>
   public int? MbPrice { get; set; }
 
-  /// <summary>Median price from sale history (populated only when outlier triggers history fetch).</summary>
-  public int? HistoryPrice { get; set; }
-
   /// <summary>Number of sales in the last 14 days from sale history.</summary>
   public int HistorySaleCount { get; set; }
 
@@ -112,8 +115,14 @@ internal class PricingItem
   /// <summary>The final price that was applied (if Result is Applied or Listed).</summary>
   public int? FinalPrice { get; set; }
 
-  /// <summary>When true, cap and undercut price guards are skipped. Set by triage reprice.</summary>
+  /// <summary>When true, cap and undercut price guards are skipped. Set by triage reprice. Also skips the lane decision — the human wins.</summary>
   public bool BypassPriceGuards { get; set; }
+
+  /// <summary>True when the price came from the run cache — the item was lane-decided when first priced this run, so the lane block skips.</summary>
+  public bool FromPriceCache { get; set; }
+
+  /// <summary>The lane decision for this item (null when the lane block didn't run: cache hit, bypass, hotkey).</summary>
+  public LaneDecision? Lane { get; set; }
 
   /// <summary>Action assigned by the user in the triage window. Used by the orchestrator.</summary>
   public TriageAction QueuedAction { get; set; } = TriageAction.None;

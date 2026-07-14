@@ -172,31 +172,6 @@ public static class Communicator
       Svc.Chat.Print($"{itemName}: Vendor-sold for {total:N0} gil");
   }
 
-  /// <summary>Informs the user that an outlier listing was detected and skipped.</summary>
-  /// <param name="itemId">The item's row ID from the game data sheet.</param>
-  /// <param name="outlierPrice">The bait listing price that was skipped.</param>
-  /// <param name="nextPrice">The next valid price tier being used instead.</param>
-  public static void PrintOutlierDetected(uint itemId, int outlierPrice, int nextPrice)
-  {
-    if (!Plugin.Configuration.ShowOutlierDetectionMessages)
-      return;
-
-    var itemPayload = new ItemPayload(itemId, false);
-
-    var seString = new SeStringBuilder()
-        .AddItemLink(itemPayload.ItemId, false)
-        .AddText(": ")
-        .AddUiForeground("Outlier detected", 540)
-        .AddText(" — skipping ")
-        .AddUiForeground($"{outlierPrice:N0}", 17)
-        .AddText(" gil, using ")
-        .AddUiForeground($"{nextPrice:N0}", 45)
-        .AddText(" gil")
-        .Build();
-
-    Svc.Chat.Print(seString);
-  }
-
   /// <summary>Prints the retainer name header when starting to pinch a retainer's items.</summary>
   /// <param name="name">The retainer's display name.</param>
   public static void PrintRetainerName(string name)
@@ -303,8 +278,8 @@ public static class Communicator
       Svc.Chat.Print($"{itemName}: Market is silent — using your own sale history ({price:N0} gil, sold {ageLabel})");
   }
 
-  /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
-  public static void PrintHistoryFallback(string itemName, int price, int saleCount)
+  /// <summary>Chat message when the lane holds a thin-history item for the player's call.</summary>
+  public static void PrintLaneHeld(string itemName, string evidence)
   {
     if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
       return;
@@ -314,11 +289,11 @@ public static class Communicator
     {
       var seString = new SeStringBuilder()
         .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-        .AddText($": Using sale history (median {price:N0} gil from {saleCount} sales)")
+        .AddText($": Held (thin history) — {evidence}")
         .Build();
       Svc.Chat.Print(seString);
     }
     else
-      Svc.Chat.Print($"{itemName}: Using sale history (median {price:N0} gil from {saleCount} sales)");
+      Svc.Chat.Print($"{itemName}: Held (thin history) — {evidence}");
   }
 }

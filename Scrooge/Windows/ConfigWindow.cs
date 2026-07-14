@@ -436,149 +436,103 @@ public sealed class ConfigWindow : Window
     }
 
     ImGui.Separator();
-    // --- Outlier Detection ---
-    SectionHeader("Outlier Detection");
-    var outlierDetection = Plugin.Configuration.OutlierDetection;
-    if (ImGui.Checkbox("Outlier Detection", ref outlierDetection))
+    // --- Lane Pricing ---
+    SectionHeader("Lane Pricing");
+    ImGui.TextDisabled("Listings are what people want; sales are what people paid.");
+    ImGui.Spacing();
+
+    ImGui.BeginGroup();
+    ImGui.Text("Lane ceiling:");
+    ImGui.SameLine();
+    float laneCeiling = Plugin.Configuration.UpwardRepriceMultiplier;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderFloat("##laneCeiling", ref laneCeiling, 1.5f, 10f, "%.1fx"))
     {
-      Plugin.Configuration.OutlierDetection = outlierDetection;
+      Plugin.Configuration.UpwardRepriceMultiplier = MathF.Round(laneCeiling, 1);
       Plugin.Configuration.Save();
       Plugin.AutoPinch.ClearCachedPrices();
     }
+    ImGui.EndGroup();
     ImGui.SameLine();
     ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("Detect and skip abnormally low price listings on the market board.\n\n" +
-                       "Compares each listing to the next — if the price jump is too large,\n" +
-                       "the cheap listing is treated as an outlier and skipped.\n\n" +
-                       "When an outlier is skipped and no valid listings remain, Scrooge\n" +
-                       "uses the median sale price from the last 14 days instead.\n" +
-                       "If the median also fails floor/minimum checks, the item goes to triage.\n\n" +
-                       "Only applies to NQ items. HQ items skip outlier detection.");
+      ImGui.SetTooltip("Board listings above (lane median x this) are walls and never\n" +
+                       "anchor a price. One idea in every direction: 3x what it actually\n" +
+                       "sells for = suspicious.");
       ImGui.EndTooltip();
     }
-    if (Plugin.Configuration.OutlierDetection)
+
+    ImGui.BeginGroup();
+    ImGui.Text("Lane floor:");
+    ImGui.SameLine();
+    float laneFloor = Plugin.Configuration.LaneFloorPct;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderFloat("##laneFloor", ref laneFloor, 0.1f, 1.0f, "%.2fx"))
     {
-      ImGui.BeginGroup();
-      ImGui.Text("Outlier Threshold:");
-      ImGui.SameLine();
-      float threshold = Plugin.Configuration.OutlierThresholdPercent;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##outlierThreshold", ref threshold, 10f, 90f, "%.0f"))
-      {
-        Plugin.Configuration.OutlierThresholdPercent = MathF.Round(threshold);
-        Plugin.Configuration.Save();
-        Plugin.AutoPinch.ClearCachedPrices();
-      }
-      ImGui.SameLine();
-      ImGui.Text("%");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("A price plunge is detected when the gap between two listings\n" +
-                         "exceeds this percentage.\n\n" +
-                         "Example at 50%: A listing at 40 gil is bait if the next is 100 gil\n" +
-                         "(60% cheaper = plunge detected).\n\n" +
-                         "Lower = catches smaller gaps, more aggressive.\n" +
-                         "Higher = only catches large gaps, more tolerant.");
-        ImGui.EndTooltip();
-      }
-
-      ImGui.BeginGroup();
-      ImGui.Text("Search Window:");
-      ImGui.SameLine();
-      int searchWindow = Plugin.Configuration.OutlierSearchWindow;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderInt("##outlierSearchWindow", ref searchWindow, 1, 9))
-      {
-        Plugin.Configuration.OutlierSearchWindow = searchWindow;
-        Plugin.Configuration.Save();
-        Plugin.AutoPinch.ClearCachedPrices();
-      }
-      ImGui.SameLine();
-      ImGui.Text("past first");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("How many listings past the cheapest to check for an outlier.\n\n" +
-                         "1 = only compare the 1st and 2nd listing.\n" +
-                         "9 = check all 10 listings in the batch.\n\n" +
-                         "Lower = sell fast at market edge.\n" +
-                         "Higher = look deeper, avoid outliers, may sell higher (eventually).");
-        ImGui.EndTooltip();
-      }
-
-      var relativeWindow = Plugin.Configuration.RelativeOutlierWindow;
-      if (ImGui.Checkbox("Scale window for small batches", ref relativeWindow))
-      {
-        Plugin.Configuration.RelativeOutlierWindow = relativeWindow;
-        Plugin.Configuration.Save();
-        Plugin.AutoPinch.ClearCachedPrices();
-      }
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("When enabled, scales the search window proportionally for batches with fewer than 10 listings.\n\n" +
-                         "Example: Search window of 3, and item with 6 listings -> checks 2 instead of 3.\n\n" +
-                         "Prevents over-aggressive outlier detection in thin markets where\n" +
-                         "a fixed window would scan most of the available listings.");
-        ImGui.EndTooltip();
-      }
-    }
-
-    var flagUpward = Plugin.Configuration.FlagUpwardRepriceEnabled;
-    if (ImGui.Checkbox("Hold suspicious upward reprices", ref flagUpward))
-    {
-      Plugin.Configuration.FlagUpwardRepriceEnabled = flagUpward;
+      Plugin.Configuration.LaneFloorPct = MathF.Round(laneFloor, 2);
       Plugin.Configuration.Save();
+      Plugin.AutoPinch.ClearCachedPrices();
     }
+    ImGui.EndGroup();
     ImGui.SameLine();
     ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
     {
       ImGui.BeginTooltip();
-      ImGui.SetTooltip("When a pinch would RAISE an existing listing's price far past your\n" +
-                       "own sale history, the price is kept and the item is flagged to triage.\n\n" +
-                       "Protects listings you priced by hand from being multiplied onto a\n" +
-                       "troll wall by one packet of bad market data. Flags persist until\n" +
-                       "you reprice, pull, or dismiss them.");
+      ImGui.SetTooltip("Listings below (lane median x this) are bait and never anchor\n" +
+                       "a price. When the whole board sits below the floor, velocity\n" +
+                       "decides: join the race or wait at the lane floor.");
       ImGui.EndTooltip();
     }
-    if (Plugin.Configuration.FlagUpwardRepriceEnabled)
+
+    ImGui.BeginGroup();
+    ImGui.Text("Min history samples:");
+    ImGui.SameLine();
+    int minSamples = Plugin.Configuration.LaneMinHistorySamples;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderInt("##laneMinSamples", ref minSamples, 1, 10))
     {
-      ImGui.BeginGroup();
-      ImGui.Text("Sanity multiplier:");
-      ImGui.SameLine();
-      float upwardMult = Plugin.Configuration.UpwardRepriceMultiplier;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##upwardRepriceMult", ref upwardMult, 1.5f, 10f, "%.1fx"))
-      {
-        Plugin.Configuration.UpwardRepriceMultiplier = MathF.Round(upwardMult, 1);
-        Plugin.Configuration.Save();
-      }
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Hold the reprice when the new price exceeds your last sale for the\n" +
-                         "item times this multiplier (or the current listing price times this,\n" +
-                         "when you have no sale history for it).");
-        ImGui.EndTooltip();
-      }
+      Plugin.Configuration.LaneMinHistorySamples = minSamples;
+      Plugin.Configuration.Save();
+      Plugin.AutoPinch.ClearCachedPrices();
+    }
+    ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("Settled sales needed before the lane prices anything. Below this\n" +
+                       "the item is held and flagged instead of priced off an unvalidated\n" +
+                       "board - never act on a guess wearing numbers.");
+      ImGui.EndTooltip();
     }
 
+    ImGui.BeginGroup();
+    ImGui.Text("Recency half-life:");
+    ImGui.SameLine();
+    float halfLife = Plugin.Configuration.LaneHalfLifeDays;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderFloat("##laneHalfLife", ref halfLife, 7f, 60f, "%.0f days"))
+    {
+      Plugin.Configuration.LaneHalfLifeDays = MathF.Round(halfLife);
+      Plugin.Configuration.Save();
+      Plugin.AutoPinch.ClearCachedPrices();
+    }
+    ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("How fast old sales fade from the lane. A sale this many days old\n" +
+                       "carries half the weight of one from today. Seed value - receipts\n" +
+                       "will derive per-item values over time; erring long fails toward\n" +
+                       "holding value.");
+      ImGui.EndTooltip();
+    }
   }
 
   private void DrawRoutingTab()
@@ -1001,12 +955,6 @@ public sealed class ConfigWindow : Window
 
     ImGui.NextColumn();
 
-    bool outlierMessages = Plugin.Configuration.ShowOutlierDetectionMessages;
-    if (ImGui.Checkbox("Show Outlier Detection", ref outlierMessages))
-    {
-      Plugin.Configuration.ShowOutlierDetectionMessages = outlierMessages;
-      Plugin.Configuration.Save();
-    }
     ImGui.SameLine();
     ImGui.TextDisabled("(?)");
     if (ImGui.IsItemHovered())
