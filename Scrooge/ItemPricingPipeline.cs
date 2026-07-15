@@ -323,6 +323,7 @@ internal sealed class ItemPricingPipeline : IDisposable
         {
           FloorPct = Plugin.Configuration.LaneFloorPct,
           CeilingMult = Plugin.Configuration.UpwardRepriceMultiplier,
+          OwnedMult = Plugin.Configuration.LaneOwnedMultiplier,
           MinHistorySamples = Plugin.Configuration.LaneMinHistorySamples,
           HalfLifeDays = LaneHalfLife.Resolve(currentItem.ItemId),
         };

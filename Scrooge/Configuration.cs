@@ -114,6 +114,14 @@ public sealed class Configuration : IPluginConfiguration
   public float LaneFloorPct { get; set; } = 0.5f;
 
   /// <summary>
+  /// When we own the lane (no in-lane competition, all walls or empty board),
+  /// the anchor is lane median x this. A premium above the going rate, but not
+  /// the ceiling: the UpwardRepriceMultiplier ceiling stays the hard cap.
+  /// Clamped to a sane 1.0-3.0 range.
+  /// </summary>
+  public float LaneOwnedMultiplier { get; set; } = 2.0f;
+
+  /// <summary>
   /// Minimum settled sales needed to build a lane. Below this the lane
   /// abstains: hold-and-flag instead of pricing off an unvalidated board.
   /// </summary>

@@ -55,6 +55,8 @@ internal sealed record LaneConfig
 {
   public double FloorPct { get; init; } = 0.5;
   public double CeilingMult { get; init; } = 3.0;
+  /// <summary>Anchor when we own the lane: median x this. The ceiling stays the hard cap.</summary>
+  public double OwnedMult { get; init; } = 2.0;
   public int MinHistorySamples { get; init; } = 3;
   /// <summary>Recency half-life SEED (resolver v0). Seeded 30d from the 2026-07-13 sale-age query.</summary>
   public double HalfLifeDays { get; init; } = 30.0;
@@ -145,7 +147,6 @@ internal static class LanePricing
     // pure core only speaks the "why". "median" -> "the going rate / what it
     // sells for"; ratios -> printed prices; never make the reader multiply.
     var going = FormatGil((long)Math.Round(lane.Median));
-    var ceilingStr = FormatGil((long)Math.Round(ceiling));
     var floorStr = FormatGil((long)Math.Round(floor));
     // Community lanes stay labeled in the reason itself (the confidence net).
     var origin = lane.Source == LaneSource.Community ? " Based on community sales history." : "";
@@ -215,16 +216,20 @@ internal static class LanePricing
     }
 
     // No in-lane competition and nothing below: all walls, or an empty board.
+    // Owning the lane, we ask a premium at median x OwnedMult (2x by default),
+    // never the top of the realistic range — the ceiling stays the hard cap.
+    var owned = Math.Min(lane.Median * cfg.OwnedMult, ceiling);
+    var ownedStr = FormatGil((long)Math.Round(owned));
     return new LaneDecision
     {
       Outcome = LaneOutcome.LaneOwned,
-      Anchor = (long)Math.Round(ceiling),
+      Anchor = (long)Math.Round(owned),
       AnchorIsListing = false,
       WallsIgnored = walls,
       BaitIgnored = 0,
       Evidence = (walls > 0
-        ? $"no real competition; {walls} seller{(walls == 1 ? "" : "s")} far above the going rate (~{going}). {ceilingStr} is the top of the realistic range."
-        : $"an empty board — no competition. {ceilingStr} is the top of the realistic range (sells around {going}).") + origin,
+        ? $"no real competition; {walls} seller{(walls == 1 ? "" : "s")} far above the going rate (~{going}). Asking a premium, {ownedStr}."
+        : $"an empty board — no competition. Asking a premium, {ownedStr} (sells around {going}).") + origin,
     };
   }
 

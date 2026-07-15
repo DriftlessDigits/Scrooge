@@ -488,6 +488,29 @@ public sealed class ConfigWindow : Window
     }
 
     ImGui.BeginGroup();
+    ImGui.Text("Lane-owned premium:");
+    ImGui.SameLine();
+    float laneOwned = Plugin.Configuration.LaneOwnedMultiplier;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderFloat("##laneOwned", ref laneOwned, 1.0f, 3.0f, "%.1fx"))
+    {
+      Plugin.Configuration.LaneOwnedMultiplier = Math.Clamp(MathF.Round(laneOwned, 1), 1.0f, 3.0f);
+      Plugin.Configuration.Save();
+      Plugin.AutoPinch.ClearCachedPrices();
+    }
+    ImGui.EndGroup();
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+    {
+      ImGui.BeginTooltip();
+      ImGui.SetTooltip("When we own the lane (no in-lane competition), ask a premium\n" +
+                       "at lane median x this. A step above the going rate, never the\n" +
+                       "ceiling — the wall multiplier above stays the hard cap.");
+      ImGui.EndTooltip();
+    }
+
+    ImGui.BeginGroup();
     ImGui.Text("Min history samples:");
     ImGui.SameLine();
     int minSamples = Plugin.Configuration.LaneMinHistorySamples;

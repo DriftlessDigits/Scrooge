@@ -187,11 +187,11 @@ public class LaneDecisionTests
   [Fact]
   public void AllWalls_OwnsTheLane()
   {
-    // No in-lane competition, all dreams: list at the lane's upper edge.
+    // No in-lane competition, all dreams: ask a premium at 2x the going rate.
     var d = LanePricing.Decide(L.Board(400_000, 55_000_000), L.Lane(117_603, 5), null, L.Cfg());
 
     Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
-    Assert.Equal(352_809, d.Anchor); // 3.0x median
+    Assert.Equal(235_206, d.Anchor); // 2.0x median (was the 3.0x ceiling)
     Assert.False(d.AnchorIsListing);
   }
 
@@ -201,7 +201,22 @@ public class LaneDecisionTests
     var d = LanePricing.Decide(new List<LaneListing>(), L.Lane(117_603, 5), null, L.Cfg());
 
     Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
-    Assert.Equal(352_809, d.Anchor);
+    Assert.Equal(235_206, d.Anchor); // 2.0x median
+  }
+
+  [Fact]
+  public void LaneOwned_AnchorsAt2x_WhileCeilingStillClassifiesWallsAt3x()
+  {
+    // The owned anchor is median x OwnedMult (2x); the ceiling (median x
+    // CeilingMult, 3x) is untouched — it still decides what counts as a wall.
+    // Board: a 300,000 listing (2.55x, in-lane) vs a 400,000 wall (3.4x).
+    var laneWithWall = LanePricing.Decide(L.Board(400_000), L.Lane(117_603, 5), null, L.Cfg());
+    Assert.Equal(LaneOutcome.LaneOwned, laneWithWall.Outcome);
+    Assert.Equal(235_206, laneWithWall.Anchor); // 2x anchor, not the 352,809 ceiling
+
+    var inLane = LanePricing.Decide(L.Board(300_000), L.Lane(117_603, 5), null, L.Cfg());
+    Assert.Equal(LaneOutcome.InLane, inLane.Outcome); // 300k < 3x ceiling → still competition
+    Assert.Equal(300_000, inLane.Anchor);
   }
 
   [Fact]
@@ -304,17 +319,18 @@ public class LaneDecisionTests
 public class LaneNoteTests
 {
   [Fact]
-  public void LaneOwned_ReasonPrintsTheComputedCeiling_NotAMultiplier()
+  public void LaneOwned_ReasonPrintsTheComputedAnchor_NotAMultiplier()
   {
-    // Ceiling = 117,603 x 3.0 = 352,809. The old line said "3x median" and made
-    // the reader multiply; the reason must name the actual list price.
+    // Owned anchor = 117,603 x 2.0 = 235,206. The reason must name the actual
+    // premium price, never make the reader multiply.
     var d = LanePricing.Decide(L.Board(400_000, 55_000_000), L.Lane(117_603, 5), null, L.Cfg());
 
     Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
-    Assert.Equal(352_809, d.Anchor);
-    Assert.Contains("352,809", d.Evidence);
-    Assert.DoesNotContain("3.0x", d.Evidence);
-    Assert.DoesNotContain("3x", d.Evidence);
+    Assert.Equal(235_206, d.Anchor);
+    Assert.Contains("235,206", d.Evidence);
+    Assert.Contains("premium", d.Evidence);
+    Assert.DoesNotContain("2.0x", d.Evidence);
+    Assert.DoesNotContain("2x", d.Evidence);
   }
 
   [Fact]
