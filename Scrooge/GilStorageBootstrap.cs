@@ -120,6 +120,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 16);
     }
 
+    if (version < 17)
+    {
+      MigrateV17(connection);
+      SetSchemaVersion(connection, 17);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -1002,6 +1008,46 @@ internal class GilStorageBootstrap
       cmd.ExecuteNonQuery();
 
     Svc.Log.Info("[Scrooge] V16 migration: universalis_stats cache table");
+  }
+
+  /// <summary>
+  /// V17: decision memory on triage_flags. Adds an evidence column — the
+  /// snapshot of the world a hold was judged against (standing listing, sale
+  /// count, newest sale, cheapest competitor) — so a re-flag can ask "did
+  /// anything change?" instead of firing every pinch. The ALTER is guarded so
+  /// a fresh DB that already has the column (future CreateTables) migrates
+  /// cleanly.
+  ///
+  /// Same migration one-shots the lane-rewrite legacy: upward_held and
+  /// outlier_warn lost their producer code in branch 1, so no processing pass
+  /// will ever re-confirm them. The self-heal sweep clears the ones whose item
+  /// gets pinched again; this closes the strays whose item never does, so the
+  /// triage inbox stops rendering dead questions immediately rather than
+  /// waiting on a trigger that may never fire. Idempotent — a second run
+  /// matches zero open rows.
+  /// </summary>
+  private static void MigrateV17(SqliteConnection connection)
+  {
+    var hasColumn = false;
+    using (var check = new SqliteCommand("PRAGMA table_info(triage_flags);", connection))
+    using (var reader = check.ExecuteReader())
+      while (reader.Read())
+        if (reader.GetString(1) == "evidence") { hasColumn = true; break; }
+
+    if (!hasColumn)
+      using (var alter = new SqliteCommand(
+        "ALTER TABLE triage_flags ADD COLUMN evidence TEXT NOT NULL DEFAULT '';", connection))
+        alter.ExecuteNonQuery();
+
+    using var cleanup = new SqliteCommand(
+      @"UPDATE triage_flags
+        SET status = 'resolved', acted_at = @now
+        WHERE status = 'open' AND reason IN ('upward_held', 'outlier_warn')",
+      connection);
+    cleanup.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    var closed = cleanup.ExecuteNonQuery();
+
+    Svc.Log.Info($"[Scrooge] V17 migration: triage_flags.evidence column + closed {closed} dead-producer flags (upward_held/outlier_warn)");
   }
 
   // =========================================================================

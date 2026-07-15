@@ -134,6 +134,11 @@ internal static class SlowMoverPressure
     }
     catch { /* evidence unavailable - flag still lands, just unrouted */ }
 
+    // The slow_evict rule fired — record it so the finally sweep keeps this
+    // flag (a still-dead-market item re-confirms every pinch) rather than
+    // healing it. Legacy always-refresh upsert (no evidence key): eviction
+    // detail carries a live router verdict worth re-stamping.
+    item.RaisedFlagReasons.Add("slow_evict");
     try
     {
       GilStorage.UpsertTriageFlag(item.ItemId, item.IsHq, item.RetainerName,

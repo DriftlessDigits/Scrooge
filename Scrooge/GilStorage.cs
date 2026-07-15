@@ -1063,34 +1063,57 @@ internal static class GilStorage
   /// Inserts a triage flag, or refreshes the existing OPEN flag for the same
   /// (item, hq, retainer, reason) - re-flagging updates detail/prices/created_at
   /// instead of stacking duplicates.
+  ///
+  /// When <paramref name="evidence"/> is supplied, the flag is EVIDENCE-KEYED
+  /// (decision memory): the stored snapshot is compared to the live one and the
+  /// row is only touched when the world actually moved (TriageMemory.DecideUpsert).
+  /// An unchanged world - or a bare manual reprice - is a silent no-op, so a
+  /// stuck-thin item does not reset its "held since" clock every pinch. Passing
+  /// null keeps the legacy always-refresh behavior (slow_evict and friends).
   /// </summary>
   internal static void UpsertTriageFlag(uint itemId, bool isHq, string retainerName, int slotIndex,
-      string reason, string detail, int oldPrice, int flaggedPrice)
+      string reason, string detail, int oldPrice, int flaggedPrice,
+      TriageMemory.EvidenceSnapshot? evidence = null, int minHistorySamples = 0)
   {
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-    using var update = new SqliteCommand(
-      @"UPDATE triage_flags
-        SET detail = @detail, old_price = @old, flagged_price = @flagged,
-            slot_index = @slot, created_at = @now
-        WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
-          AND reason = @reason AND status = 'open'",
-      _connection);
-    update.Parameters.AddWithValue("@detail", detail);
-    update.Parameters.AddWithValue("@old", oldPrice);
-    update.Parameters.AddWithValue("@flagged", flaggedPrice);
-    update.Parameters.AddWithValue("@slot", slotIndex);
-    update.Parameters.AddWithValue("@now", now);
-    update.Parameters.AddWithValue("@iid", (long)itemId);
-    update.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    update.Parameters.AddWithValue("@ret", retainerName);
-    update.Parameters.AddWithValue("@reason", reason);
-    if (update.ExecuteNonQuery() > 0) return;
+    // Evidence-keyed path: read the stored snapshot, let the pure core decide.
+    var action = TriageMemory.FlagAction.Refresh; // legacy default: always UPDATE-then-INSERT
+    var evidenceStr = "";
+    if (evidence is TriageMemory.EvidenceSnapshot snap)
+    {
+      evidenceStr = snap.Serialize();
+      action = TriageMemory.DecideUpsert(ReadOpenFlagEvidence(itemId, isHq, retainerName, reason), snap, minHistorySamples);
+      if (action == TriageMemory.FlagAction.Silent)
+        return; // same unanswered question - don't churn the row or the clock
+    }
+
+    if (action != TriageMemory.FlagAction.Insert)
+    {
+      using var update = new SqliteCommand(
+        @"UPDATE triage_flags
+          SET detail = @detail, old_price = @old, flagged_price = @flagged,
+              slot_index = @slot, created_at = @now, evidence = @evidence
+          WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
+            AND reason = @reason AND status = 'open'",
+        _connection);
+      update.Parameters.AddWithValue("@detail", detail);
+      update.Parameters.AddWithValue("@old", oldPrice);
+      update.Parameters.AddWithValue("@flagged", flaggedPrice);
+      update.Parameters.AddWithValue("@slot", slotIndex);
+      update.Parameters.AddWithValue("@now", now);
+      update.Parameters.AddWithValue("@evidence", evidenceStr);
+      update.Parameters.AddWithValue("@iid", (long)itemId);
+      update.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      update.Parameters.AddWithValue("@ret", retainerName);
+      update.Parameters.AddWithValue("@reason", reason);
+      if (update.ExecuteNonQuery() > 0) return;
+    }
 
     using var insert = new SqliteCommand(
       @"INSERT INTO triage_flags
-          (created_at, item_id, is_hq, retainer_name, slot_index, reason, detail, old_price, flagged_price)
-        VALUES (@now, @iid, @hq, @ret, @slot, @reason, @detail, @old, @flagged)",
+          (created_at, item_id, is_hq, retainer_name, slot_index, reason, detail, old_price, flagged_price, evidence)
+        VALUES (@now, @iid, @hq, @ret, @slot, @reason, @detail, @old, @flagged, @evidence)",
       _connection);
     insert.Parameters.AddWithValue("@now", now);
     insert.Parameters.AddWithValue("@iid", (long)itemId);
@@ -1101,7 +1124,54 @@ internal static class GilStorage
     insert.Parameters.AddWithValue("@detail", detail);
     insert.Parameters.AddWithValue("@old", oldPrice);
     insert.Parameters.AddWithValue("@flagged", flaggedPrice);
+    insert.Parameters.AddWithValue("@evidence", evidenceStr);
     insert.ExecuteNonQuery();
+  }
+
+  /// <summary>The evidence snapshot stored on the open flag for a key, or null when none is open.</summary>
+  private static string? ReadOpenFlagEvidence(uint itemId, bool isHq, string retainerName, string reason)
+  {
+    using var cmd = new SqliteCommand(
+      @"SELECT evidence FROM triage_flags
+        WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
+          AND reason = @reason AND status = 'open' LIMIT 1",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.Parameters.AddWithValue("@ret", retainerName);
+    cmd.Parameters.AddWithValue("@reason", reason);
+    var result = cmd.ExecuteScalar();
+    return result == null || result == DBNull.Value ? null : (string)result;
+  }
+
+  /// <summary>
+  /// Self-heal (M2): closes every open flag on this (item, hq, retainer) whose
+  /// reason did NOT re-fire this pass - the resolved live rules and the dead-
+  /// producer strays (upward_held/outlier_warn) alike. TriageMemory.FlagsToClose
+  /// makes the pick (pure/tested); this method just reads the rows and stamps
+  /// the closes as 'resolved'. Returns the number of flags healed.
+  /// </summary>
+  internal static int SelfHealTriageFlags(uint itemId, bool isHq, string retainerName,
+      IReadOnlySet<string> raisedThisPass)
+  {
+    var open = new List<(long Id, string Reason)>();
+    using (var cmd = new SqliteCommand(
+      @"SELECT id, reason FROM triage_flags
+        WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret AND status = 'open'",
+      _connection))
+    {
+      cmd.Parameters.AddWithValue("@iid", (long)itemId);
+      cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      cmd.Parameters.AddWithValue("@ret", retainerName);
+      using var reader = cmd.ExecuteReader();
+      while (reader.Read())
+        open.Add((reader.GetInt64(0), reader.GetString(1)));
+    }
+
+    var toClose = TriageMemory.FlagsToClose(open, raisedThisPass);
+    foreach (var id in toClose)
+      SetTriageFlagStatus(id, "resolved");
+    return toClose.Count;
   }
 
   /// <summary>Open triage flags, newest first. Loaded by the TriageWindow alongside the current run's items.</summary>
