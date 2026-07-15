@@ -155,6 +155,13 @@ internal static class LanePricing
     int walls = 0, bait = 0;
     foreach (var listing in board)
     {
+      // Our own listings are the thing being repriced, not the market. They
+      // never count as wall/bait/in-lane competition against ourselves — a
+      // stale own lowball must be free to walk UP, never anchor at its own
+      // bait price. UndercutSelf governs the undercut target elsewhere, not
+      // lane classification.
+      if (listing.IsOwn)
+        continue;
       if (listing.UnitPrice > ceiling)
       {
         walls++;

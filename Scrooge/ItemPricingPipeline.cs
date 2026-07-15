@@ -359,10 +359,12 @@ internal sealed class ItemPricingPipeline : IDisposable
         else if (decision.Anchor is long anchor)
         {
           var anchorInt = (int)Math.Min(anchor, int.MaxValue);
-          var isOwnAnchor = decision.AnchorIsListing && !Plugin.Configuration.UndercutSelf
-            && board.Any(b => b.IsOwn && b.UnitPrice == anchor);
+          // The lane never classifies our own listings as competition, so a
+          // listing anchor is always a foreign price to undercut — an own
+          // listing can no longer BE the anchor. UndercutSelf keeps its meaning
+          // only in the first-pass offerings path, not lane classification.
           var price = decision.AnchorIsListing
-            ? _mbHandler.ApplyUndercutMode(anchorInt, isOwnAnchor)
+            ? _mbHandler.ApplyUndercutMode(anchorInt, isOwnListing: false)
             : anchorInt;
 
           // Existing floors stay as downstream backstops (design: guards

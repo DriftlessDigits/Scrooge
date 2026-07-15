@@ -20,6 +20,9 @@ internal static class L
   public static List<LaneListing> Board(params long[] prices)
     => prices.Select(p => new LaneListing(p, IsOwn: false)).ToList();
 
+  /// <summary>One own listing at the given price (the thing being repriced).</summary>
+  public static LaneListing Own(long price) => new(price, IsOwn: true);
+
   public static LaneConfig Cfg(double? halfLife = null) => new()
   {
     HalfLifeDays = halfLife ?? 30.0,
@@ -228,6 +231,62 @@ public class LaneDecisionTests
     Assert.Equal(LaneOutcome.InLane, inside.Outcome);
     Assert.Equal(2_900, inside.Anchor);
     Assert.Equal(LaneOutcome.LaneOwned, outside.Outcome);
+  }
+
+  // ---- Own listings never classify as competition ------------------------
+
+  [Fact]
+  public void OwnStaleLowball_WalksUpToLaneOwned_NeverAnchorsAtItsOwnBaitPrice()
+  {
+    // The upward cure: our only listing is a stale below-floor lowball. Own
+    // listings aren't the market, so the board reads empty → LaneOwned at 2x,
+    // and the stale lowball walks UP instead of anchoring at its bait price.
+    var board = new List<LaneListing> { L.Own(50) }; // 50 << 500 floor
+    var d = LanePricing.Decide(board, L.Lane(1_000, 5), null, L.Cfg());
+
+    Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
+    Assert.Equal(2_000, d.Anchor); // 2.0x median, not 50
+    Assert.False(d.AnchorIsListing);
+  }
+
+  [Fact]
+  public void OwnListingPlusForeignBait_DeclinesToFloor_NeverAnchorsOnOwnLowball()
+  {
+    // Board = our own lowball + a foreign bait listing, nothing in-lane. The
+    // race declines to the lane floor; our own price is never the anchor.
+    var board = new List<LaneListing> { L.Own(60), new(110, IsOwn: false) };
+    var d = LanePricing.Decide(board, L.Lane(1_000, 5), velocityPerDay: 0.02, L.Cfg());
+
+    Assert.Equal(LaneOutcome.RaceDeclined, d.Outcome);
+    Assert.Equal(500, d.Anchor); // 0.5x median floor
+    Assert.Equal(1, d.BaitIgnored); // only the foreign listing counts as bait
+  }
+
+  [Fact]
+  public void OwnAtCeilingListing_DoesNotCreateInLaneCompetitionAgainstOurselves()
+  {
+    // Our own listing sits inside the lane (at 2,900, under the 3x ceiling).
+    // It must not count as in-lane competition — with no foreign listings the
+    // board is empty and we own the lane, not undercut ourselves.
+    var board = new List<LaneListing> { L.Own(2_900) };
+    var d = LanePricing.Decide(board, L.Lane(1_000, 5), null, L.Cfg());
+
+    Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
+    Assert.Equal(2_000, d.Anchor); // 2.0x median
+    Assert.False(d.AnchorIsListing);
+  }
+
+  [Fact]
+  public void OwnListingAmongForeignWalls_StillOwnsTheLaneWithoutSelfCounting()
+  {
+    // A foreign wall plus our own in-lane listing: the wall is ignored, our
+    // own listing is skipped, board reads empty of competition → LaneOwned.
+    var board = new List<LaneListing> { L.Own(1_500), new(55_000_000, IsOwn: false) };
+    var d = LanePricing.Decide(board, L.Lane(1_000, 5), null, L.Cfg());
+
+    Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
+    Assert.Equal(1, d.WallsIgnored);
+    Assert.Equal(2_000, d.Anchor);
   }
 
   // ---- The race (all listings below lane) --------------------------------
