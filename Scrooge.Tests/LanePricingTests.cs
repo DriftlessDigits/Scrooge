@@ -119,7 +119,10 @@ public class LaneDecisionTests
     Assert.Equal(248_000, d.Anchor);
     Assert.True(d.AnchorIsListing);
     Assert.Equal(2, d.WallsIgnored);
-    Assert.Contains("median 117,603", d.Evidence);
+    // Plain market language: names the ignored wall and the going rate, no jargon.
+    Assert.Contains("ignored 2 listings", d.Evidence);
+    Assert.Contains("117,603", d.Evidence);
+    Assert.DoesNotContain("median", d.Evidence);
   }
 
   [Fact]
@@ -288,5 +291,57 @@ public class LaneDecisionTests
     Assert.Equal(LaneOutcome.InLane, d.Outcome);
     Assert.Equal(1_100, d.Anchor);
     Assert.Contains("community", d.Evidence, StringComparison.OrdinalIgnoreCase);
+  }
+}
+
+/// <summary>
+/// The market-language run-log grammar: reasons print computed prices (never a
+/// bare multiplier), HQ lanes self-mark, and held items say what they need.
+/// </summary>
+public class LaneNoteTests
+{
+  [Fact]
+  public void LaneOwned_ReasonPrintsTheComputedCeiling_NotAMultiplier()
+  {
+    // Ceiling = 117,603 x 3.0 = 352,809. The old line said "3x median" and made
+    // the reader multiply; the reason must name the actual list price.
+    var d = LanePricing.Decide(L.Board(400_000, 55_000_000), L.Lane(117_603, 5), null, L.Cfg());
+
+    Assert.Equal(LaneOutcome.LaneOwned, d.Outcome);
+    Assert.Equal(352_809, d.Anchor);
+    Assert.Contains("352,809", d.Evidence);
+    Assert.DoesNotContain("3.0x", d.Evidence);
+    Assert.DoesNotContain("3x", d.Evidence);
+  }
+
+  [Fact]
+  public void Line_MarksHqLanes_SoQualitySplitsSelfExplain()
+  {
+    var hq = LaneNote.Line("Tea Brick", isHq: true, "507 -> 456", "deepen", "listed 27d.");
+    var nq = LaneNote.Line("Tea Brick", isHq: false, "507 -> 456", "deepen", "listed 27d.");
+
+    Assert.Equal("Tea Brick HQ: 507 -> 456 [deepen] - listed 27d.", hq);
+    Assert.StartsWith("Tea Brick:", nq);
+    Assert.DoesNotContain("HQ", nq);
+  }
+
+  [Fact]
+  public void HeldThinHistory_SaysWhatItSellsForIsUnknownAndHowManySalesAreNeeded()
+  {
+    var d = LanePricing.Decide(L.Board(4_990), L.Lane(1_214, 1), null, L.Cfg());
+
+    Assert.Equal(LaneOutcome.HeldThinHistory, d.Outcome);
+    Assert.Contains("1 sale on record", d.Evidence);
+    Assert.Contains("need 3", d.Evidence);
+    Assert.DoesNotContain("lane has", d.Evidence);
+  }
+
+  [Fact]
+  public void Transition_KeptWhenUnchanged_HeldWhenNoNewPrice()
+  {
+    Assert.Equal("54,999,900 -> 114,000", LaneNote.Transition(54_999_900, 114_000));
+    Assert.Equal("kept at 340", LaneNote.Transition(340, 340));
+    Assert.Equal("held at 12,000", LaneNote.Transition(12_000, null));
+    Assert.Equal("listed at 2,095", LaneNote.Transition(0, 2_095));
   }
 }

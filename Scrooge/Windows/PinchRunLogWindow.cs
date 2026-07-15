@@ -267,6 +267,19 @@ namespace Scrooge.Windows
       }
     }
 
+    /// <summary>
+    /// True when the entry's Message is a pre-composed market-language line
+    /// ("Item: transition [tag] - reason") and should render/copy verbatim.
+    /// Legacy outcomes still carry a bare message rendered as "Item — message".
+    /// </summary>
+    private static bool IsGrammarLine(ItemOutcome outcome) => outcome switch
+    {
+      ItemOutcome.WallIgnored or ItemOutcome.BaitIgnored or ItemOutcome.LaneOwned
+        or ItemOutcome.RaceJoined or ItemOutcome.RaceDeclined or ItemOutcome.LaneHeld
+        or ItemOutcome.SlowMover or ItemOutcome.Skipped => true,
+      _ => false,
+    };
+
     /// <summary>Adds a run-summary line for one lane outcome type, when any occurred.</summary>
     private static void AddLaneSummary(RunData run, ItemOutcome outcome, string label)
     {
@@ -407,7 +420,11 @@ namespace Scrooge.Windows
             };
 
             ImGui.PushStyleColor(ImGuiCol.Text, color);
-            ImGui.TextWrapped($"{entry.ItemName} — {entry.Message}");
+            // Grammar lines are pre-composed ("Item: transition [tag] - reason");
+            // legacy outcomes still render as "Item — message".
+            ImGui.TextWrapped(IsGrammarLine(entry.Outcome)
+              ? entry.Message
+              : $"{entry.ItemName} — {entry.Message}");
             ImGui.PopStyleColor();
 
             break;
@@ -544,18 +561,18 @@ namespace Scrooge.Windows
 
             case LogEntry entry:
             {
+              if (IsGrammarLine(entry.Outcome))
+              {
+                // Already self-describing: "Item: transition [tag] - reason".
+                sb.Append("  ").AppendLine(entry.Message);
+                break;
+              }
               var prefix = entry.Outcome switch
               {
-                ItemOutcome.Skipped => "Skipped",
                 ItemOutcome.NoData => "No data",
                 ItemOutcome.VendorSold => "Vendor-sold",
                 ItemOutcome.Banned => "Banned",
-                ItemOutcome.WallIgnored => "Wall ignored",
-                ItemOutcome.BaitIgnored => "Bait ignored",
-                ItemOutcome.LaneOwned => "Lane owned",
-                ItemOutcome.RaceJoined => "Race joined",
-                ItemOutcome.RaceDeclined => "Race declined",
-                ItemOutcome.LaneHeld => "Held (thin history)",
+                ItemOutcome.Desynthed => "Desynthed",
                 _ => "Entry"
               };
               sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");

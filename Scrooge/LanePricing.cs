@@ -138,14 +138,21 @@ internal static class LanePricing
       {
         Outcome = LaneOutcome.HeldThinHistory,
         Anchor = null,
-        Evidence = $"lane has {n} sale{(n == 1 ? "" : "s")}, need {cfg.MinHistorySamples}",
+        Evidence = $"only {n} sale{(n == 1 ? "" : "s")} on record, need {cfg.MinHistorySamples} to know what it's worth. Flagged in triage.",
       };
     }
 
     var floor = lane.Median * cfg.FloorPct;
     var ceiling = lane.Median * cfg.CeilingMult;
-    var label = lane.Source == LaneSource.Community ? "community lane" : "lane";
-    var median = FormatGil((long)Math.Round(lane.Median));
+    // Plain-language reason clauses only (the sentence after the [tag]). The
+    // pipeline owns the item name, the old->new transition, and the tag; the
+    // pure core only speaks the "why". "median" -> "the going rate / what it
+    // sells for"; ratios -> printed prices; never make the reader multiply.
+    var going = FormatGil((long)Math.Round(lane.Median));
+    var ceilingStr = FormatGil((long)Math.Round(ceiling));
+    var floorStr = FormatGil((long)Math.Round(floor));
+    // Community lanes stay labeled in the reason itself (the confidence net).
+    var origin = lane.Source == LaneSource.Community ? " Based on community sales history." : "";
 
     long? cheapestInLane = null, cheapestWall = null, cheapestBait = null;
     int walls = 0, bait = 0;
@@ -174,9 +181,11 @@ internal static class LanePricing
                   : LaneOutcome.InLane;
       var evidence = outcome switch
       {
-        LaneOutcome.WallIgnored => $"{walls} listing{(walls == 1 ? "" : "s")} >= {cfg.CeilingMult:0.0}x {label} ({FormatGil(cheapestWall!.Value)} vs median {median})",
-        LaneOutcome.BaitIgnored => $"{bait} claim{(bait == 1 ? "" : "s")} below {label} floor ({FormatGil(cheapestBait!.Value)} vs median {median})",
-        _ => $"undercutting {FormatGil(cheapestInLane.Value)} in {label} (median {median}, n={lane.SampleCount})",
+        LaneOutcome.WallIgnored => (walls == 1
+          ? $"ignored a {FormatGil(cheapestWall!.Value)} listing; this sells around {going}."
+          : $"ignored {walls} listings at {FormatGil(cheapestWall!.Value)}+; this sells around {going}.") + origin,
+        LaneOutcome.BaitIgnored => $"{bait} lowball listing{(bait == 1 ? "" : "s")} ({FormatGil(cheapestBait!.Value)}) far below what it sells for (~{going}). Not chasing them." + origin,
+        _ => $"undercut the cheapest honest listing ({FormatGil(cheapestInLane.Value)}); this sells around {going}." + origin,
       };
       return new LaneDecision
       {
@@ -202,7 +211,7 @@ internal static class LanePricing
           AnchorIsListing = true,
           WallsIgnored = walls,
           BaitIgnored = 0,
-          Evidence = $"{bait} below-{label} listing{(bait == 1 ? "" : "s")}, market clears {velocityPerDay:0.##}/day - joining at {FormatGil(cheapestBait!.Value)} (median {median})",
+          Evidence = $"sellers racing below the going rate (~{going}), but it sells fast ({velocityPerDay:0.##}/day). Joined the race." + origin,
         };
       }
       return new LaneDecision
@@ -212,7 +221,7 @@ internal static class LanePricing
         AnchorIsListing = false,
         WallsIgnored = walls,
         BaitIgnored = bait,
-        Evidence = $"{bait} below-{label} listing{(bait == 1 ? "" : "s")} ({FormatGil(cheapestBait!.Value)} vs median {median}) - waiting at {label} floor",
+        Evidence = $"sellers racing below the going rate (~{going}) and it sells slowly. Waiting at the realistic floor, {floorStr}." + origin,
       };
     }
 
@@ -224,11 +233,55 @@ internal static class LanePricing
       AnchorIsListing = false,
       WallsIgnored = walls,
       BaitIgnored = 0,
-      Evidence = walls > 0
-        ? $"no in-{label} competition, {walls} wall{(walls == 1 ? "" : "s")} ignored - listing at {label} edge (median {median})"
-        : $"empty board - listing at {label} edge (median {median})",
+      Evidence = (walls > 0
+        ? $"no real competition; {walls} seller{(walls == 1 ? "" : "s")} far above the going rate (~{going}). {ceilingStr} is the top of the realistic range."
+        : $"an empty board — no competition. {ceilingStr} is the top of the realistic range (sells around {going}).") + origin,
     };
   }
 
   private static string FormatGil(long value) => value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+}
+
+/// <summary>
+/// The one composer for a market-language run-log line. Pure and Dalamud-free
+/// so it compiles into Scrooge.Tests. Grammar:
+///   <c>&lt;Item&gt;[ HQ&gt;]: &lt;transition&gt; [tag] - &lt;reason&gt;</c>
+/// Action first (what happened to the price), short bracketed verdict tag for
+/// grep/summary, plain sentence last. The pipeline supplies the transition and
+/// reason (it knows the final applied price); LanePricing supplies the reason.
+/// </summary>
+internal static class LaneNote
+{
+  /// <summary>Item name with a plain " HQ" marker so quality-split lanes self-explain.</summary>
+  public static string Name(string itemName, bool isHq) => isHq ? $"{itemName} HQ" : itemName;
+
+  /// <summary>"1,234 -> 5,678" / "kept at X" / "listed at X" / "held at X".</summary>
+  public static string Transition(long? oldPrice, long? newPrice)
+  {
+    if (newPrice is not long np)
+      return oldPrice is long held ? $"held at {G(held)}" : "held";
+    if (oldPrice is not long op || op <= 0)
+      return $"listed at {G(np)}";
+    if (op == np)
+      return $"kept at {G(np)}";
+    return $"{G(op)} -> {G(np)}";
+  }
+
+  /// <summary>The short bracketed verdict tag for a lane outcome (grep anchor).</summary>
+  public static string Tag(LaneOutcome outcome) => outcome switch
+  {
+    LaneOutcome.WallIgnored => "undercut",
+    LaneOutcome.BaitIgnored => "bait",
+    LaneOutcome.LaneOwned => "owned",
+    LaneOutcome.RaceJoined => "race",
+    LaneOutcome.RaceDeclined => "race declined",
+    LaneOutcome.HeldThinHistory => "thin",
+    _ => "undercut",
+  };
+
+  /// <summary>Assemble the full line. Pass the transition verbatim (e.g. "unchanged" for skips).</summary>
+  public static string Line(string itemName, bool isHq, string transition, string tag, string reason)
+    => $"{Name(itemName, isHq)}: {transition} [{tag}] - {reason}";
+
+  private static string G(long value) => value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
 }

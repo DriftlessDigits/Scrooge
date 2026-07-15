@@ -545,7 +545,8 @@ internal sealed class ItemPricingPipeline : IDisposable
           {
             Communicator.PrintAboveMaxIncreaseError(itemName, cutPercentage);
             Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
-              $"Price increase exceeds cap ({Plugin.Configuration.MaxPriceIncreasePercentage}%)");
+              LaneNote.Line(cleanName, currentItem?.IsHq ?? false, "unchanged", "skip",
+                $"price increase over the {Plugin.Configuration.MaxPriceIncreasePercentage}% cap."));
             if (currentItem != null) { currentItem.Result = PricingResult.CapBlocked; currentItem.PriceChangePercent = cutPercentage; }
           }
           else
@@ -563,7 +564,8 @@ internal sealed class ItemPricingPipeline : IDisposable
         {
           Communicator.PrintAboveMaxCutError(itemName);
           Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
-            $"Undercut exceeds max ({Plugin.Configuration.MaxUndercutPercentage}%)");
+            LaneNote.Line(cleanName, currentItem?.IsHq ?? false, "unchanged", "skip",
+              $"undercut over the {Plugin.Configuration.MaxUndercutPercentage}% limit."));
           if (currentItem != null) { currentItem.Result = PricingResult.UndercutTooDeep; currentItem.PriceChangePercent = cutPercentage; }
         }
       }
@@ -581,7 +583,9 @@ internal sealed class ItemPricingPipeline : IDisposable
         // "Held (thin history)" — verdicts unify, execution stays local:
         // keep-price-and-flag at the pinch, don't-auto-price in a Hawk run.
         var evidence = currentItem?.Lane?.Evidence ?? "history too thin to build a lane";
-        Plugin.PinchRunLog?.AddEntry(ItemOutcome.LaneHeld, cleanName, $"Held (thin history) — {evidence}");
+        var heldLine = LaneNote.Line(cleanName, currentItem?.IsHq ?? false,
+          LaneNote.Transition(currentItem?.CurrentListingPrice, null), "thin", evidence);
+        Plugin.PinchRunLog?.AddEntry(ItemOutcome.LaneHeld, cleanName, heldLine);
         Communicator.PrintLaneHeld(itemName, evidence);
         if (currentItem != null && currentItem.ItemId != 0)
         {
@@ -613,14 +617,16 @@ internal sealed class ItemPricingPipeline : IDisposable
         {
           Communicator.PrintBelowMinimumListingPriceError(itemName);
           Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
-            $"Below minimum listing price ({Plugin.Configuration.MinimumListingPrice:N0} gil)");
+            LaneNote.Line(cleanName, currentItem?.IsHq ?? false, "unchanged", "skip",
+              $"below the minimum listing price ({Plugin.Configuration.MinimumListingPrice:N0} gil)."));
         }
         else
         {
           Communicator.PrintBelowPriceFloorError(itemName);
           var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor
-            ? "Vendor price" : "Doman Enclave price (2x vendor)";
-          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName, $"Below {floorLabel}");
+            ? "vendor price" : "Doman Enclave price (2x vendor)";
+          Plugin.PinchRunLog?.AddEntry(ItemOutcome.Skipped, cleanName,
+            LaneNote.Line(cleanName, currentItem?.IsHq ?? false, "unchanged", "skip", $"below {floorLabel}."));
         }
         break;
 
@@ -656,7 +662,14 @@ internal sealed class ItemPricingPipeline : IDisposable
       _ => (ItemOutcome?)null,
     };
     if (outcome is { } o)
-      Plugin.PinchRunLog?.AddEntry(o, cleanName, lane.Evidence);
+    {
+      // Line assembled here, where the final applied price is known: the
+      // outcome is what actually happened to the listing, not the mid-decision
+      // fact (a wall being ignored is folded into the reason, not the verdict).
+      var transition = LaneNote.Transition(item.CurrentListingPrice, item.FinalPrice);
+      var line = LaneNote.Line(cleanName, item.IsHq, transition, LaneNote.Tag(lane.Outcome), lane.Evidence);
+      Plugin.PinchRunLog?.AddEntry(o, cleanName, line);
+    }
   }
 
   private void OnNewPriceReceived(object? sender, NewPriceEventArgs e)
