@@ -252,6 +252,72 @@ internal sealed class ItemPricingPipeline : IDisposable
     return false;
   }
 
+  // --- Market-board await + retry ---
+  // The MB response lands via an async offerings event that fills the item's
+  // first-pass price/result. Instead of one flat keep-open delay (which lands
+  // in Held/lane_held the instant the board never arrives), we poll for the
+  // response across escalating windows, re-firing the request between them.
+  // Each window is its own enqueued task so no single poll exceeds the task
+  // manager's per-task TimeLimitMS; a window early-outs the moment data lands,
+  // so a responsive item pays ~zero extra time. Exhaustion (no response after
+  // all windows) marks MbTimedOut so SetNewPrice holds honestly.
+
+  /// <summary>Last retry window index (0 = initial + 3 retries = windows 0..3).</summary>
+  internal const int MbLastWindow = 3;
+
+  /// <summary>Per-window wait budget in ms. Window 0 is the initial keep-open; retries escalate 3s/5s/10s.</summary>
+  private static int MbWindowMs(int window) => window switch
+  {
+    0 => Plugin.Configuration.MarketBoardKeepOpenMS,
+    1 => 3000,
+    2 => 5000,
+    _ => 10000,
+  };
+
+  private static bool MbResponded(PricingItem item)
+    => item.FinalPrice is > 0 || item.Result != PricingResult.Pending;
+
+  /// <summary>
+  /// Polls one MB await window. Returns true to advance (response arrived, or
+  /// this window's budget elapsed), false to keep waiting this window. On the
+  /// first tick of a retry window it re-fires the price request; on the final
+  /// window's exhaustion it sets MbTimedOut. Never returns null — a null would
+  /// abort the whole task queue.
+  /// </summary>
+  internal bool? AwaitMarketBoardWindow(int window)
+  {
+    var item = Plugin.CurrentRun?.CurrentItem;
+    if (item == null || item.Result == PricingResult.Skipped)
+      return true;
+    if (MbResponded(item))
+      return true;
+
+    var now = DateTime.UtcNow;
+    if (item.MbAwaitDeadline == DateTime.MinValue)
+    {
+      // Arm this window. Window 0's request was already fired by
+      // ClickComparePrice; retry windows re-fire it (best effort — if the
+      // sell addon isn't ready ClickComparePrice no-ops and we still wait).
+      if (window > 0)
+        ClickComparePrice();
+      // Clamp under the task manager's TimeLimitMS so a jittered window never
+      // trips AbortOnTimeout.
+      var ms = Math.Min(_applyJitter(MbWindowMs(window)), 9500);
+      item.MbAwaitDeadline = now.AddMilliseconds(ms);
+      return false;
+    }
+
+    if (now < item.MbAwaitDeadline)
+      return false;
+
+    // Window elapsed with no response. Disarm for the next window.
+    item.MbAwaitDeadline = DateTime.MinValue;
+    item.MbAttempts = window + 1;
+    if (window >= MbLastWindow)
+      item.MbTimedOut = true;
+    return true;
+  }
+
   /// <summary>
   /// Final step: applies the calculated price to the listing.
   /// Orchestrates addon reading, price evaluation, and confirm/cancel.
@@ -584,7 +650,13 @@ internal sealed class ItemPricingPipeline : IDisposable
       {
         // "Held (thin history)" — verdicts unify, execution stays local:
         // keep-price-and-flag at the pinch, don't-auto-price in a Hawk run.
-        var evidence = currentItem?.Lane?.Evidence ?? "history too thin to build a lane";
+        // A genuine MB no-response (all retry windows elapsed) reads
+        // identically to thin history at this point; MbTimedOut distinguishes
+        // it so the flag says "didn't respond" instead of "too thin".
+        var timedOut = currentItem?.MbTimedOut == true;
+        var evidence = timedOut
+          ? $"market board didn't respond ({currentItem!.MbAttempts} attempts) — held; will retry next pinch."
+          : currentItem?.Lane?.Evidence ?? "history too thin to build a lane";
         var heldLine = LaneNote.Line(cleanName, currentItem?.IsHq ?? false,
           LaneNote.Transition(currentItem?.CurrentListingPrice, null), "thin", evidence);
         Plugin.PinchRunLog?.AddEntry(ItemOutcome.LaneHeld, cleanName, heldLine);
@@ -595,7 +667,7 @@ internal sealed class ItemPricingPipeline : IDisposable
           {
             GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
               currentItem.RetainerName, currentItem.SlotIndex, "lane_held",
-              $"Held (thin history) — {evidence}",
+              timedOut ? $"Held (MB timeout) — {evidence}" : $"Held (thin history) — {evidence}",
               currentItem.CurrentListingPrice ?? 0, 0);
           }
           catch (Exception ex)

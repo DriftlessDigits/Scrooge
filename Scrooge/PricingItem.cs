@@ -1,3 +1,5 @@
+using System;
+
 namespace Scrooge;
 
 /// <summary>User-assigned action for a triage item.</summary>
@@ -120,6 +122,17 @@ internal class PricingItem
 
   /// <summary>True when the price came from the run cache — the item was lane-decided when first priced this run, so the lane block skips.</summary>
   public bool FromPriceCache { get; set; }
+
+  // --- Market-board await/retry state (transient, per item) ---
+
+  /// <summary>Deadline for the current MB await window. MinValue = window not yet armed.</summary>
+  public DateTime MbAwaitDeadline { get; set; } = DateTime.MinValue;
+
+  /// <summary>MB request attempts completed (1 initial + up to 3 retries). Reported in the timeout hold.</summary>
+  public int MbAttempts { get; set; }
+
+  /// <summary>True when every MB request attempt elapsed with no response — hold and retry next pinch.</summary>
+  public bool MbTimedOut { get; set; }
 
   /// <summary>The lane decision for this item (null when the lane block didn't run: cache hit, bypass, hotkey).</summary>
   public LaneDecision? Lane { get; set; }
