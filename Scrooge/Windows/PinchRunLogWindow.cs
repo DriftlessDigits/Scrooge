@@ -22,7 +22,6 @@ namespace Scrooge.Windows
     WallIgnored,  // info — anchored in-lane past above-ceiling walls
     BaitIgnored,  // info — anchored in-lane past below-floor claims
     LaneOwned,    // green — no in-lane competition, listed at the lane edge
-    RaceJoined,   // info — all listings below lane, velocity said join
     RaceDeclined, // yellow — all listings below lane, waiting at the lane floor
     LaneHeld,     // yellow — history too thin, held for the player's call
   }
@@ -228,7 +227,6 @@ namespace Scrooge.Windows
         AddLaneSummary(run, ItemOutcome.WallIgnored, "walls ignored");
         AddLaneSummary(run, ItemOutcome.BaitIgnored, "bait ignored");
         AddLaneSummary(run, ItemOutcome.LaneOwned, "lanes owned");
-        AddLaneSummary(run, ItemOutcome.RaceJoined, "races joined");
         AddLaneSummary(run, ItemOutcome.RaceDeclined, "races declined");
         AddLaneSummary(run, ItemOutcome.LaneHeld, "held (thin history)");
 
@@ -275,7 +273,7 @@ namespace Scrooge.Windows
     private static bool IsGrammarLine(ItemOutcome outcome) => outcome switch
     {
       ItemOutcome.WallIgnored or ItemOutcome.BaitIgnored or ItemOutcome.LaneOwned
-        or ItemOutcome.RaceJoined or ItemOutcome.RaceDeclined or ItemOutcome.LaneHeld
+        or ItemOutcome.RaceDeclined or ItemOutcome.LaneHeld
         or ItemOutcome.SlowMover or ItemOutcome.Skipped => true,
       _ => false,
     };
@@ -413,7 +411,6 @@ namespace Scrooge.Windows
               ItemOutcome.WallIgnored => ScroogeColors.Info,
               ItemOutcome.BaitIgnored => ScroogeColors.Info,
               ItemOutcome.LaneOwned => ScroogeColors.Earned,
-              ItemOutcome.RaceJoined => ScroogeColors.Info,
               ItemOutcome.RaceDeclined => ScroogeColors.Amber,
               ItemOutcome.LaneHeld => ScroogeColors.Amber,
               _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)

@@ -482,8 +482,8 @@ public sealed class ConfigWindow : Window
     {
       ImGui.BeginTooltip();
       ImGui.SetTooltip("Listings below (lane median x this) are bait and never anchor\n" +
-                       "a price. When the whole board sits below the floor, velocity\n" +
-                       "decides: join the race or wait at the lane floor.");
+                       "a price. When the whole board sits below the floor, Scrooge\n" +
+                       "waits at the lane floor instead of chasing the race down.");
       ImGui.EndTooltip();
     }
 

@@ -34,8 +34,6 @@ internal enum LaneOutcome
   BaitIgnored,
   /// <summary>No in-lane competition (all walls, or empty board): list at the lane's upper edge.</summary>
   LaneOwned,
-  /// <summary>All listings below the lane and velocity says the market clears: follow the race.</summary>
-  RaceJoined,
   /// <summary>All listings below the lane: wait at the lane floor instead of chasing.</summary>
   RaceDeclined,
   /// <summary>Lane too thin and no community rescue: never act on a guess wearing numbers.</summary>
@@ -60,8 +58,6 @@ internal sealed record LaneConfig
   public int MinHistorySamples { get; init; } = 3;
   /// <summary>Recency half-life SEED (resolver v0). Seeded 30d from the 2026-07-13 sale-age query.</summary>
   public double HalfLifeDays { get; init; } = 30.0;
-  /// <summary>Sales/day at or above which an all-below-lane race is joined instead of declined.</summary>
-  public double RaceJoinMinVelocityPerDay { get; init; } = 0.1;
 }
 
 /// <summary>The verdict: an anchor and its named story, with the evidence spelled out.</summary>
@@ -200,20 +196,13 @@ internal static class LanePricing
 
     if (bait > 0)
     {
-      // Race to the bottom: every listing sits below the lane. Velocity
-      // decides join vs wait; no velocity evidence fails toward holding value.
-      if (velocityPerDay >= cfg.RaceJoinMinVelocityPerDay)
-      {
-        return new LaneDecision
-        {
-          Outcome = LaneOutcome.RaceJoined,
-          Anchor = cheapestBait,
-          AnchorIsListing = true,
-          WallsIgnored = walls,
-          BaitIgnored = 0,
-          Evidence = $"sellers racing below the going rate (~{going}), but it sells fast ({velocityPerDay:0.##}/day). Joined the race." + origin,
-        };
-      }
+      // Race to the bottom: every listing sits below the lane. The interim
+      // policy never chases below-lane racers — wait at the lane floor. The
+      // competing policies (mid-queue positioning, joining the race) return
+      // later as A/B experiment arms; floor-wait is the fail-toward-holding
+      // interim, not the final word. Velocity, when known, colors the reason
+      // but no longer branches the decision.
+      var pace = velocityPerDay is double v ? $", selling about {v:0.##}/day" : "";
       return new LaneDecision
       {
         Outcome = LaneOutcome.RaceDeclined,
@@ -221,7 +210,7 @@ internal static class LanePricing
         AnchorIsListing = false,
         WallsIgnored = walls,
         BaitIgnored = bait,
-        Evidence = $"sellers racing below the going rate (~{going}) and it sells slowly. Waiting at the realistic floor, {floorStr}." + origin,
+        Evidence = $"sellers racing below the going rate (~{going}{pace}). Waiting at the realistic floor, {floorStr}." + origin,
       };
     }
 
@@ -273,7 +262,6 @@ internal static class LaneNote
     LaneOutcome.WallIgnored => "undercut",
     LaneOutcome.BaitIgnored => "bait",
     LaneOutcome.LaneOwned => "owned",
-    LaneOutcome.RaceJoined => "race",
     LaneOutcome.RaceDeclined => "race declined",
     LaneOutcome.HeldThinHistory => "thin",
     _ => "undercut",

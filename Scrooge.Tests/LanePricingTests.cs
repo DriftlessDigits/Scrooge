@@ -20,10 +20,9 @@ internal static class L
   public static List<LaneListing> Board(params long[] prices)
     => prices.Select(p => new LaneListing(p, IsOwn: false)).ToList();
 
-  public static LaneConfig Cfg(double? halfLife = null, double? raceJoin = null) => new()
+  public static LaneConfig Cfg(double? halfLife = null) => new()
   {
     HalfLifeDays = halfLife ?? 30.0,
-    RaceJoinMinVelocityPerDay = raceJoin ?? 0.1,
   };
 
   public static LaneModel Lane(double median, int n, LaneSource source = LaneSource.Local) => new()
@@ -230,13 +229,17 @@ public class LaneDecisionTests
   }
 
   [Fact]
-  public void Race_FastMarket_JoinsTheRace()
+  public void Race_FastMarket_StillDeclinesToFloor()
   {
+    // The join branch died (2026-07-14): the interim never chases below-lane
+    // racers, no matter how fast the market clears. A former "join" fixture
+    // now waits at the floor; velocity only colors the reason.
     var d = LanePricing.Decide(L.Board(110, 330), L.Lane(1_000, 5), velocityPerDay: 1.0, L.Cfg());
 
-    Assert.Equal(LaneOutcome.RaceJoined, d.Outcome);
-    Assert.Equal(110, d.Anchor);
-    Assert.True(d.AnchorIsListing);
+    Assert.Equal(LaneOutcome.RaceDeclined, d.Outcome);
+    Assert.Equal(500, d.Anchor); // 0.5x median
+    Assert.False(d.AnchorIsListing);
+    Assert.Contains("1/day", d.Evidence); // velocity survives in the reason
   }
 
   [Fact]

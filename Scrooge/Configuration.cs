@@ -127,12 +127,6 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public float LaneHalfLifeDays { get; set; } = 30f;
 
-  /// <summary>
-  /// Sales/day at or above which an all-below-lane board is a race worth
-  /// joining; below it Scrooge declines and waits at the lane floor.
-  /// </summary>
-  public float LaneRaceJoinVelocityPerDay { get; set; } = 0.1f;
-
   // --- Timing ---
 
   /// <summary>When enabled, adds a jitter element to simulate human interaction.</summary>

@@ -325,7 +325,6 @@ internal sealed class ItemPricingPipeline : IDisposable
           CeilingMult = Plugin.Configuration.UpwardRepriceMultiplier,
           MinHistorySamples = Plugin.Configuration.LaneMinHistorySamples,
           HalfLifeDays = LaneHalfLife.Resolve(currentItem.ItemId),
-          RaceJoinMinVelocityPerDay = Plugin.Configuration.LaneRaceJoinVelocityPerDay,
         };
         var hqPricing = Plugin.Configuration.HQ && currentItem.IsHq;
         var sales = _mbHandler.GetLaneSales(currentItem.ItemId);
@@ -657,7 +656,6 @@ internal sealed class ItemPricingPipeline : IDisposable
       LaneOutcome.WallIgnored => ItemOutcome.WallIgnored,
       LaneOutcome.BaitIgnored => ItemOutcome.BaitIgnored,
       LaneOutcome.LaneOwned => ItemOutcome.LaneOwned,
-      LaneOutcome.RaceJoined => ItemOutcome.RaceJoined,
       LaneOutcome.RaceDeclined => ItemOutcome.RaceDeclined,
       _ => (ItemOutcome?)null,
     };
