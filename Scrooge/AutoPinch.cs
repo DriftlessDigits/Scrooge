@@ -671,7 +671,14 @@ internal sealed class AutoPinch : Window, IDisposable
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(_pricing.DelayMarketBoard, $"DelayMB{index}");
     _taskManager.Enqueue(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
-    _taskManager.DelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+    // Poll for the MB response across escalating windows (initial keep-open +
+    // 3 retries), re-firing the request between them, before SetNewPrice holds
+    // on a genuine no-response. Each window early-outs the instant data lands.
+    for (int w = 0; w <= ItemPricingPipeline.MbLastWindow; w++)
+    {
+      int window = w;
+      _taskManager.Enqueue(() => _pricing.AwaitMarketBoardWindow(window), $"AwaitMB{index}_{window}");
+    }
     _taskManager.Enqueue(_pricing.SetNewPrice, $"SetNewPrice{index}");
   }
 
@@ -684,7 +691,13 @@ internal sealed class AutoPinch : Window, IDisposable
   private void InsertSingleItem(int index)
   {
     _taskManager.Insert(_pricing.SetNewPrice, $"SetNewPrice{index}");
-    _taskManager.InsertDelayNext(ApplyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+    // Insert prepends, so add the await windows in reverse: they execute
+    // ClickComparePrice -> AwaitMB 0..3 -> SetNewPrice (see EnqueueSingleItem).
+    for (int w = ItemPricingPipeline.MbLastWindow; w >= 0; w--)
+    {
+      int window = w;
+      _taskManager.Insert(() => _pricing.AwaitMarketBoardWindow(window), $"AwaitMB{index}_{window}");
+    }
     _taskManager.Insert(_pricing.ClickComparePrice, $"ClickComparePrice{index}");
     _taskManager.Insert(_pricing.DelayMarketBoard, $"DelayMB{index}");
     _taskManager.InsertDelayNext(100);

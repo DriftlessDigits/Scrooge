@@ -40,7 +40,16 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
   // --- Sale history support (v2.4) ---
   private List<IMarketBoardHistoryListing>? _lastHistory;
-  internal bool OutlierDetected { get; private set; }
+
+  // --- Board capture (lane pricing) ---
+  // The board only exists inside the offerings event; the lane decision runs
+  // later in SetNewPrice where history + velocity are also in hand. Batches
+  // (10 listings each, ascending) accumulate here per item.
+  private readonly List<(long Price, bool IsOwn, bool IsHq)> _board = [];
+  private readonly HashSet<int> _boardRequestIds = [];
+
+  /// <summary>Item ID the captured board belongs to.</summary>
+  internal uint BoardItemId { get; private set; }
 
   /// <summary>Item ID from the last HistoryReceived event. Used to validate history is for the correct item.</summary>
   internal uint HistoryItemId { get; private set; }
@@ -97,10 +106,10 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   /// <param name="currentOfferings">Batch of up to 10 MB listings for the queried item, sorted by price ascending.</param>
   private void MarketBoardOnOfferingsReceived(IMarketBoardCurrentOfferings currentOfferings)
   {
+    CaptureBoard(currentOfferings);
+
     if (!_newRequest)
       return;
-
-    OutlierDetected = false;
 
     // Empty batch (nothing listed for this item) — every ItemListings[0]
     // access below would throw. Treat as "no matching listing."
@@ -119,71 +128,9 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
       while (i < currentOfferings.ItemListings.Count && !currentOfferings.ItemListings[i].IsHq)
         i++;
     }
-    // NQ path: i stays at 0 (first listing). Empty batches fall through to the guard at line 138.
-
-    // --- Outlier detection: price-by-price gap comparison ---
-    // Only applies to NQ item pricing. HQ items skip outlier detection.
-    // Treats all listings (NQ and HQ) as equals for gap analysis.
-    if (Plugin.Configuration.OutlierDetection && !(_useHq && _itemHq))
-    {
-      var startIndex = i;
-      var itemCount = currentOfferings.ItemListings.Count;
-      var window = Plugin.Configuration.OutlierSearchWindow;
-
-      if (Plugin.Configuration.RelativeOutlierWindow && itemCount < 10)
-      {
-        // For small listing counts, dynamically adjust the search window to be a percentage of total listings
-        window = Math.Max(1, (int)Math.Round((float)window / 9f * itemCount)); // e.g. if window=2 and itemCount=5, then window becomes 1 (20% of 5)
-      }
-      var searchEnd = Math.Min(itemCount, (i + 1 + window));
-
-      for (var j = i; j + 1 < searchEnd; j++)
-      {
-        var currentPrice = currentOfferings.ItemListings[j].PricePerUnit;
-        var nextPrice = currentOfferings.ItemListings[j + 1].PricePerUnit;
-        var gapPercent = nextPrice > 0 ? (float)(nextPrice - currentPrice) / nextPrice * 100f : 0f;
-
-        // If the price gap exceeds the threshold, it's a cliff
-        if (gapPercent > Plugin.Configuration.OutlierThresholdPercent)
-        {
-          // Own listings are evidence, not bait - never skip past one. If a
-          // listing in the would-be-skipped range is ours, it anchors instead
-          // (the 900k bug: own 150k listing read as below-cliff bait, troll
-          // wall became the anchor, item repriced to ~899,900).
-          var ownIndex = -1;
-          for (var k = startIndex; k <= j; k++)
-          {
-            if (GameSafe.IsOwnRetainer(currentOfferings.ItemListings[k].RetainerId))
-            {
-              ownIndex = k;
-              break;
-            }
-          }
-          if (ownIndex >= 0)
-          {
-            i = ownIndex;
-            Svc.Log.Debug($"[Outlier] own listing at position {ownIndex} anchors past the cliff skip");
-            break;
-          }
-
-          var outlierItemName = _items.GetRow(currentOfferings.ItemListings[0].ItemId).Name.ToString();
-          Plugin.PinchRunLog?.AddOutlierEntry(outlierItemName, (int)currentPrice, (int)nextPrice);
-          Plugin.PinchRunLog?.IncrementOutliers();
-          Communicator.PrintOutlierDetected(currentOfferings.ItemListings[0].ItemId, (int)currentPrice, (int)nextPrice);
-          LogOutlierEvidence(currentOfferings.ItemListings[0].ItemId, outlierItemName, (int)currentPrice, (int)nextPrice);
-          i = j + 1; // skip everything below the cliff
-        }
-      }
-
-      OutlierDetected = (i != startIndex);
-
-      // Re-check bounds after skipping outliers
-      if (i >= currentOfferings.ItemListings.Count)
-      {
-        NewPrice = -1;
-        return;
-      }
-    }
+    // NQ path: i stays at 0 (first listing). Empty batches fall through to the guard below.
+    // Gap-geometry outlier detection deleted 2026-07-13: the lane decision in
+    // SetNewPrice classifies the captured board against settled sales instead.
 
     // Guard: no matching listing found, or we already processed this batch
     if (i >= currentOfferings.ItemListings.Count || currentOfferings.RequestId == _lastRequestId)
@@ -193,52 +140,9 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     }
     else
     {
-      int price;
       var listingPrice = (int)currentOfferings.ItemListings[i].PricePerUnit;
       var isOwnRetainer = !Plugin.Configuration.UndercutSelf && GameSafe.IsOwnRetainer(currentOfferings.ItemListings[i].RetainerId);
-      var effectiveMode = Plugin.Configuration.UndercutMode;
-
-      if (!isOwnRetainer && effectiveMode == UndercutMode.Humanized)
-      {
-        // 1/3 Random Pinch (stays Humanized), 1/3 Gentleman's Match, 1/3 Clean Numbers
-        var roll = _random.Next(3);
-        if (roll == 1)
-          effectiveMode = UndercutMode.GentlemansMatch;
-        else if (roll == 2)
-          effectiveMode = UndercutMode.CleanNumbers;
-        // roll == 0: stays Humanized → random pinch branch below
-      }
-
-      // Calculate price based on the selected undercut mode
-      if (isOwnRetainer)
-        price = listingPrice;  // own listing — keep as-is
-      else if (effectiveMode == UndercutMode.FixedAmount)
-        price = Math.Max(listingPrice - Plugin.Configuration.UndercutAmount, 1);
-      else if (effectiveMode == UndercutMode.Percentage)
-        price = Math.Max((100 - Plugin.Configuration.UndercutAmount) * listingPrice / 100, 1);
-      else if (effectiveMode == UndercutMode.CleanNumbers)
-      {
-        if (listingPrice <= 50)
-          price = Math.Max(listingPrice - 1, 1);
-        else
-        {
-          var p = listingPrice - 1;
-          if (p > 100000) p = p / 100 * 100;
-          else if (p > 10000) p = p / 50 * 50;
-          else if (p > 1000) p = p / 25 * 25;
-          else if (p > 500) p = p / 10 * 10;
-          else p = p / 5 * 5;
-          price = Math.Max(p, 1);
-        }
-      }
-      else if (effectiveMode == UndercutMode.Humanized)
-      {
-        var pinch = _random.Next(1, Plugin.Configuration.HumanizedMaxPinch + 1);
-        price = Math.Max(listingPrice -  pinch, 1);
-
-      }
-      else
-        price = listingPrice;  // GentlemansMatch — copy price exactly
+      var price = ApplyUndercutMode(listingPrice, isOwnRetainer);
 
       LastCheckedPrice = price; // capture before sentinel conversion
 
@@ -271,6 +175,123 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   }
 
   /// <summary>
+  /// Applies the configured undercut mode to a board listing price. Shared by
+  /// the first-pass offerings path and the lane decision's anchor pricing.
+  /// Own listings are matched, never undercut.
+  /// </summary>
+  internal int ApplyUndercutMode(int listingPrice, bool isOwnListing)
+  {
+    var effectiveMode = Plugin.Configuration.UndercutMode;
+
+    if (!isOwnListing && effectiveMode == UndercutMode.Humanized)
+    {
+      // 1/3 Random Pinch (stays Humanized), 1/3 Gentleman's Match, 1/3 Clean Numbers
+      var roll = _random.Next(3);
+      if (roll == 1)
+        effectiveMode = UndercutMode.GentlemansMatch;
+      else if (roll == 2)
+        effectiveMode = UndercutMode.CleanNumbers;
+      // roll == 0: stays Humanized → random pinch branch below
+    }
+
+    if (isOwnListing)
+      return listingPrice;  // own listing — keep as-is
+    if (effectiveMode == UndercutMode.FixedAmount)
+      return Math.Max(listingPrice - Plugin.Configuration.UndercutAmount, 1);
+    if (effectiveMode == UndercutMode.Percentage)
+      return Math.Max((100 - Plugin.Configuration.UndercutAmount) * listingPrice / 100, 1);
+    if (effectiveMode == UndercutMode.CleanNumbers)
+    {
+      if (listingPrice <= 50)
+        return Math.Max(listingPrice - 1, 1);
+
+      var p = listingPrice - 1;
+      if (p > 100000) p = p / 100 * 100;
+      else if (p > 10000) p = p / 50 * 50;
+      else if (p > 1000) p = p / 25 * 25;
+      else if (p > 500) p = p / 10 * 10;
+      else p = p / 5 * 5;
+      return Math.Max(p, 1);
+    }
+    if (effectiveMode == UndercutMode.Humanized)
+    {
+      var pinch = _random.Next(1, Plugin.Configuration.HumanizedMaxPinch + 1);
+      return Math.Max(listingPrice - pinch, 1);
+    }
+
+    return listingPrice;  // GentlemansMatch — copy price exactly
+  }
+
+  /// <summary>
+  /// Accumulates board listings across offerings batches for the current item.
+  /// Runs on every offerings event (even after the first-pass price resolves)
+  /// so late batches still enrich the board the lane decision sees.
+  /// </summary>
+  private void CaptureBoard(IMarketBoardCurrentOfferings offerings)
+  {
+    if (offerings.ItemListings.Count == 0)
+      return;
+
+    var itemId = offerings.ItemListings[0].ItemId;
+    if (itemId != BoardItemId)
+    {
+      _board.Clear();
+      _boardRequestIds.Clear();
+      BoardItemId = itemId;
+    }
+
+    if (!_boardRequestIds.Add(offerings.RequestId))
+      return; // batch already captured
+
+    foreach (var listing in offerings.ItemListings)
+      _board.Add(((long)listing.PricePerUnit, GameSafe.IsOwnRetainer(listing.RetainerId), listing.IsHq));
+  }
+
+  /// <summary>
+  /// The captured board for the lane decision. HQ pricing competes with HQ
+  /// listings only. Empty when the board belongs to a different item.
+  /// </summary>
+  internal List<LaneListing> GetBoard(uint itemId, bool hqOnly)
+  {
+    if (itemId != BoardItemId)
+      return [];
+
+    return _board
+      .Where(l => !hqOnly || l.IsHq)
+      .Select(l => new LaneListing(l.Price, l.IsOwn))
+      .ToList();
+  }
+
+  /// <summary>
+  /// Settled sales for the lane, from the MB history packet (the last ~20
+  /// board sales, however old - the lane discounts by age, never discards).
+  /// Empty when history belongs to a different item or never arrived.
+  /// </summary>
+  internal List<LaneSale> GetLaneSales(uint itemId)
+  {
+    if (_lastHistory == null || HistoryItemId != itemId)
+      return [];
+
+    return _lastHistory
+      .Select(h => new LaneSale((long)h.SalePrice, ((DateTimeOffset)h.PurchaseTime.ToUniversalTime()).ToUnixTimeSeconds(), h.IsHq))
+      .ToList();
+  }
+
+  /// <summary>
+  /// Sales/day derived from the history packet span. Null when no history.
+  /// Feeds the race join/decline call in the lane decision.
+  /// </summary>
+  internal double? GetPacketVelocityPerDay(uint itemId)
+  {
+    if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != itemId)
+      return null;
+
+    var oldest = _lastHistory.Min(h => h.PurchaseTime.ToUniversalTime());
+    var spanDays = Math.Max(1.0, (DateTime.UtcNow - oldest).TotalDays);
+    return _lastHistory.Count / spanDays;
+  }
+
+  /// <summary>
   /// Triggered when the MB search results window opens — signals that
   /// the next incoming offerings batch is one we requested.
   /// </summary>
@@ -291,88 +312,15 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     _itemHq = addon->ItemName->NodeText.ToString().Contains(Windows.Format.HqChar);
   }
 
-  /// <summary>
-  /// Calculates a price from sale history when outlier detection fired.
-  /// Returns the median sale price, or null if no usable history or if
-  /// the median fails floor/min checks. No sentinels — null means
-  /// "fall back to first-pass price."
-  /// </summary>
-  internal int? GetHistoryPrice()
-  {
-    if (_lastHistory == null || _lastHistory.Count == 0)
-      return null;
-
-    var prices = _lastHistory
-      .Where(h => !_useHq || !_itemHq || h.IsHq)
-      .OrderBy(h => h.SalePrice)
-      .Select(h => (int)h.SalePrice)
-      .ToList();
-
-    if (prices.Count == 0)
-      return null;
-
-    // Median — resilient to outliers in history
-    var median = prices[prices.Count / 2];
-
-    // Floor/min checks — return null (not sentinels) so caller falls back cleanly
-    if (Plugin.Configuration.PriceFloorMode != PriceFloorMode.None)
-    {
-      var vendorPrice = (int)_items.GetRow(HistoryItemId).PriceLow;
-      var floorPrice = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave
-        ? vendorPrice * 2 : vendorPrice;
-      if (floorPrice > 0 && median < floorPrice)
-        return null;
-    }
-    if (Plugin.Configuration.MinimumListingPrice > 0 && median < Plugin.Configuration.MinimumListingPrice)
-      return null;
-
-    return median;
-  }
-
-  /// <summary>
-  /// Calibration evidence for the history-band design: every outlier skip
-  /// gets one log line pairing the decision (skip X, use Y) with the 14-day
-  /// sale history the band WOULD have consulted. The history packet is
-  /// transient - this line is the only durable record of what the market
-  /// actually clears at when the skip fired. Grep /xllog for OutlierEvidence.
-  /// </summary>
-  private void LogOutlierEvidence(uint itemId, string itemName, int skippedPrice, int usedPrice)
-  {
-    if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != itemId)
-    {
-      Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | no history in hand");
-      return;
-    }
-
-    var cutoff = DateTime.UtcNow.AddDays(-14);
-    var recent = _lastHistory
-      .Where(h => h.PurchaseTime >= cutoff)
-      .Where(h => !_useHq || !_itemHq || h.IsHq)
-      .Select(h => (int)h.SalePrice)
-      .OrderBy(p => p)
-      .ToList();
-
-    if (recent.Count == 0)
-    {
-      Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | 14d n=0 (all {_lastHistory.Count} entries older)");
-      return;
-    }
-
-    var median = recent[recent.Count / 2];
-    Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | 14d n={recent.Count} median={median} " +
-      $"skip/median={(median > 0 ? (float)skippedPrice / median : 0):F2} use/median={(median > 0 ? (float)usedPrice / median : 0):F2}");
-  }
-
-  /// <summary>Clears stored history and outlier flag after use.</summary>
+  /// <summary>Clears stored history and captured board after use.</summary>
   internal void ClearHistory()
   {
     _lastHistory = null;
     HistoryItemId = 0;
-    OutlierDetected = false;
+    _board.Clear();
+    _boardRequestIds.Clear();
+    BoardItemId = 0;
   }
-
-  /// <summary>Number of history listings available.</summary>
-  internal int HistoryListingCount => _lastHistory?.Count ?? 0;
 
   /// <summary>
   /// Populates 14-day sale history stats on the given PricingItem.

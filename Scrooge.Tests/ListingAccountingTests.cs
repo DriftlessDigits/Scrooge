@@ -19,6 +19,7 @@ public class ListingAccountingTests
 
   [Theory]
   [InlineData(PricingResult.UpwardHeld)]
+  [InlineData(PricingResult.LaneHeld)]
   [InlineData(PricingResult.CapBlocked)]
   [InlineData(PricingResult.UndercutTooDeep)]
   [InlineData(PricingResult.BelowFloor)]

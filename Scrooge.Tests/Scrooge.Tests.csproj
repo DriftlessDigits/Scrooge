@@ -34,6 +34,7 @@
     <Compile Include="..\Scrooge\RoutingRules.cs" Link="Linked\RoutingRules.cs" />
     <Compile Include="..\Scrooge\ListingGate.cs" Link="Linked\ListingGate.cs" />
     <Compile Include="..\Scrooge\DesynthSkillupColor.cs" Link="Linked\DesynthSkillupColor.cs" />
+    <Compile Include="..\Scrooge\LanePricing.cs" Link="Linked\LanePricing.cs" />
   </ItemGroup>
 
 </Project>

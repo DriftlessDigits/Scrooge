@@ -68,8 +68,9 @@ internal static class SlowMoverPressure
     if (item.VendorPrice > 0 && deepened <= item.VendorPrice)
       return newPrice;
 
-    Plugin.PinchRunLog?.AddEntry(Windows.ItemOutcome.SlowMover,
-      item.ItemName, $"Slow mover: listed {ageDays}d, market alive - deepened {pct}% ({newPrice:N0} → {deepened:N0})");
+    Plugin.PinchRunLog?.AddEntry(Windows.ItemOutcome.SlowMover, item.ItemName,
+      LaneNote.Line(item.ItemName, item.IsHq, LaneNote.Transition(newPrice, deepened), "deepen",
+        $"listed {ageDays}d and still not selling; dropped {pct}%."));
     Plugin.PinchRunLog?.IncrementSlowMovers();
     return deepened;
   }

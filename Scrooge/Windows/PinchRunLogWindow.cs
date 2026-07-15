@@ -12,13 +12,18 @@ namespace Scrooge.Windows
   /// <summary>Outcome type for pinch run log entries.</summary>
   public enum ItemOutcome
   {
-    Skipped,     // red — rule blocked, no price set
-    NoData,      // yellow — no competition, player decides
-    Outlier,     // normal — system handled it, got a price
-    VendorSold,  // green — vendor-sold through retainer
-    Banned,      // blue — on ban list, observed but not changed
-    Desynthed,   // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
-    SlowMover,   // info blue — slow-mover pressure deepened the cut (price WAS applied)
+    Skipped,      // red — rule blocked, no price set
+    NoData,       // yellow — no competition, player decides
+    VendorSold,   // green — vendor-sold through retainer
+    Banned,       // blue — on ban list, observed but not changed
+    Desynthed,    // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
+    SlowMover,    // info blue — slow-mover pressure deepened the cut (price WAS applied)
+    // Lane pricing outcomes — each named with its evidence, never a generic costume
+    WallIgnored,  // info — anchored in-lane past above-ceiling walls
+    BaitIgnored,  // info — anchored in-lane past below-floor claims
+    LaneOwned,    // green — no in-lane competition, listed at the lane edge
+    RaceDeclined, // yellow — all listings below lane, waiting at the lane floor
+    LaneHeld,     // yellow — history too thin, held for the player's call
   }
 
   /// <summary>Run-level event type for lifecycle markers and summary lines.</summary>
@@ -33,11 +38,7 @@ namespace Scrooge.Windows
   public interface ILogItem { }
 
   /// <summary>A single entry in the pinch run log.</summary>
-  public record LogEntry(ItemOutcome Outcome, string RetainerName, string ItemName, string Message) : ILogItem
-  {
-    public int BaitPrice { get; init; }
-    public int UsedPrice { get; init; }
-  }
+  public record LogEntry(ItemOutcome Outcome, string RetainerName, string ItemName, string Message) : ILogItem;
 
   /// <summary>A run-level entry (start/end markers, summary stats).</summary>
   public record RunEntry (RunEvent EventType, string Message) : ILogItem;
@@ -136,15 +137,6 @@ namespace Scrooge.Windows
       run.AddYieldEntry(GilTracker.GetItemName(yield.YieldItemId), yield.YieldQty, yield.YieldIsHq, value);
     }
 
-    /// <summary>Adds an outlier entry with bait/used prices for colored rendering.</summary>
-    public void AddOutlierEntry(string itemName, int baitPrice, int usedPrice)
-    {
-      if (!Plugin.Configuration.EnablePinchRunLog)
-        return;
-
-      Run?.AddOutlierEntry(itemName, baitPrice, usedPrice);
-    }
-
     /// <summary>
     /// Increments the successful adjustment counter. Called from Communicator.PrintPriceUpdate.
     /// </summary>
@@ -155,18 +147,6 @@ namespace Scrooge.Windows
 
       var run = Run;
       if (run != null) run.ItemsAdjusted++;
-    }
-
-    /// <summary>
-    /// Increments the outlier detection counter. Called from Communicator.PrintOutlierDetected.
-    /// </summary>
-    public void IncrementOutliers()
-    {
-      if (!Plugin.Configuration.EnablePinchRunLog)
-        return;
-
-      var run = Run;
-      if (run != null) run.OutliersDetected++;
     }
 
     /// <summary>
@@ -243,8 +223,12 @@ namespace Scrooge.Windows
         if (run.NoDataCount > 0)
           run.AddRunEntry(RunEvent.Summary, $"{run.NoDataCount} no data");
 
-        if (run.OutliersDetected > 0)
-          run.AddRunEntry(RunEvent.Summary, $"{run.OutliersDetected} outliers");
+        // Lane outcomes — each type counted separately, per the lane design
+        AddLaneSummary(run, ItemOutcome.WallIgnored, "walls ignored");
+        AddLaneSummary(run, ItemOutcome.BaitIgnored, "bait ignored");
+        AddLaneSummary(run, ItemOutcome.LaneOwned, "lanes owned");
+        AddLaneSummary(run, ItemOutcome.RaceDeclined, "races declined");
+        AddLaneSummary(run, ItemOutcome.LaneHeld, "held (thin history)");
 
         if (run.SlowMoversDeepened > 0)
           run.AddRunEntry(RunEvent.Summary, $"{run.SlowMoversDeepened} slow movers deepened");
@@ -279,6 +263,27 @@ namespace Scrooge.Windows
 
         Plugin.Configuration.Save();
       }
+    }
+
+    /// <summary>
+    /// True when the entry's Message is a pre-composed market-language line
+    /// ("Item: transition [tag] - reason") and should render/copy verbatim.
+    /// Legacy outcomes still carry a bare message rendered as "Item — message".
+    /// </summary>
+    private static bool IsGrammarLine(ItemOutcome outcome) => outcome switch
+    {
+      ItemOutcome.WallIgnored or ItemOutcome.BaitIgnored or ItemOutcome.LaneOwned
+        or ItemOutcome.RaceDeclined or ItemOutcome.LaneHeld
+        or ItemOutcome.SlowMover or ItemOutcome.Skipped => true,
+      _ => false,
+    };
+
+    /// <summary>Adds a run-summary line for one lane outcome type, when any occurred.</summary>
+    private static void AddLaneSummary(RunData run, ItemOutcome outcome, string label)
+    {
+      var n = run.CountOutcome(outcome);
+      if (n > 0)
+        run.AddRunEntry(RunEvent.Summary, $"{n} {label}");
     }
 
     /// <summary>
@@ -395,40 +400,29 @@ namespace Scrooge.Windows
           {
             if (!treeOpen) break;
 
-            if (entry.Outcome == ItemOutcome.Outlier)
+            var color = entry.Outcome switch
             {
-              // Normal text with colored prices — mimics in-game chat
-              ImGui.Text($"{entry.ItemName} — skipping ");
-              ImGui.SameLine(0, 0);
-              ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Spent);
-              ImGui.Text($"{entry.BaitPrice:N0}");
-              ImGui.PopStyleColor();
-              ImGui.SameLine(0, 0);
-              ImGui.Text(" gil, using ");
-              ImGui.SameLine(0, 0);
-              ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
-              ImGui.Text($"{entry.UsedPrice:N0}");
-              ImGui.PopStyleColor();
-              ImGui.SameLine(0, 0);
-              ImGui.Text(" gil");
-            }
-            else
-            {
-              var color = entry.Outcome switch
-              {
-                ItemOutcome.Skipped => ScroogeColors.Spent,
-                ItemOutcome.NoData => ScroogeColors.Amber,
-                ItemOutcome.VendorSold => ScroogeColors.Earned,
-                ItemOutcome.Banned => ScroogeColors.Banned,
-                ItemOutcome.Desynthed => ScroogeColors.Muted,
-                ItemOutcome.SlowMover => ScroogeColors.Info,
-                _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
-              };
+              ItemOutcome.Skipped => ScroogeColors.Spent,
+              ItemOutcome.NoData => ScroogeColors.Amber,
+              ItemOutcome.VendorSold => ScroogeColors.Earned,
+              ItemOutcome.Banned => ScroogeColors.Banned,
+              ItemOutcome.Desynthed => ScroogeColors.Muted,
+              ItemOutcome.SlowMover => ScroogeColors.Info,
+              ItemOutcome.WallIgnored => ScroogeColors.Info,
+              ItemOutcome.BaitIgnored => ScroogeColors.Info,
+              ItemOutcome.LaneOwned => ScroogeColors.Earned,
+              ItemOutcome.RaceDeclined => ScroogeColors.Amber,
+              ItemOutcome.LaneHeld => ScroogeColors.Amber,
+              _ => new System.Numerics.Vector4(1f, 1f, 1f, 1f)
+            };
 
-              ImGui.PushStyleColor(ImGuiCol.Text, color);
-              ImGui.TextWrapped($"{entry.ItemName} — {entry.Message}");
-              ImGui.PopStyleColor();
-            }
+            ImGui.PushStyleColor(ImGuiCol.Text, color);
+            // Grammar lines are pre-composed ("Item: transition [tag] - reason");
+            // legacy outcomes still render as "Item — message".
+            ImGui.TextWrapped(IsGrammarLine(entry.Outcome)
+              ? entry.Message
+              : $"{entry.ItemName} — {entry.Message}");
+            ImGui.PopStyleColor();
 
             break;
           }
@@ -563,21 +557,24 @@ namespace Scrooge.Windows
               break;
 
             case LogEntry entry:
-              if (entry.Outcome == ItemOutcome.Outlier)
-                sb.Append("  ").AppendLine($"Outlier: {entry.ItemName} — skipping {entry.BaitPrice:N0} gil, using {entry.UsedPrice:N0} gil");
-              else
+            {
+              if (IsGrammarLine(entry.Outcome))
               {
-                var prefix = entry.Outcome switch
-                {
-                  ItemOutcome.Skipped => "Skipped",
-                  ItemOutcome.NoData => "No data",
-                  ItemOutcome.VendorSold => "Vendor-sold",
-                  ItemOutcome.Banned => "Banned",
-                  _ => "Entry"
-                };
-                sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");
+                // Already self-describing: "Item: transition [tag] - reason".
+                sb.Append("  ").AppendLine(entry.Message);
+                break;
               }
+              var prefix = entry.Outcome switch
+              {
+                ItemOutcome.NoData => "No data",
+                ItemOutcome.VendorSold => "Vendor-sold",
+                ItemOutcome.Banned => "Banned",
+                ItemOutcome.Desynthed => "Desynthed",
+                _ => "Entry"
+              };
+              sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");
               break;
+            }
           }
         }
 

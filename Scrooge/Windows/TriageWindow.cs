@@ -126,6 +126,7 @@ namespace Scrooge.Windows
         Result = flag.Reason switch
         {
           "upward_held" or "outlier_warn" => PricingResult.UpwardHeld,
+          "lane_held" => PricingResult.LaneHeld,
           "cap_blocked" => PricingResult.CapBlocked,
           _ => PricingResult.NoData,
         },
@@ -290,6 +291,7 @@ namespace Scrooge.Windows
               PricingResult.CapBlocked => ScroogeColors.Warning,
               PricingResult.UndercutTooDeep => ScroogeColors.Warning,
               PricingResult.UpwardHeld => ScroogeColors.Warning,
+              PricingResult.LaneHeld => ScroogeColors.Amber,
               _ => ScroogeColors.Muted,
             }
             : ScroogeColors.Warning;
@@ -465,6 +467,8 @@ namespace Scrooge.Windows
           $"Undercut Too Deep ({item.PriceChangePercent:F0}%)",
         PricingResult.UpwardHeld =>
           $"Upward Held (market {item.MbPrice:N0} exceeds {Plugin.Configuration.UpwardRepriceMultiplier:0.#}x own-sales sanity; listed {item.CurrentListingPrice:N0})",
+        PricingResult.LaneHeld =>
+          item.Lane?.Evidence is { } ev ? $"Held (thin history) — {ev}" : "Held (thin history)",
         PricingResult.NoData => "No Data (no listings)",
         _ => "Unknown"
       };
