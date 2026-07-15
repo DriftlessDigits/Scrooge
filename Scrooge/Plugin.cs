@@ -193,6 +193,7 @@ public sealed class Plugin : IDalamudPlugin
     try
     {
       UniversalisStats.Initialize();
+      UniversalisHistory.Initialize();
     }
     catch (Exception ex)
     {
@@ -241,6 +242,7 @@ public sealed class Plugin : IDalamudPlugin
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");
     UniversalisStats.Dispose();
+    UniversalisHistory.Dispose();
     _ventureReturnTracker?.Dispose();
     _dtrToday?.Dispose();
     _chatCatchallTracker?.Dispose();

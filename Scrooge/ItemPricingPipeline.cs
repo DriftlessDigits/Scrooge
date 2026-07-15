@@ -394,9 +394,31 @@ internal sealed class ItemPricingPipeline : IDisposable
           HalfLifeDays = LaneHalfLife.Resolve(currentItem.ItemId),
         };
         var hqPricing = Plugin.Configuration.HQ && currentItem.IsHq;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var sales = _mbHandler.GetLaneSales(currentItem.ItemId);
-        var lane = LanePricing.BuildLane(sales, hqPricing, laneCfg,
-          DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var lane = LanePricing.BuildLane(sales, hqPricing, laneCfg, now);
+
+        // Community fallback (lane design call #6): when the LOCAL lane is too
+        // thin to price, consult Universalis DC-scope SALE history as a labeled
+        // community lane before holding. Never blocks the pinch — a cache hit
+        // upgrades the lane this pass; a miss queues the fetch (warm next pass)
+        // and we hold-and-flag. Stale/absent community data = silent (TryGet
+        // returns null). Foreign listings never price anything, ever.
+        if (lane == null || lane.SampleCount < laneCfg.MinHistorySamples)
+        {
+          var community = UniversalisHistory.TryGet(currentItem.ItemId);
+          if (community != null)
+          {
+            var communityLane = LanePricing.BuildLane(community, hqPricing, laneCfg, now, LaneSource.Community);
+            if (communityLane != null && communityLane.SampleCount >= laneCfg.MinHistorySamples)
+              lane = communityLane;
+          }
+          else
+          {
+            currentItem.CommunityQueued = true; // miss queued a fetch; warm next pinch
+          }
+        }
+
         var board = _mbHandler.GetBoard(currentItem.ItemId, hqPricing);
         laneBoardCount = board.Count;
         var velocity = _mbHandler.GetPacketVelocityPerDay(currentItem.ItemId)
@@ -654,9 +676,12 @@ internal sealed class ItemPricingPipeline : IDisposable
         // identically to thin history at this point; MbTimedOut distinguishes
         // it so the flag says "didn't respond" instead of "too thin".
         var timedOut = currentItem?.MbTimedOut == true;
+        var thin = currentItem?.Lane?.Evidence ?? "history too thin to build a lane";
         var evidence = timedOut
           ? $"market board didn't respond ({currentItem!.MbAttempts} attempts) — held; will retry next pinch."
-          : currentItem?.Lane?.Evidence ?? "history too thin to build a lane";
+          : currentItem?.CommunityQueued == true
+            ? $"{thin} Checking community sales history — will retry next pinch."
+            : thin;
         var heldLine = LaneNote.Line(cleanName, currentItem?.IsHq ?? false,
           LaneNote.Transition(currentItem?.CurrentListingPrice, null), "thin", evidence);
         Plugin.PinchRunLog?.AddEntry(ItemOutcome.LaneHeld, cleanName, heldLine);

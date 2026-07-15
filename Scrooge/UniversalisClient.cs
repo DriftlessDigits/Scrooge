@@ -22,16 +22,33 @@ internal readonly record struct UniversalisStat(
   long? LastUploadAt);
 
 /// <summary>
+/// One item's DC-scope SALE history from Universalis — the labeled community
+/// fallback lane. Unlike the velocity path, this deliberately reads sale
+/// prices (as a lane of settled community sales) because it only ever fires
+/// when the local lane is too thin to price at all. Foreign LISTINGS are never
+/// read; only settled sales. Null LastUploadAt = Universalis has no data.
+/// </summary>
+internal readonly record struct UniversalisHistoryResult(
+  uint ItemId,
+  IReadOnlyList<LaneSale> Sales,
+  long? LastUploadAt);
+
+/// <summary>
 /// The raw Universalis REST consumer (universalis.app, community-crowdsourced
 /// market data). Design rules: consumer only (never uploads), batch endpoint
-/// (up to 100 items per request), polite pacing owned by the caller. Parses
-/// only what the advisor consumes: per-quality sale velocity, most recent
-/// sale time, and lastUploadTime for the trust gate. Prices are deliberately
-/// not read — pricing stays in-game.
+/// (up to 100 items per request), polite pacing owned by the caller. The
+/// velocity path (<see cref="FetchAsync"/>) parses only per-quality sale
+/// velocity, most recent sale time, and lastUploadTime — prices deliberately
+/// not read. The DC-scope history path (<see cref="FetchHistoryAsync"/>) is
+/// the one sanctioned price-reading exception: a community sale lane used only
+/// when the local lane is too thin to price.
 /// </summary>
 internal static class UniversalisClient
 {
   internal const int MaxBatch = 100;
+
+  /// <summary>Sale entries to pull per item for the community lane — enough to clear MinHistorySamples with headroom.</summary>
+  internal const int HistoryEntries = 20;
 
   private static readonly HttpClient Http = CreateClient();
 
@@ -88,6 +105,78 @@ internal static class UniversalisClient
     }
 
     return stats;
+  }
+
+  /// <summary>
+  /// Fetches DC-scope SALE history for up to MaxBatch items. <paramref name="scope"/>
+  /// is a Universalis world/DC/region name (data-center name for the community
+  /// fallback, e.g. "Aether"). Items Universalis has never seen come back with
+  /// null LastUploadAt and no sales. Throws on network/parse failure — the
+  /// caller owns retry/back-off.
+  /// </summary>
+  internal static async Task<List<UniversalisHistoryResult>> FetchHistoryAsync(
+    string scope, IReadOnlyList<uint> itemIds, CancellationToken token)
+  {
+    var url = $"https://universalis.app/api/v2/history/{scope}/{string.Join(",", itemIds)}?entriesToReturn={HistoryEntries}";
+
+    using var response = await Http.GetAsync(url, token).ConfigureAwait(false);
+
+    // A single unknown item 404s instead of listing it as unresolved.
+    if (response.StatusCode == HttpStatusCode.NotFound && itemIds.Count == 1)
+      return [new UniversalisHistoryResult(itemIds[0], Array.Empty<LaneSale>(), null)];
+
+    response.EnsureSuccessStatusCode();
+
+    await using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+    using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: token).ConfigureAwait(false);
+
+    var results = new List<UniversalisHistoryResult>(itemIds.Count);
+    var root = doc.RootElement;
+
+    if (root.TryGetProperty("items", out var items))
+    {
+      foreach (var prop in items.EnumerateObject())
+        if (ParseHistory(prop.Value) is { } r)
+          results.Add(r);
+
+      if (root.TryGetProperty("unresolvedItems", out var unresolved)
+          && unresolved.ValueKind == JsonValueKind.Array)
+        foreach (var el in unresolved.EnumerateArray())
+          if (el.TryGetUInt32(out var id))
+            results.Add(new UniversalisHistoryResult(id, Array.Empty<LaneSale>(), null));
+    }
+    else if (ParseHistory(root) is { } single)
+    {
+      results.Add(single);
+    }
+
+    return results;
+  }
+
+  private static UniversalisHistoryResult? ParseHistory(JsonElement item)
+  {
+    if (!item.TryGetProperty("itemID", out var idEl) || !idEl.TryGetUInt32(out var id))
+      return null;
+
+    // lastUploadTime arrives in milliseconds; 0 = never uploaded.
+    long? lastUpload = item.TryGetProperty("lastUploadTime", out var upEl)
+      && upEl.TryGetInt64(out var uploadMs) && uploadMs > 0
+      ? uploadMs / 1000 : null;
+
+    var sales = new List<LaneSale>();
+    if (item.TryGetProperty("entries", out var entries)
+        && entries.ValueKind == JsonValueKind.Array)
+      foreach (var entry in entries.EnumerateArray())
+      {
+        // History-entry timestamps are unix SECONDS (unlike lastUploadTime).
+        var price = entry.TryGetProperty("pricePerUnit", out var pEl) && pEl.TryGetInt64(out var p) ? p : 0;
+        var ts = entry.TryGetProperty("timestamp", out var tEl) && tEl.TryGetInt64(out var t) ? t : 0;
+        var hq = entry.TryGetProperty("hq", out var hEl) && hEl.ValueKind == JsonValueKind.True;
+        if (price > 0 && ts > 0)
+          sales.Add(new LaneSale(price, ts, hq));
+      }
+
+    return new UniversalisHistoryResult(id, sales, lastUpload);
   }
 
   private static UniversalisStat? ParseItem(JsonElement item)

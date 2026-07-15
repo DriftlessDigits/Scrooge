@@ -134,6 +134,9 @@ internal class PricingItem
   /// <summary>True when every MB request attempt elapsed with no response — hold and retry next pinch.</summary>
   public bool MbTimedOut { get; set; }
 
+  /// <summary>True when the local lane was thin and a community history fetch was queued this pass (warm next pinch).</summary>
+  public bool CommunityQueued { get; set; }
+
   /// <summary>The lane decision for this item (null when the lane block didn't run: cache hit, bypass, hotkey).</summary>
   public LaneDecision? Lane { get; set; }
 

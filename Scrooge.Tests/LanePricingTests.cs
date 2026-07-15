@@ -369,6 +369,31 @@ public class LaneDecisionTests
     Assert.Equal(1_100, d.Anchor);
     Assert.Contains("community", d.Evidence, StringComparison.OrdinalIgnoreCase);
   }
+
+  [Fact]
+  public void CommunityLane_BuiltFromSales_IsLabeledCommunitySource()
+  {
+    // BuildLane is the pure seam the DC fallback rides: hand it community sales
+    // and LaneSource.Community, and the built lane carries the label through.
+    var sales = L.Sales(2, hq: false, 900, 1_000, 1_100);
+    var lane = LanePricing.BuildLane(sales, isHq: false, L.Cfg(), L.Now, LaneSource.Community);
+
+    Assert.NotNull(lane);
+    Assert.Equal(LaneSource.Community, lane!.Source);
+    Assert.Equal(1_000, lane.Median);
+  }
+
+  [Fact]
+  public void CommunityLane_TooThin_StillHolds()
+  {
+    // A community lane below MinHistorySamples is no rescue: hold, don't guess.
+    // (The pipeline only upgrades to a community lane once it clears the bar;
+    // this proves Decide refuses a thin one exactly like a thin local lane.)
+    var d = LanePricing.Decide(L.Board(1_100), L.Lane(1_200, 2, LaneSource.Community), null, L.Cfg());
+
+    Assert.Equal(LaneOutcome.HeldThinHistory, d.Outcome);
+    Assert.Null(d.Anchor);
+  }
 }
 
 /// <summary>
