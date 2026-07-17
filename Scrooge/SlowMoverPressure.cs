@@ -53,6 +53,21 @@ internal static class SlowMoverPressure
       return newPrice;
     }
 
+    // Lane-priced items: the verdict IS the position (undercut sits just
+    // under the cheapest real competitor, owned asks the premium, races wait
+    // AT the floor). Cutting below a chosen position changes nothing in a
+    // unit-price-sorted market except the margin — the ladder re-applied a
+    // constant 5-10% discount against the stable lane price every pinch and
+    // silently violated the race floor and the owned premium (07-16 receipts:
+    // Astral Silk applied 235 under its own 248 floor-wait, Tea Brick never
+    // asked its 338 premium). Deepen predates the lane; on lane verdicts it
+    // yields. "Not selling at the model price" = stale-lane doubt, which is
+    // receipts/experiment-arm territory (M4), not a blanket discount.
+    // Price-cache items yield too: the cached price already carries the
+    // first retainer's decision — pressuring it again would double-cut.
+    if (item.Lane != null || item.FromPriceCache)
+      return newPrice;
+
     // Alive market: my price is the blocker - deepen by the ladder.
     var pct = ageDays >= 14 ? cfg.PressureDeepenMaxPct
       : ageDays >= cfg.PressureAfterDays ? cfg.PressureDeepenPct
