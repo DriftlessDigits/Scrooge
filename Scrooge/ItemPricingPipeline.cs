@@ -421,6 +421,25 @@ internal sealed class ItemPricingPipeline : IDisposable
 
         var board = _mbHandler.GetBoard(currentItem.ItemId, hqPricing);
         laneBoardCount = board.Count;
+
+        // Evidence snapshot for decision memory: the world this hold is judged
+        // against. READS ONLY (board packet + settled sales already in hand — no
+        // listings-table write). Cheapest foreign board price is the undercut
+        // probe; newest quality-matched sale + lane sample count are the "did
+        // history grow" probe; the standing listing is the manual-price anchor.
+        long cheapestForeign = 0;
+        foreach (var listing in board)
+          if (!listing.IsOwn && (cheapestForeign == 0 || listing.UnitPrice < cheapestForeign))
+            cheapestForeign = listing.UnitPrice;
+        long latestSale = 0;
+        foreach (var s in sales)
+          if (s.IsHq == hqPricing && s.Timestamp > latestSale)
+            latestSale = s.Timestamp;
+        currentItem.LaneEvidence = new TriageMemory.EvidenceSnapshot(
+          currentItem.CurrentListingPrice ?? 0,
+          lane?.SampleCount ?? 0,
+          latestSale,
+          cheapestForeign);
         var velocity = _mbHandler.GetPacketVelocityPerDay(currentItem.ItemId)
           ?? UniversalisStats.TryGet(currentItem.ItemId, currentItem.IsHq)?.Velocity;
 
@@ -539,6 +558,26 @@ internal sealed class ItemPricingPipeline : IDisposable
       // Triage collection — save skipped items for post-run review
       if (currentItem != null && RunData.IsTriageResult(result))
         Plugin.CurrentRun?.TriageItems.Add(currentItem);
+
+      // Self-heal (M2): this pass processed the item, so any open flag on its
+      // (item, retainer) whose rule did NOT re-fire has resolved — close it.
+      // Skipped/Banned items were never really evaluated (mannequin, bound,
+      // ban list), so they neither raise nor heal. Dead-producer legacy flags
+      // (upward_held/outlier_warn) fall out here: nothing raises them, so the
+      // moment their item is pinched they sweep.
+      if (currentItem != null && currentItem.ItemId != 0
+          && result != PricingResult.Skipped && result != PricingResult.Banned)
+      {
+        try
+        {
+          GilStorage.SelfHealTriageFlags(currentItem.ItemId, currentItem.IsHq,
+            currentItem.RetainerName, currentItem.RaisedFlagReasons);
+        }
+        catch (Exception ex)
+        {
+          Svc.Log.Warning($"[Triage] Self-heal sweep failed: {ex.Message}");
+        }
+      }
 
       if (result != PricingResult.VendorSell)
         Plugin.PinchRunLog.IncrementProcessed();
@@ -688,12 +727,17 @@ internal sealed class ItemPricingPipeline : IDisposable
         Communicator.PrintLaneHeld(itemName, evidence);
         if (currentItem != null && currentItem.ItemId != 0)
         {
+          // The lane_held rule fired — record it so the finally sweep keeps
+          // (rather than heals) this flag, and evidence-key the upsert so a
+          // still-thin item that changed nothing stays silent.
+          currentItem.RaisedFlagReasons.Add("lane_held");
           try
           {
             GilStorage.UpsertTriageFlag(currentItem.ItemId, currentItem.IsHq,
               currentItem.RetainerName, currentItem.SlotIndex, "lane_held",
               timedOut ? $"Held (MB timeout) — {evidence}" : $"Held (thin history) — {evidence}",
-              currentItem.CurrentListingPrice ?? 0, 0);
+              currentItem.CurrentListingPrice ?? 0, 0,
+              currentItem.LaneEvidence, Plugin.Configuration.LaneMinHistorySamples);
           }
           catch (Exception ex)
           {

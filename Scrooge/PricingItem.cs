@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Scrooge;
 
@@ -139,6 +140,21 @@ internal class PricingItem
 
   /// <summary>The lane decision for this item (null when the lane block didn't run: cache hit, bypass, hotkey).</summary>
   public LaneDecision? Lane { get; set; }
+
+  /// <summary>
+  /// Snapshot of the world this pass was judged against (standing listing, sale
+  /// count, newest sale, cheapest competitor). Built in the lane block, read at
+  /// the flag-raise site so a held flag remembers what it was asked about. Null
+  /// when the lane block didn't run.
+  /// </summary>
+  public TriageMemory.EvidenceSnapshot? LaneEvidence { get; set; }
+
+  /// <summary>
+  /// Triage reasons whose rule FIRED this pass (lane_held, slow_evict). Drives
+  /// self-heal: on the finally sweep, any open flag on this (item, retainer)
+  /// whose reason is NOT here has resolved and closes itself.
+  /// </summary>
+  public HashSet<string> RaisedFlagReasons { get; } = new();
 
   /// <summary>Action assigned by the user in the triage window. Used by the orchestrator.</summary>
   public TriageAction QueuedAction { get; set; } = TriageAction.None;

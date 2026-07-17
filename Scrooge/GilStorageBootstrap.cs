@@ -120,6 +120,18 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 16);
     }
 
+    if (version < 17)
+    {
+      MigrateV17(connection);
+      SetSchemaVersion(connection, 17);
+    }
+
+    if (version < 18)
+    {
+      MigrateV18(connection);
+      SetSchemaVersion(connection, 18);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -1002,6 +1014,108 @@ internal class GilStorageBootstrap
       cmd.ExecuteNonQuery();
 
     Svc.Log.Info("[Scrooge] V16 migration: universalis_stats cache table");
+  }
+
+  /// <summary>
+  /// V17: decision memory on triage_flags. Adds an evidence column — the
+  /// snapshot of the world a hold was judged against (standing listing, sale
+  /// count, newest sale, cheapest competitor) — so a re-flag can ask "did
+  /// anything change?" instead of firing every pinch. The ALTER is guarded so
+  /// a fresh DB that already has the column (future CreateTables) migrates
+  /// cleanly.
+  ///
+  /// Same migration one-shots the lane-rewrite legacy: upward_held and
+  /// outlier_warn lost their producer code in branch 1, so no processing pass
+  /// will ever re-confirm them. The self-heal sweep clears the ones whose item
+  /// gets pinched again; this closes the strays whose item never does, so the
+  /// triage inbox stops rendering dead questions immediately rather than
+  /// waiting on a trigger that may never fire. Idempotent — a second run
+  /// matches zero open rows.
+  /// </summary>
+  private static void MigrateV17(SqliteConnection connection)
+  {
+    var hasColumn = false;
+    using (var check = new SqliteCommand("PRAGMA table_info(triage_flags);", connection))
+    using (var reader = check.ExecuteReader())
+      while (reader.Read())
+        if (reader.GetString(1) == "evidence") { hasColumn = true; break; }
+
+    if (!hasColumn)
+      using (var alter = new SqliteCommand(
+        "ALTER TABLE triage_flags ADD COLUMN evidence TEXT NOT NULL DEFAULT '';", connection))
+        alter.ExecuteNonQuery();
+
+    using var cleanup = new SqliteCommand(
+      @"UPDATE triage_flags
+        SET status = 'resolved', acted_at = @now
+        WHERE status = 'open' AND reason IN ('upward_held', 'outlier_warn')",
+      connection);
+    cleanup.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    var closed = cleanup.ExecuteNonQuery();
+
+    Svc.Log.Info($"[Scrooge] V17 migration: triage_flags.evidence column + closed {closed} dead-producer flags (upward_held/outlier_warn)");
+  }
+
+  /// <summary>
+  /// V18: dedupes open triage flags. DecideUpsert treated a legacy row's empty
+  /// evidence as "no open flag" and INSERTED a second row next to it (fixed in
+  /// the same commit), leaving duplicate open questions per
+  /// (item, hq, retainer, reason) key. One-shot: the keeper is the OLDEST row
+  /// ("held since" stays honest), it adopts the newest non-empty evidence +
+  /// detail from its group, and the younger duplicates are deleted — they are
+  /// bug artifacts describing the same open question, not player history.
+  /// Idempotent — a deduped table matches zero rows.
+  /// </summary>
+  private static void MigrateV18(SqliteConnection connection)
+  {
+    // Keepers with a legacy '' snapshot adopt the best evidence in their group
+    // (newest evidenced duplicate) before the duplicates are removed.
+    using (var adopt = new SqliteCommand(
+      @"UPDATE triage_flags
+        SET evidence = (SELECT t2.evidence FROM triage_flags t2
+                        WHERE t2.status = 'open'
+                          AND t2.item_id = triage_flags.item_id
+                          AND t2.is_hq = triage_flags.is_hq
+                          AND t2.retainer_name = triage_flags.retainer_name
+                          AND t2.reason = triage_flags.reason
+                          AND t2.evidence <> ''
+                        ORDER BY t2.created_at DESC, t2.id DESC LIMIT 1),
+            detail   = (SELECT t2.detail FROM triage_flags t2
+                        WHERE t2.status = 'open'
+                          AND t2.item_id = triage_flags.item_id
+                          AND t2.is_hq = triage_flags.is_hq
+                          AND t2.retainer_name = triage_flags.retainer_name
+                          AND t2.reason = triage_flags.reason
+                          AND t2.evidence <> ''
+                        ORDER BY t2.created_at DESC, t2.id DESC LIMIT 1)
+        WHERE status = 'open' AND evidence = ''
+          AND EXISTS (SELECT 1 FROM triage_flags t2
+                      WHERE t2.status = 'open'
+                        AND t2.item_id = triage_flags.item_id
+                        AND t2.is_hq = triage_flags.is_hq
+                        AND t2.retainer_name = triage_flags.retainer_name
+                        AND t2.reason = triage_flags.reason
+                        AND t2.evidence <> '')",
+      connection))
+      adopt.ExecuteNonQuery();
+
+    // Delete every open row that has an OLDER open sibling on the same key.
+    using var dedup = new SqliteCommand(
+      @"DELETE FROM triage_flags
+        WHERE status = 'open'
+          AND EXISTS (SELECT 1 FROM triage_flags t2
+                      WHERE t2.status = 'open'
+                        AND t2.item_id = triage_flags.item_id
+                        AND t2.is_hq = triage_flags.is_hq
+                        AND t2.retainer_name = triage_flags.retainer_name
+                        AND t2.reason = triage_flags.reason
+                        AND (t2.created_at < triage_flags.created_at
+                             OR (t2.created_at = triage_flags.created_at
+                                 AND t2.id < triage_flags.id)))",
+      connection);
+    var removed = dedup.ExecuteNonQuery();
+
+    Svc.Log.Info($"[Scrooge] V18 migration: deduped triage_flags — removed {removed} duplicate open flags (oldest row kept, evidence adopted)");
   }
 
   // =========================================================================

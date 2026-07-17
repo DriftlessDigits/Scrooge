@@ -35,6 +35,7 @@
     <Compile Include="..\Scrooge\ListingGate.cs" Link="Linked\ListingGate.cs" />
     <Compile Include="..\Scrooge\DesynthSkillupColor.cs" Link="Linked\DesynthSkillupColor.cs" />
     <Compile Include="..\Scrooge\LanePricing.cs" Link="Linked\LanePricing.cs" />
+    <Compile Include="..\Scrooge\TriageMemory.cs" Link="Linked\TriageMemory.cs" />
   </ItemGroup>
 
 </Project>
