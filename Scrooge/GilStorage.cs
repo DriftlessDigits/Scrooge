@@ -1084,6 +1084,7 @@ internal static class GilStorage
     {
       evidenceStr = snap.Serialize();
       action = TriageMemory.DecideUpsert(ReadOpenFlagEvidence(itemId, isHq, retainerName, reason), snap, minHistorySamples);
+      Svc.Log.Debug($"[Triage] {reason} item {itemId}{(isHq ? " HQ" : "")} @ {retainerName}: {action} (ev {evidenceStr})");
       if (action == TriageMemory.FlagAction.Silent)
         return; // same unanswered question - don't churn the row or the clock
     }
@@ -1128,20 +1129,29 @@ internal static class GilStorage
     insert.ExecuteNonQuery();
   }
 
-  /// <summary>The evidence snapshot stored on the open flag for a key, or null when none is open.</summary>
+  /// <summary>
+  /// The evidence snapshot stored on the open flag for a key. NULL means no
+  /// open row exists; an empty string means a row exists WITHOUT a snapshot
+  /// (pre-V17 legacy) — DecideUpsert adopts that row rather than duplicating
+  /// it. Deterministic pick: prefer an evidenced row, then the newest, so a
+  /// not-yet-deduped pair never feeds a legacy '' to the gate.
+  /// </summary>
   private static string? ReadOpenFlagEvidence(uint itemId, bool isHq, string retainerName, string reason)
   {
     using var cmd = new SqliteCommand(
       @"SELECT evidence FROM triage_flags
         WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
-          AND reason = @reason AND status = 'open' LIMIT 1",
+          AND reason = @reason AND status = 'open'
+        ORDER BY (evidence <> '') DESC, created_at DESC, id DESC LIMIT 1",
       _connection);
     cmd.Parameters.AddWithValue("@iid", (long)itemId);
     cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
     cmd.Parameters.AddWithValue("@ret", retainerName);
     cmd.Parameters.AddWithValue("@reason", reason);
     var result = cmd.ExecuteScalar();
-    return result == null || result == DBNull.Value ? null : (string)result;
+    return result == null ? null
+      : result == DBNull.Value ? "" // row exists, no snapshot — adopt, don't duplicate
+      : (string)result;
   }
 
   /// <summary>

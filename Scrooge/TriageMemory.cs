@@ -172,16 +172,24 @@ internal static class TriageMemory
   }
 
   /// <summary>
-  /// The upsert gate for an evidence-keyed flag. No stored evidence means no
-  /// open flag → Insert. Otherwise the change kind decides: only a genuinely
-  /// moved world (new sales) re-asks; a manual reprice or an unchanged world
-  /// stays silent so the "held since" clock and the inbox stay honest.
+  /// The upsert gate for an evidence-keyed flag. Null stored evidence means no
+  /// open row exists → Insert. A non-null but unparseable value (pre-V17 legacy
+  /// rows carry '', corruption is conceivable) means an open row EXISTS without
+  /// a usable snapshot → Refresh, adopting that row and stamping evidence into
+  /// it. Insert here would file the same question twice (the 07-16 soak found
+  /// exactly those duplicate pairs). Otherwise the change kind decides: only a
+  /// genuinely moved world (new sales) re-asks; a manual reprice or an
+  /// unchanged world stays silent so the "held since" clock and the inbox stay
+  /// honest.
   /// </summary>
   internal static FlagAction DecideUpsert(string? storedEvidence, EvidenceSnapshot current, int minHistorySamples)
   {
+    if (storedEvidence is null)
+      return FlagAction.Insert;
+
     var prior = EvidenceSnapshot.TryParse(storedEvidence);
     if (prior is not EvidenceSnapshot p)
-      return FlagAction.Insert;
+      return FlagAction.Refresh;
 
     return Classify(p, current, minHistorySamples) switch
     {

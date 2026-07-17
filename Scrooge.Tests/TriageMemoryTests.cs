@@ -162,20 +162,23 @@ public class TriageMemoryTests
   }
 
   [Fact]
-  public void DecideUpsert_InsertsWhenNoStoredEvidence()
+  public void DecideUpsert_InsertsOnlyWhenNoOpenRowExists()
   {
+    // Null is the storage layer's "no open row" signal — the only Insert case.
     var snap = new EvidenceSnapshot(500, 2, 1000, 0);
     Assert.Equal(FlagAction.Insert, DecideUpsert(null, snap, MinSamples));
-    Assert.Equal(FlagAction.Insert, DecideUpsert("", snap, MinSamples));
   }
 
-  [Fact]
-  public void DecideUpsert_RefreshesWhenStoredEvidenceIsUnparseable()
+  [Theory]
+  [InlineData("")]          // pre-V17 legacy row (evidence column defaulted '')
+  [InlineData("corrupt")]   // garbage
+  [InlineData("L1|n2|s3")]  // too few fields
+  public void DecideUpsert_AdoptsExistingRowWhenEvidenceUnparseable(string stored)
   {
-    // Fail toward re-asking: a corrupt stored value must not silently swallow
-    // a live hold. An unparseable prior parses to null -> Insert (safe: a
-    // fresh row rather than a lost one).
+    // A non-null stored value means an open row EXISTS, snapshot or not.
+    // Refresh adopts it (stamping real evidence in); Insert here filed the
+    // same question twice — the duplicate-flag bug the 07-16 soak caught.
     var snap = new EvidenceSnapshot(500, 2, 1000, 0);
-    Assert.Equal(FlagAction.Insert, DecideUpsert("corrupt", snap, MinSamples));
+    Assert.Equal(FlagAction.Refresh, DecideUpsert(stored, snap, MinSamples));
   }
 }
