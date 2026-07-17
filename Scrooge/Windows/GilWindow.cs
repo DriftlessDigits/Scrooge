@@ -439,11 +439,11 @@ internal sealed class GilWindow: Window
       ImGui.TextDisabled("Green source price = the item sells for more than its materials; consider listing instead.");
       if (ImGui.BeginTable("DesynthSources", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
-        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
-        ImGui.TableSetupColumn("Desynths", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 60);
-        ImGui.TableSetupColumn("Yield / attempt", ImGuiTableColumnFlags.None, 100);
-        ImGui.TableSetupColumn("Item last sale", ImGuiTableColumnFlags.None, 100);
-        ImGui.TableSetupColumn("GC Seals", ImGuiTableColumnFlags.None, 70);
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 200);
+        ImGui.TableSetupColumn("Desynths", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending | ImGuiTableColumnFlags.WidthStretch, 60);
+        ImGui.TableSetupColumn("Yield / attempt", ImGuiTableColumnFlags.WidthStretch, 100);
+        ImGui.TableSetupColumn("Item last sale", ImGuiTableColumnFlags.WidthStretch, 100);
+        ImGui.TableSetupColumn("GC Seals", ImGuiTableColumnFlags.WidthStretch, 70);
         ImGui.TableHeadersRow();
 
         var (col, asc) = GetSortSpec();
@@ -500,10 +500,10 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTable("DesynthYields", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
-        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.None, 90);
-        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 180);
-        ImGui.TableSetupColumn("Yield", ImGuiTableColumnFlags.None, 180);
-        ImGui.TableSetupColumn("Est. Value", ImGuiTableColumnFlags.None, 90);
+        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.WidthStretch, 90);
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthStretch, 180);
+        ImGui.TableSetupColumn("Yield", ImGuiTableColumnFlags.WidthStretch, 180);
+        ImGui.TableSetupColumn("Est. Value", ImGuiTableColumnFlags.WidthStretch, 90);
         ImGui.TableHeadersRow();
 
         foreach (var y in _cachedDesynthYields!)
@@ -583,10 +583,10 @@ internal sealed class GilWindow: Window
 
     if (ImGui.BeginTable("GoalHistory", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
     {
-      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.None, 90);
-      ImGui.TableSetupColumn("Goal", ImGuiTableColumnFlags.None, 110);
-      ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.None, 110);
-      ImGui.TableSetupColumn("Detail", ImGuiTableColumnFlags.None, 180);
+      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.WidthStretch, 90);
+      ImGui.TableSetupColumn("Goal", ImGuiTableColumnFlags.WidthStretch, 110);
+      ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthStretch, 110);
+      ImGui.TableSetupColumn("Detail", ImGuiTableColumnFlags.WidthStretch, 180);
       ImGui.TableHeadersRow();
 
       var culture = System.Globalization.CultureInfo.CurrentCulture;
@@ -688,9 +688,9 @@ internal sealed class GilWindow: Window
     if (ImGui.BeginTable("DailyChange", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.ScrollY,
         new Vector2(-1, tableHeight)))
     {
-      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.None, 100);
-      ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.None, 120);
-      ImGui.TableSetupColumn("Change", ImGuiTableColumnFlags.None, 100);
+      ImGui.TableSetupColumn("Date", ImGuiTableColumnFlags.WidthStretch, 100);
+      ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.WidthStretch, 120);
+      ImGui.TableSetupColumn("Change", ImGuiTableColumnFlags.WidthStretch, 100);
       ImGui.TableSetupScrollFreeze(0, 1);
       ImGui.TableHeadersRow();
 
@@ -909,11 +909,11 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTable("RecentSales", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
-        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
-        ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.None, 30);
-        ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 80);
-        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 80);
-        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 100);
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 200);
+        ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthStretch, 30);
+        ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.WidthStretch, 80);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.WidthStretch, 80);
+        ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending | ImGuiTableColumnFlags.WidthStretch, 100);
         ImGui.TableHeadersRow();
 
         var (col, asc) = GetSortSpec();
@@ -982,9 +982,9 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTable("CatMacro", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
-        ImGui.TableSetupColumn("Group", ImGuiTableColumnFlags.None, 150);
-        ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 60);
-        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.DefaultSort, 100);
+        ImGui.TableSetupColumn("Group", ImGuiTableColumnFlags.WidthStretch, 150);
+        ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.WidthStretch, 60);
+        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.WidthStretch, 100);
         ImGui.TableHeadersRow();
 
         var (col, asc) = GetSortSpec();
@@ -1019,9 +1019,9 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTable("CatMain", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
-        ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.None, 150);
-        ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 60);
-        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.None, 100);
+        ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthStretch, 150);
+        ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.WidthStretch, 60);
+        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.WidthStretch, 100);
         ImGui.TableHeadersRow();
 
         foreach (var g in mainGroups)
@@ -1046,9 +1046,9 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTable("CatMicro", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
-        ImGui.TableSetupColumn("Item Category", ImGuiTableColumnFlags.None, 150);
-        ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 60);
-        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.None, 100);
+        ImGui.TableSetupColumn("Item Category", ImGuiTableColumnFlags.WidthStretch, 150);
+        ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.WidthStretch, 60);
+        ImGui.TableSetupColumn("Total Gil", ImGuiTableColumnFlags.WidthStretch, 100);
         ImGui.TableHeadersRow();
 
         foreach (var row in tree.OrderByDescending(r => r.Gil))
@@ -1081,11 +1081,11 @@ internal sealed class GilWindow: Window
 
     if (ImGui.BeginTable("Retainers", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
     {
-      ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.DefaultSort, 120);
-      ImGui.TableSetupColumn("Last Sale", ImGuiTableColumnFlags.None, 70);
-      ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.None, 50);
-      ImGui.TableSetupColumn("Gil Earned", ImGuiTableColumnFlags.None, 100);
-      ImGui.TableSetupColumn("Avg Listing Age", ImGuiTableColumnFlags.None, 90);
+      ImGui.TableSetupColumn("Retainer", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.WidthStretch, 120);
+      ImGui.TableSetupColumn("Last Sale", ImGuiTableColumnFlags.WidthStretch, 70);
+      ImGui.TableSetupColumn("Sales", ImGuiTableColumnFlags.WidthStretch, 50);
+      ImGui.TableSetupColumn("Gil Earned", ImGuiTableColumnFlags.WidthStretch, 100);
+      ImGui.TableSetupColumn("Avg Listing Age", ImGuiTableColumnFlags.WidthStretch, 90);
       ImGui.TableHeadersRow();
 
       var (col, asc) = GetSortSpec();
@@ -1124,10 +1124,10 @@ internal sealed class GilWindow: Window
     {
       if (ImGui.BeginTable("SlowMovers", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable))
       {
-        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.None, 200);
-        ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.None, 80);
-        ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.None, 100);
-        ImGui.TableSetupColumn("Listed", ImGuiTableColumnFlags.DefaultSort, 60);
+        ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 200);
+        ImGui.TableSetupColumn("Price", ImGuiTableColumnFlags.WidthStretch, 80);
+        ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthStretch, 100);
+        ImGui.TableSetupColumn("Listed", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.WidthStretch, 60);
         ImGui.TableHeadersRow();
 
         var (col, asc) = GetSortSpec();
@@ -1230,11 +1230,11 @@ internal sealed class GilWindow: Window
         ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.Sortable | ImGuiTableFlags.ScrollY,
         new Vector2(-1, tableHeight)))
     {
-      ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending, 110);
-      ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 100);
-      ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.None, 150);
-      ImGui.TableSetupColumn("Amount", ImGuiTableColumnFlags.None, 100);
-      ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.None, 40);
+      ImGui.TableSetupColumn("When", ImGuiTableColumnFlags.DefaultSort | ImGuiTableColumnFlags.PreferSortDescending | ImGuiTableColumnFlags.WidthStretch, 110);
+      ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthStretch, 100);
+      ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch, 150);
+      ImGui.TableSetupColumn("Amount", ImGuiTableColumnFlags.WidthStretch, 100);
+      ImGui.TableSetupColumn("Qty", ImGuiTableColumnFlags.WidthStretch, 40);
       ImGui.TableSetupScrollFreeze(0, 1);
       ImGui.TableHeadersRow();
 
@@ -1367,9 +1367,9 @@ internal sealed class GilWindow: Window
       ImGui.TextColored(ScroogeColors.Earned, "Income");
       if (ImGui.BeginTable("EvsEarned", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
-        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
-        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 120);
-        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthStretch, 150);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.WidthStretch, 120);
+        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.WidthStretch, 60);
         ImGui.TableHeadersRow();
 
         foreach (var row in earned)
@@ -1389,9 +1389,9 @@ internal sealed class GilWindow: Window
       ImGui.TextColored(ScroogeColors.Spent, "Expenses");
       if (ImGui.BeginTable("EvsSpent", 3, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH))
       {
-        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.None, 150);
-        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.None, 120);
-        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.None, 60);
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthStretch, 150);
+        ImGui.TableSetupColumn("Total", ImGuiTableColumnFlags.WidthStretch, 120);
+        ImGui.TableSetupColumn("Count", ImGuiTableColumnFlags.WidthStretch, 60);
         ImGui.TableHeadersRow();
 
         foreach (var row in spent)

@@ -60,6 +60,12 @@ internal sealed class ItemPricingPipeline : IDisposable
   {
     _hotKeyPrice = null;
     SlowMoverPressure.ResetRun();
+
+    // Warm the community-history cache for the standing thin-history items so
+    // the fallback can deploy THIS run — the cache is session-scoped, so the
+    // old "warm next pinch" only ever paid out on a second pinch per session.
+    try { UniversalisHistory.Prefetch(GilStorage.GetOpenLaneHeldItemIds()); }
+    catch (Exception ex) { Svc.Log.Debug($"[UniversalisHistory] prefetch skipped: {ex.Message}"); }
   }
 
   /// <summary>Clears the cached price lookup table. Called when price floor settings change.</summary>

@@ -92,7 +92,7 @@ internal sealed class DesynthOrchestrator : IDisposable
         }
         catch (Exception ex)
         {
-          Svc.Log.Error(ex, "[Scrooge] Failed to update desynth_runs row on abort");
+          Svc.Log.Error(ex, "Failed to update desynth_runs row on abort");
         }
       }
       Plugin.CurrentRun = null;
@@ -137,7 +137,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     }
     catch (Exception ex)
     {
-      Svc.Log.Error(ex, "[Scrooge] Failed to insert desynth_runs row — yield capture for this run will be unattributed");
+      Svc.Log.Error(ex, "Failed to insert desynth_runs row — yield capture for this run will be unattributed");
     }
     _currentAttemptSeq = 0;
 
@@ -468,7 +468,7 @@ internal sealed class DesynthOrchestrator : IDisposable
       }
       catch (Exception ex)
       {
-        Svc.Log.Error(ex, "[Scrooge] Failed to update desynth_runs row on end");
+        Svc.Log.Error(ex, "Failed to update desynth_runs row on end");
       }
     }
     Plugin.CurrentRun = null;

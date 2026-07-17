@@ -94,7 +94,7 @@ public sealed class Plugin : IDalamudPlugin
     PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUI;
 
     ECommonsMain.Init(PluginInterface, this);
-    Svc.Log.Information($"[Scrooge] build {BuildStamp.Line}");
+    Svc.Log.Information($"build {BuildStamp.Line}");
     AutoPinch = new AutoPinch();
     WindowSystem.AddWindow(AutoPinch);
 
@@ -178,7 +178,7 @@ public sealed class Plugin : IDalamudPlugin
     }
     catch (Exception ex)
     {
-      Svc.Log.Warning(ex, "[Scrooge] VentureReturnTracker failed - venture capture disabled this session");
+      Svc.Log.Warning(ex, "VentureReturnTracker failed - venture capture disabled this session");
     }
 
     try
@@ -187,7 +187,7 @@ public sealed class Plugin : IDalamudPlugin
     }
     catch (Exception ex)
     {
-      Svc.Log.Warning(ex, "[Scrooge] DTR entry failed - server info bar headline disabled");
+      Svc.Log.Warning(ex, "DTR entry failed - server info bar headline disabled");
     }
 
     try
@@ -197,7 +197,7 @@ public sealed class Plugin : IDalamudPlugin
     }
     catch (Exception ex)
     {
-      Svc.Log.Warning(ex, "[Scrooge] Universalis almanac failed to start - local evidence only this session");
+      Svc.Log.Warning(ex, "Universalis almanac failed to start - local evidence only this session");
     }
 
     TriageWindow = new TriageWindow();
@@ -216,7 +216,7 @@ public sealed class Plugin : IDalamudPlugin
     }
     catch (Exception ex)
     {
-      Svc.Log.Error(ex, "[Scrooge] DesynthYieldTracker failed to initialize — yield capture disabled this session");
+      Svc.Log.Error(ex, "DesynthYieldTracker failed to initialize — yield capture disabled this session");
     }
 
     DesynthLauncher = new DesynthLauncher();

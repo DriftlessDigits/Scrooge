@@ -325,3 +325,101 @@ public class FallbackTests
     Assert.True(v.IsReview);
   }
 }
+
+public class CommunityCrossCheckTests
+{
+  // Rule 6 veto: gear with no LOCAL sale used to lose to seals by forfeit —
+  // the market was never consulted. DC settled sales are the missing witness.
+
+  [Fact]
+  public void CommunityBeatsSeals_RoutesToList()
+  {
+    // 2,000 seals at 25 gil/seal = 50,000; the DC pays 100,000 — list it.
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 2000, communityMedian: 100_000, communityCount: 3), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.False(v.IsReview);
+    Assert.Contains("Universalis community", v.Reason);
+  }
+
+  [Fact]
+  public void CommunityBelowSeals_SealsStillWin()
+  {
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 2000, communityMedian: 30_000, communityCount: 5), T.Batch());
+    Assert.Equal(RoutingExit.Gc, v.Exit);
+  }
+
+  [Fact]
+  public void ThinCommunitySample_DoesNotVeto()
+  {
+    // Two DC sales is gossip, not evidence — same bar the lane uses.
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 2000, communityMedian: 100_000, communityCount: 2), T.Batch());
+    Assert.Equal(RoutingExit.Gc, v.Exit);
+  }
+
+  [Fact]
+  public void CommunityNearSeals_DegradesToReview()
+  {
+    // 55k vs 50k is inside the 15% band — honest Review, List leading.
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 2000, communityMedian: 55_000, communityCount: 3), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.True(v.IsReview);
+    Assert.Equal(RoutingExit.Gc, v.RunnerUp);
+  }
+
+  [Fact]
+  public void LocalSaleEvidence_OutranksCommunity()
+  {
+    // A real local sale below the list floor already answered the question —
+    // the community number never re-litigates rule 4's rejection.
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 2000, sale: (3_000, 0, 5), communityMedian: 100_000, communityCount: 5),
+      T.Batch());
+    Assert.Equal(RoutingExit.Gc, v.Exit);
+  }
+
+  [Fact]
+  public void VentureLowStock_StillChurnsDespiteCommunity()
+  {
+    // The band guard outranks the veto by design: thin stock churns.
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 2000, communityMedian: 100_000, communityCount: 3), T.Batch(stock: 600));
+    Assert.Equal(RoutingExit.Gc, v.Exit);
+    Assert.Contains("Venture low", v.Reason);
+  }
+
+  // Evidence-only branch: DC history outranks home-world velocity as witness.
+
+  [Fact]
+  public void EvidenceOnly_CommunityAboveWorthFloor_ListsConfidently()
+  {
+    var v = RoutingRules.Evaluate(
+      T.Gear(communityMedian: 20_000, communityCount: 4), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.False(v.IsReview);
+    Assert.Contains("the DC buys it", v.Reason);
+  }
+
+  [Fact]
+  public void EvidenceOnly_CommunityBelowWorthFloor_VendorsWithListRunnerUp()
+  {
+    var v = RoutingRules.Evaluate(
+      T.Gear(vendor: 300, communityMedian: 800, communityCount: 6), T.Batch());
+    Assert.Equal(RoutingExit.Vendor, v.Exit);
+    Assert.Equal(RoutingExit.List, v.RunnerUp);
+  }
+
+  [Fact]
+  public void EvidenceOnly_CommunityOutranksDeadVelocity()
+  {
+    // Velocity ~0 on one world hides gear that sells DC-wide — the community
+    // read wins over the velocity shrug.
+    var v = RoutingRules.Evaluate(
+      T.Gear(velocity: 0.01, communityMedian: 20_000, communityCount: 4), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.Contains("the DC buys it", v.Reason);
+  }
+}

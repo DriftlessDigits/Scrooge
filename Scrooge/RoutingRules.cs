@@ -158,6 +158,22 @@ internal static class RoutingRules
           RunnerUp: alt.Score is not null ? alt.Exit : null,
           RunnerUpReason: alt.Score is not null ? alt.Reason : "");
       }
+      // Community veto (almanac cross-check): gear with no LOCAL sale can
+      // never produce a list score, so seals won by forfeit — the market was
+      // never consulted. DC-scope settled sales are the missing witness: when
+      // the community pays more than the seals are worth, the item routes to
+      // the Hawk run instead (which prices it off the live board through the
+      // same community lane). Resolve applies the normal review band and
+      // venture tilt, so a near-tie still degrades honestly. Runs AFTER the
+      // low-stock guard on purpose: thin venture stock still churns.
+      if (item.IsMarketable && item.LastSale is null
+          && item.CommunityMedian is long cm
+          && item.CommunitySampleCount >= cfg.CommunityMinSamples
+          && cm > gc)
+        return Resolve(RoutingExit.List, cm,
+          $"List: the DC pays ~{cm:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — beats {gcReason.TrimEnd('.')}. The Hawk run prices it off the live MB.",
+          (RoutingExit.Gc, gcScore, gcReason), stock, cfg);
+
       if (gc > bestGil)
         return Resolve(RoutingExit.Gc, gc, gcReason,
           BestOf((RoutingExit.Desynth, meltScore, meltReason),
@@ -202,6 +218,22 @@ internal static class RoutingRules
         return new(RoutingExit.Vendor,
           "No gil exit at all (untradable, no desynth, no seals) — current-tier gear is usually for wearing, not selling.",
           IsReview: true);
+      }
+
+      // DC sale history is stronger evidence than home-world velocity when it
+      // exists: velocity ~0 on one world hides gear that sells DC-wide
+      // (buyers travel for gear). Checked first; velocity remains the
+      // fallback witness.
+      if (item.CommunityMedian is long cMed
+          && item.CommunitySampleCount >= cfg.CommunityMinSamples)
+      {
+        if (cMed >= cfg.ListingWorthGil)
+          return new(RoutingExit.List,
+            $"Never sold one locally, but the DC buys it: ~{cMed:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — the Hawk run prices it off the live MB.");
+        return new(RoutingExit.Vendor,
+          $"DC-wide it only fetches ~{cMed:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — below your {cfg.ListingWorthGil:N0} worth floor. {vendorReason}",
+          RunnerUp: RoutingExit.List,
+          RunnerUpReason: "List anyway if you think the community read is wrong.");
       }
 
       if (item.MarketVelocity is double marketV)

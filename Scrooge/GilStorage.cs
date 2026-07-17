@@ -1130,6 +1130,23 @@ internal static class GilStorage
   }
 
   /// <summary>
+  /// Item ids with an open lane_held flag — the standing thin-history set.
+  /// Feeds the community-history prefetch at run start (the triage table IS
+  /// the persistent list of items that will hold thin again next pinch).
+  /// </summary>
+  internal static List<uint> GetOpenLaneHeldItemIds()
+  {
+    var ids = new List<uint>();
+    using var cmd = new SqliteCommand(
+      "SELECT DISTINCT item_id FROM triage_flags WHERE status = 'open' AND reason = 'lane_held'",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      ids.Add((uint)reader.GetInt64(0));
+    return ids;
+  }
+
+  /// <summary>
   /// The evidence snapshot stored on the open flag for a key. NULL means no
   /// open row exists; an empty string means a row exists WITHOUT a snapshot
   /// (pre-V17 legacy) — DecideUpsert adopts that row rather than duplicating

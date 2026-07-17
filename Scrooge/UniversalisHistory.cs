@@ -36,6 +36,13 @@ internal static class UniversalisHistory
   private static CancellationTokenSource? _cts;
   private static Task? _worker;
 
+  /// <summary>
+  /// Bumped whenever a fetch round lands — UI sweeps that evaluated on a cold
+  /// cache watch this to re-run when answers arrive (UniversalisStats mold).
+  /// Framework thread only.
+  /// </summary>
+  internal static int Version { get; private set; }
+
   /// <summary>Seconds between fetch rounds — lets a pinch sweep accumulate one batch.</summary>
   private const double DebounceSeconds = 1.5;
   /// <summary>Back-off after a failed fetch — no hammering an unreachable API.</summary>
@@ -88,14 +95,52 @@ internal static class UniversalisHistory
     }
   }
 
+  /// <summary>
+  /// Warms the cache for a known-thin set before the sweep reaches it: called
+  /// at run start with the standing lane_held triage items so the community
+  /// fallback can deploy THIS run. The cache is in-memory and session-scoped,
+  /// so the old "miss queues a fetch; warm next pinch" promise never paid out
+  /// for one-pinch-per-session play — the fetch landed and the session ended.
+  /// Misses and TTL-expired rows queue exactly like a TryGet miss; fresh rows
+  /// are left alone. Framework thread only.
+  /// </summary>
+  internal static void Prefetch(IReadOnlyCollection<uint> itemIds)
+  {
+    var cfg = Plugin.Configuration;
+    if (itemIds.Count == 0 || !cfg.EnableUniversalis || _cts is null)
+      return;
+
+    if (DataCenterName() is not string dc)
+      return;
+
+    EnsureScope(dc);
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var queued = 0;
+    lock (Lock)
+    {
+      foreach (var id in itemIds)
+        if (!Cache.TryGetValue(id, out var row)
+            || now - row.FetchedAt > (long)cfg.UniversalisCacheTtlHours * 3600)
+        {
+          Enqueue(id, now);
+          queued++;
+        }
+    }
+
+    if (queued > 0)
+      Svc.Log.Info($"[UniversalisHistory] prefetching community history for {queued} thin-history {(queued == 1 ? "item" : "items")}");
+  }
+
   /// <summary>Home data-center name (Universalis scope), or null when unavailable.</summary>
   private static string? DataCenterName()
   {
     try
     {
-      if (!ECommons.GameHelpers.Player.Available)
+      if (!ECommons.GameHelpers.Player.Available
+          || ECommons.GameHelpers.Player.Object is not { } player)
         return null;
-      var world = ECommons.GameHelpers.Player.Object.HomeWorld.RowId;
+      var world = player.HomeWorld.RowId;
       if (world == 0)
         return null;
       var name = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.World>()
@@ -217,6 +262,10 @@ internal static class UniversalisHistory
         Cache[r.ItemId] = new CacheRow(r.Sales, r.LastUploadAt, now);
     }
 
-    Svc.Log.Debug($"[UniversalisHistory] {byId.Count} items landed for DC {scope}");
+    Version++; // framework thread — UI sweeps re-run their piles on this
+
+    // Info, not Debug: this is the happy path of the community pipeline — the
+    // one line that says the fetch landed without needing verbose logging on.
+    Svc.Log.Info($"[UniversalisHistory] {byId.Count} {(byId.Count == 1 ? "item" : "items")} landed for DC {scope}");
   }
 }

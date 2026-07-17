@@ -44,6 +44,7 @@ internal sealed class RoutingWindow : Window
   private List<RoutedItem> _items = [];
   private int? _ventureStock;
   private int _uniVersion;
+  private int _uniHistVersion;
 
   public RoutingWindow()
     : base("Scrooge - Router###RoutingWindow", ImGuiWindowFlags.None)
@@ -51,7 +52,7 @@ internal sealed class RoutingWindow : Window
     SizeConstraints = new WindowSizeConstraints
     {
       MinimumSize = new Vector2(520, 300),
-      MaximumSize = new Vector2(900, 900),
+      MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
     };
     Size = new Vector2(640, 500);
     SizeCondition = ImGuiCond.FirstUseEver;
@@ -68,6 +69,7 @@ internal sealed class RoutingWindow : Window
   {
     _items = [];
     _uniVersion = UniversalisStats.Version;
+    _uniHistVersion = UniversalisHistory.Version;
     var batch = RoutingInputService.BeginBatch();
     _ventureStock = batch.VentureStock;
     var gearsetIds = DesynthInventoryScanner.SnapshotGearsetItemIds();
@@ -157,7 +159,8 @@ internal sealed class RoutingWindow : Window
     // so "no evidence" verdicts settle. Never silently while the player is
     // mid-decision: any pile move or mid-churn state keeps the view stable
     // and the header shows a hint instead.
-    var uniLanded = UniversalisStats.Version != _uniVersion;
+    var uniLanded = UniversalisStats.Version != _uniVersion
+                    || UniversalisHistory.Version != _uniHistVersion;
     var playerTouched = _items.Any(i =>
       i.OverrideRecorded || i.Pile != i.Verdict.Exit || i.InReview != i.Verdict.IsReview);
     if (uniLanded && !playerTouched && !Plugin.GcTurnIn.IsRunning)
