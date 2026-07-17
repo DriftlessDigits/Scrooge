@@ -796,7 +796,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_desynth_runs_started_at ON desynth_runs(started_at DESC);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V9 migration: created desynth_runs table");
+    Svc.Log.Info("V9 migration: created desynth_runs table");
   }
 
   /// <summary>
@@ -824,7 +824,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_desynth_yields_captured ON desynth_yields(captured_at DESC);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V10 migration: created desynth_yields table");
+    Svc.Log.Info("V10 migration: created desynth_yields table");
   }
 
   /// <summary>
@@ -853,7 +853,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_triage_flags_status ON triage_flags(status, created_at DESC);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V12 migration: created triage_flags table");
+    Svc.Log.Info("V12 migration: created triage_flags table");
   }
 
   /// <summary>
@@ -872,7 +872,7 @@ internal class GilStorageBootstrap
         UPDATE desynth_yields SET captured_at = captured_at / 1000 WHERE captured_at > 100000000000;",
       connection);
     var affected = cmd.ExecuteNonQuery();
-    Svc.Log.Info($"[Scrooge] V11 migration: desynth timestamps ms -> s ({affected} values converted)");
+    Svc.Log.Info($"V11 migration: desynth timestamps ms -> s ({affected} values converted)");
   }
 
   /// <summary>
@@ -923,9 +923,9 @@ internal class GilStorageBootstrap
       connection, tx);
     cmd.ExecuteNonQuery();
     tx.Commit();
-    Svc.Log.Info("[Scrooge] V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
+    Svc.Log.Info("V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
     if (carriedAsNq > 0)
-      Svc.Log.Info($"[Scrooge] V13: {carriedAsNq} pruned-history rows carried over as NQ - their HQ price history starts fresh at the next HQ sale");
+      Svc.Log.Info($"V13: {carriedAsNq} pruned-history rows carried over as NQ - their HQ price history starts fresh at the next HQ sale");
   }
 
   /// <summary>
@@ -951,7 +951,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_routing_overrides_item ON routing_overrides(item_id, is_hq);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V14 migration: created routing_overrides table");
+    Svc.Log.Info("V14 migration: created routing_overrides table");
   }
 
   /// <summary>
@@ -988,7 +988,7 @@ internal class GilStorageBootstrap
         "ALTER TABLE gil_snapshots ADD COLUMN venture_tokens INTEGER;", connection))
         alter.ExecuteNonQuery();
 
-    Svc.Log.Info("[Scrooge] V15 migration: venture_returns table + gil_snapshots.venture_tokens");
+    Svc.Log.Info("V15 migration: venture_returns table + gil_snapshots.venture_tokens");
   }
 
   /// <summary>
@@ -1013,7 +1013,7 @@ internal class GilStorageBootstrap
       connection))
       cmd.ExecuteNonQuery();
 
-    Svc.Log.Info("[Scrooge] V16 migration: universalis_stats cache table");
+    Svc.Log.Info("V16 migration: universalis_stats cache table");
   }
 
   /// <summary>
@@ -1053,7 +1053,7 @@ internal class GilStorageBootstrap
     cleanup.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     var closed = cleanup.ExecuteNonQuery();
 
-    Svc.Log.Info($"[Scrooge] V17 migration: triage_flags.evidence column + closed {closed} dead-producer flags (upward_held/outlier_warn)");
+    Svc.Log.Info($"V17 migration: triage_flags.evidence column + closed {closed} dead-producer flags (upward_held/outlier_warn)");
   }
 
   /// <summary>
@@ -1115,7 +1115,7 @@ internal class GilStorageBootstrap
       connection);
     var removed = dedup.ExecuteNonQuery();
 
-    Svc.Log.Info($"[Scrooge] V18 migration: deduped triage_flags — removed {removed} duplicate open flags (oldest row kept, evidence adopted)");
+    Svc.Log.Info($"V18 migration: deduped triage_flags — removed {removed} duplicate open flags (oldest row kept, evidence adopted)");
   }
 
   // =========================================================================

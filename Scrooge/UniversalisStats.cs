@@ -99,9 +99,10 @@ internal static class UniversalisStats
   /// <summary>Home world id, or null when the player isn't loaded yet.</summary>
   private static uint? HomeWorldId()
   {
-    if (!ECommons.GameHelpers.Player.Available)
+    if (!ECommons.GameHelpers.Player.Available
+        || ECommons.GameHelpers.Player.Object is not { } player)
       return null;
-    var world = ECommons.GameHelpers.Player.Object.HomeWorld.RowId;
+    var world = player.HomeWorld.RowId;
     return world != 0 ? world : null;
   }
 
