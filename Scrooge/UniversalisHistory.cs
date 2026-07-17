@@ -36,6 +36,13 @@ internal static class UniversalisHistory
   private static CancellationTokenSource? _cts;
   private static Task? _worker;
 
+  /// <summary>
+  /// Bumped whenever a fetch round lands — UI sweeps that evaluated on a cold
+  /// cache watch this to re-run when answers arrive (UniversalisStats mold).
+  /// Framework thread only.
+  /// </summary>
+  internal static int Version { get; private set; }
+
   /// <summary>Seconds between fetch rounds — lets a pinch sweep accumulate one batch.</summary>
   private const double DebounceSeconds = 1.5;
   /// <summary>Back-off after a failed fetch — no hammering an unreachable API.</summary>
@@ -254,6 +261,8 @@ internal static class UniversalisHistory
       foreach (var r in byId.Values)
         Cache[r.ItemId] = new CacheRow(r.Sales, r.LastUploadAt, now);
     }
+
+    Version++; // framework thread — UI sweeps re-run their piles on this
 
     // Info, not Debug: this is the happy path of the community pipeline — the
     // one line that says the fetch landed without needing verbose logging on.

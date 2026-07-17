@@ -55,6 +55,7 @@ internal static class RoutingInputService
         ListingVelocityDays = cfg.ListingVelocityDays,
         ListingWorthGil = cfg.ListingWorthGil,
         RoutingReviewBandPct = cfg.RoutingReviewBandPct,
+        CommunityMinSamples = cfg.LaneMinHistorySamples,
         VentureBandFull = cfg.VentureBandFull,
         VentureBandLow = cfg.VentureBandLow,
         VentureBandPanic = cfg.VentureBandPanic,
@@ -112,6 +113,28 @@ internal static class RoutingInputService
     if (isMarketable)
       market = UniversalisStats.TryGet(itemId, isHq);
 
+    // DC-scope settled sales (community history) — the almanac cross-check's
+    // evidence. Same miss-queues-a-fetch lifecycle as velocity above, so a
+    // window sweep self-warms the cache and re-runs when answers land.
+    long? communityMedian = null;
+    var communityCount = 0;
+    if (isMarketable && UniversalisHistory.TryGet(itemId) is { } dcSales)
+    {
+      var prices = new List<long>();
+      foreach (var s in dcSales)
+        if (s.IsHq == isHq)
+          prices.Add(s.UnitPrice);
+      if (prices.Count > 0)
+      {
+        prices.Sort();
+        communityCount = prices.Count;
+        var mid = prices.Count / 2;
+        communityMedian = prices.Count % 2 == 1
+          ? prices[mid]
+          : (prices[mid - 1] + prices[mid]) / 2;
+      }
+    }
+
     return new RoutingItemInputs
     {
       ItemId = itemId,
@@ -126,6 +149,8 @@ internal static class RoutingInputService
       SealValue = GcSeals.For(itemId),
       MarketVelocity = market?.Velocity,
       MarketLastSaleDays = market?.LastSaleDaysAgo,
+      CommunityMedian = communityMedian,
+      CommunitySampleCount = communityCount,
       DesynthColor = color,
       DesynthSkillupEligible = color is { } c && DesynthSkillup.IsSkillupEligible(c),
       IsBanned = Plugin.Configuration.BannedItemIds.Contains(fullId),

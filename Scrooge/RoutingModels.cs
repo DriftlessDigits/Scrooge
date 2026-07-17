@@ -14,6 +14,8 @@ internal sealed record RoutingConfig
   public int ListingVelocityDays { get; init; } = 10;
   public int ListingWorthGil { get; init; } = 5000;
   public int RoutingReviewBandPct { get; init; } = 15;
+  /// <summary>Minimum DC-scope settled sales before community evidence counts (snapshot of LaneMinHistorySamples — same bar the lane uses).</summary>
+  public int CommunityMinSamples { get; init; } = 3;
   public int VentureBandFull { get; init; } = 1250;
   public int VentureBandLow { get; init; } = 750;
   public int VentureBandPanic { get; init; } = 500;
@@ -92,6 +94,16 @@ internal sealed record RoutingItemInputs
   public double? MarketVelocity { get; init; }
   /// <summary>Days since ANYONE last bought this item here (Universalis).</summary>
   public int? MarketLastSaleDays { get; init; }
+
+  /// <summary>
+  /// Median DC-scope settled sale price for this quality (Universalis
+  /// community history). Null = no trusted data. Fills the hole where gear
+  /// with no LOCAL sale can never produce a list score and seals win by
+  /// forfeit — the DC's buyers are the missing witness.
+  /// </summary>
+  public long? CommunityMedian { get; init; }
+  /// <summary>How many DC settled sales back that median (0 = none).</summary>
+  public int CommunitySampleCount { get; init; }
 
   // Desynth skill state (null color = not desynthesizable / no repair class)
   public DesynthSkillupColor? DesynthColor { get; init; }
