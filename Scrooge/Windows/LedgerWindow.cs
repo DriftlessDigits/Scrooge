@@ -903,7 +903,11 @@ internal sealed class LedgerWindow : Window
         LastSalePrice = item.LastSalePrice,
       });
     }
-    if (hawkItems.Count == 0) return;
+    if (hawkItems.Count == 0)
+    {
+      Svc.Chat.PrintError("[Scrooge] None of the confirmed rows are List/Vendor exits - nothing for the Hawk run.");
+      return;
+    }
     Plugin.AutoPinch.NavigateAndStartHawkRun(hawkItems);
     IsOpen = false;
   }

@@ -161,8 +161,18 @@ internal sealed class HawkRunOrchestrator
   /// </summary>
   internal unsafe void NavigateAndStartHawkRun(List<HawkWindow.HawkItem> items)
   {
-    if (_taskManager.IsBusy || items.Count == 0)
+    // Every refusal on this road is LOUD - a confirm button that no-ops
+    // silently reads as a broken button (it was, twice).
+    if (items.Count == 0)
+    {
+      Svc.Chat.PrintError("[Scrooge] Nothing to run - no eligible items.");
       return;
+    }
+    if (_taskManager.IsBusy)
+    {
+      Svc.Chat.PrintError("[Scrooge] Another run is still working - wait for it (or /scrooge to check).");
+      return;
+    }
 
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
     {
@@ -170,19 +180,23 @@ internal sealed class HawkRunOrchestrator
       return;
     }
 
-    EnqueueNavigateToSellView(_ => StartHawkRunCore(items));
+    if (!EnqueueNavigateToSellView(_ => StartHawkRunCore(items)))
+      return; // EnqueueNavigateToSellView already said why
   }
 
   /// <summary>
   /// From the bell roster (RetainerList), navigate to the first retainer with open
   /// sell slots and open their "Sell items in your inventory" view, then invoke
   /// <paramref name="onArrived"/> with the total open slots across all retainers.
-  /// No-ops (with a chat error where actionable) if not at the roster or all full.
+  /// Returns false WITH a chat error when it cannot - every refusal is loud.
   /// </summary>
-  private unsafe void EnqueueNavigateToSellView(Action<int> onArrived)
+  private unsafe bool EnqueueNavigateToSellView(Action<int> onArrived)
   {
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
-      return;
+    {
+      Svc.Chat.PrintError("[Scrooge] Retainer list isn't open (or still loading) - summon your retainers and retry.");
+      return false;
+    }
 
     var retainerList = new AddonMaster.RetainerList(addon);
     var retainers = retainerList.Retainers;
@@ -201,7 +215,7 @@ internal sealed class HawkRunOrchestrator
     if (targetIndex < 0)
     {
       Svc.Chat.PrintError("[Scrooge] All retainers have full sell lists (20/20).");
-      return;
+      return false;
     }
 
     // Auto-dismiss retainer greeting dialog
@@ -218,6 +232,7 @@ internal sealed class HawkRunOrchestrator
       onArrived(totalAvailableSlots);
       return true;
     }, "HawkSellViewArrived");
+    return true;
   }
 
   /// <summary>
