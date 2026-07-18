@@ -734,10 +734,12 @@ internal sealed class LedgerWindow : Window
 
   private void DrawMoveButton(RoutedItem item, RoutingExit target, string label)
   {
-    // "Current" means the row actually SITS at this exit - a Contradicted row
-    // demoted into Review shows no green until the player rules, so its buttons
-    // stay live and the click IS the resolution (confirm or move alike).
-    var isCurrent = item.ActivePile != LedgerPile.Review && item.Pile == target;
+    // Green means DECIDED - by evidence (Unanimous) or by the player - never just
+    // "where the row happens to sit". An undecided row (Mixed, or demoted into
+    // Review) shows no green and every button stays live, so the click IS the
+    // ruling whether it confirms the router or moves the row.
+    var settled = item.PlayerResolved || LedgerConfidence.IsBulkEligible(item.Confidence);
+    var isCurrent = settled && item.ActivePile != LedgerPile.Review && item.Pile == target;
     if (isCurrent)
       ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.25f, 0.45f, 0.25f, 1f));
 
