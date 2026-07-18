@@ -75,7 +75,6 @@ namespace Scrooge.Windows
 
       _lastRun = run;
       run.RunStopwatch.Restart();
-      run.EtaStopwatch.Restart();
 
       string label;
       if (isDesynthRun)
@@ -245,10 +244,9 @@ namespace Scrooge.Windows
       if (run.TriageItems.Count > 0)
         Plugin.TriageWindow.SetRun(run);
 
-      // Stop timer and mark run complete
-      run.IsComplete = true;
+      // Stop timer and mark run complete (lifecycle terminal - fail closed)
+      run.MarkComplete();
       run.RunStopwatch.Stop();
-      run.EtaStopwatch.Stop();
 
       // Update the rolling per-item average
       if (run.ItemsProcessed > 0)
@@ -296,14 +294,10 @@ namespace Scrooge.Windows
       var run = Run;
       if (run == null) return;
 
+      // Starts the lifecycle when idle (seeded with the persisted AvgMsPerItem);
+      // revises Total in place on a live run - the lifecycle ETA self-calibrates
+      // off observed pace once the first item lands.
       run.TotalItems = total;
-
-      var storedAvg = Plugin.Configuration.AvgMsPerItem;
-      if (storedAvg > 0f)
-      {
-        run.EtaCountdownMs = storedAvg * total;
-        run.EtaStopwatch.Restart();
-      }
     }
 
     /// <summary>
@@ -314,15 +308,7 @@ namespace Scrooge.Windows
       var run = Run;
       if (run == null) return;
 
-      run.ItemsProcessed++;
-
-      var storedAvg = Plugin.Configuration.AvgMsPerItem;
-      if (storedAvg > 0f)
-      {
-        var remaining = run.TotalItems - run.ItemsProcessed;
-        run.EtaCountdownMs = storedAvg * remaining;
-        run.EtaStopwatch.Restart();
-      }
+      run.Beat();
     }
 
     /// <summary>
@@ -333,9 +319,8 @@ namespace Scrooge.Windows
       var run = Run;
       if (run == null) return;
 
-      run.IsComplete = true;
+      run.MarkCancelled();
       run.RunStopwatch.Stop();
-      run.EtaStopwatch.Stop();
     }
 
     public PinchRunLogWindow() : base("Scrooge - Pinch Run Log")
@@ -510,12 +495,8 @@ namespace Scrooge.Windows
         ImGui.TextDisabled("|");
         ImGui.SameLine();
 
-        if (run.EtaCountdownMs > 0f)
+        if (run.Lifecycle.Eta(DateTime.UtcNow) is TimeSpan eta)
         {
-          var remainingMs = run.EtaCountdownMs - (float)run.EtaStopwatch.ElapsedMilliseconds;
-          if (remainingMs < 0f) remainingMs = 0f;
-
-          var eta = TimeSpan.FromMilliseconds(remainingMs);
           var etaStr = eta.TotalMinutes >= 1
             ? $"~{(int)eta.TotalMinutes}m {eta.Seconds:D2}s"
             : $"~{eta.Seconds}s";

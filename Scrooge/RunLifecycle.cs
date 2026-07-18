@@ -104,6 +104,38 @@ internal sealed class RunLifecycle
   }
 
   /// <summary>
+  /// Set (or revise) the expected total. Idle starts a fresh run with that total -
+  /// the shape RunData's object-initializer and SetTotalItems callers need - and a
+  /// live run adjusts Total in place WITHOUT resetting elapsed/progress (pinch calls
+  /// SetTotalItems with a refined count after the pre-scan). Terminal states refuse
+  /// (fail closed), same as every other mutation.
+  /// </summary>
+  internal bool SetTotal(int total, RunValueUnit unit, DateTime now, double seededMsPerItem = 0)
+  {
+    if (IsTerminal) return false;
+    if (State == RunState.Idle)
+    {
+      Start(total, unit, now, seededMsPerItem: seededMsPerItem);
+      return true;
+    }
+    Total = Math.Max(0, total);
+    if (seededMsPerItem > 0 && _seededMsPerItem <= 0) _seededMsPerItem = seededMsPerItem;
+    return true;
+  }
+
+  /// <summary>
+  /// Ensure the run is live: Idle starts a zero-total run (the desynth path records
+  /// beats without ever declaring a total). Running is a no-op true; terminal refuses.
+  /// </summary>
+  internal bool EnsureRunning(RunValueUnit unit, DateTime now)
+  {
+    if (State == RunState.Running) return true;
+    if (IsTerminal) return false;
+    Start(0, unit, now);
+    return true;
+  }
+
+  /// <summary>
   /// Record one beat of progress: <paramref name="doneDelta"/> more items finished
   /// and <paramref name="valueDelta"/> more value earned (either may be 0 - a value
   /// beat with no item, or a skip that advances done without value). Resets the stall
@@ -135,18 +167,30 @@ internal sealed class RunLifecycle
   }
 
   /// <summary>
-  /// The stall watchdog. If the run is live and no progress has landed within the
-  /// stall bound, transition to <see cref="RunState.Stalled"/> and return true (the
-  /// adapter then runs its fail-closed teardown). Returns false while progress is
-  /// still fresh, and on any terminal state - it never resurrects or re-fires.
+  /// Force the run into the <see cref="RunState.Stalled"/> terminal from an adapter's
+  /// OWN precise stall signal - e.g. the GC idle-task-manager wedge, where a LegacyTaskManager
+  /// timeout has silently cleared the queue and IsRunning-with-an-idle-manager can only
+  /// mean an abort - independent of the time bound. No-op (false) unless live.
+  /// </summary>
+  internal bool Stall(DateTime now)
+  {
+    if (State != RunState.Running) return false;
+    State = RunState.Stalled;
+    _endedAt = now;
+    return true;
+  }
+
+  /// <summary>
+  /// The time-based stall watchdog. If the run is live and no progress has landed
+  /// within the stall bound, stall it and return true (the adapter then runs its
+  /// fail-closed teardown). Returns false while progress is still fresh, and on any
+  /// terminal state - it never resurrects or re-fires.
   /// </summary>
   internal bool CheckStall(DateTime now)
   {
     if (State != RunState.Running) return false;
     if (now - _lastProgressAt < _stallBound) return false;
-    State = RunState.Stalled;
-    _endedAt = now;
-    return true;
+    return Stall(now);
   }
 
   /// <summary>Elapsed run time, frozen at the terminal moment once the run ends.</summary>

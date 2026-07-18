@@ -88,6 +88,17 @@ public class RunLifecycleTests
   }
 
   [Fact]
+  public void Stall_ForcedByAdapterSignal_Independent_OfTimeBound()
+  {
+    // The GC idle-task-manager wedge: an adapter's own precise stall signal fires
+    // well before the time bound would. It still lands Stalled, fail closed.
+    var run = Started(stallSeconds: 30);
+    Assert.True(run.Stall(At(3)));
+    Assert.Equal(Scrooge.RunState.Stalled, run.State);
+    Assert.False(run.Stall(At(4))); // no re-fire once terminal
+  }
+
+  [Fact]
   public void NoTransition_OutOfCancelled_OrStalled()
   {
     var cancelled = Started();
@@ -286,5 +297,74 @@ public class RunLifecycleTests
     var inputs = Scrooge.RunLifecycle.HawkSweepInputs(fullyObserved: true, empty);
     Assert.NotNull(inputs);
     Assert.Empty(inputs!);
+  }
+
+  // =========================================================================
+  // SetTotal / EnsureRunning - the RunData delegation surface (pinch adoption)
+  // =========================================================================
+
+  [Fact]
+  public void SetTotal_FromIdle_StartsTheRun()
+  {
+    var run = new RunLifecycle();
+    Assert.True(run.SetTotal(50, RunValueUnit.Gil, T0));
+    Assert.Equal(RunState.Running, run.State);
+    Assert.Equal(50, run.Total);
+  }
+
+  [Fact]
+  public void SetTotal_WhileRunning_RevisesTotalWithoutResettingProgress()
+  {
+    // Pinch calls SetTotalItems twice (pre-scan estimate, then refined count) -
+    // the second call must not zero Done or restart the clock.
+    var run = new RunLifecycle();
+    run.SetTotal(50, RunValueUnit.Gil, T0);
+    run.RecordProgress(10, 5_000, T0.AddMinutes(1));
+    Assert.True(run.SetTotal(60, RunValueUnit.Gil, T0.AddMinutes(1)));
+    Assert.Equal(60, run.Total);
+    Assert.Equal(10, run.Done);
+    Assert.Equal(5_000, run.Value);
+    Assert.Equal(TimeSpan.FromMinutes(1), run.Elapsed(T0.AddMinutes(1)));
+  }
+
+  [Fact]
+  public void SetTotal_OnTerminal_RefusesFailClosed()
+  {
+    var run = new RunLifecycle();
+    run.SetTotal(5, RunValueUnit.Gil, T0);
+    run.Complete(T0.AddMinutes(1));
+    Assert.False(run.SetTotal(10, RunValueUnit.Gil, T0.AddMinutes(2)));
+    Assert.Equal(5, run.Total);
+    Assert.Equal(RunState.Complete, run.State);
+  }
+
+  [Fact]
+  public void SetTotal_SeedsEtaBeforeFirstItem()
+  {
+    // The persisted AvgMsPerItem seed gives an honest pre-first-item ETA.
+    var run = new RunLifecycle();
+    run.SetTotal(10, RunValueUnit.Gil, T0, seededMsPerItem: 6_000);
+    Assert.Equal(TimeSpan.FromMilliseconds(60_000), run.Eta(T0));
+  }
+
+  [Fact]
+  public void EnsureRunning_FromIdle_StartsZeroTotalRun()
+  {
+    // The desynth path records beats without ever declaring a total.
+    var run = new RunLifecycle();
+    Assert.True(run.EnsureRunning(RunValueUnit.Gil, T0));
+    Assert.Equal(RunState.Running, run.State);
+    Assert.True(run.RecordProgress(1, 0, T0.AddSeconds(5)));
+    Assert.Equal(1, run.Done);
+  }
+
+  [Fact]
+  public void EnsureRunning_OnTerminal_Refuses()
+  {
+    var run = new RunLifecycle();
+    run.EnsureRunning(RunValueUnit.Gil, T0);
+    run.Cancel(T0.AddSeconds(1));
+    Assert.False(run.EnsureRunning(RunValueUnit.Gil, T0.AddSeconds(2)));
+    Assert.Equal(RunState.Cancelled, run.State);
   }
 }
