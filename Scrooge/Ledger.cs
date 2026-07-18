@@ -192,20 +192,25 @@ internal static class LedgerConfidence
        || (e.VelocityPerDay is double v && v * 14.0 >= StrongRecentSales);
 
   /// <summary>
-  /// Sales-history-vs-verdict accord. An OFF-market verdict (vendor/pull/melt/churn)
-  /// is CONTRADICTED by a strong live market - this is the Alexander Miniature rule.
-  /// An ON-market verdict (list/reprice) is contradicted by a genuinely dead market.
-  /// Neutral verdicts make no market claim - Unknown. Absence of any sales/velocity
-  /// evidence is Unknown, never a silent Agree.
+  /// Sales-history-vs-verdict accord - the axis that carries the Alexander Miniature
+  /// rule. The market evidence is ASYMMETRIC by verdict direction:
+  ///
+  /// - OFF-market (vendor/pull/melt/churn): a strong live market CONTRADICTS the
+  ///   verdict (Alexander). A weak or ABSENT market AGREES with it - "nobody buys
+  ///   this" is exactly why it should come off the board, so the vendor-trash pile
+  ///   is confident by construction (this is what makes the bulk quick-pick useful).
+  /// - ON-market (list/reprice): a live market AGREES; a demonstrably DEAD market
+  ///   (known ~0 velocity, no recent sales) CONTRADICTS - a listing just sits. No
+  ///   market evidence at all is Unknown, because you cannot confidently list into a
+  ///   market you have never measured.
+  /// - Neutral (review/watch): makes no market claim - Unknown.
   /// </summary>
   internal static Accord SalesVerdictAccord(in Evidence e)
   {
-    var hasAny = e.RecentSalesCount > 0 || e.VelocityPerDay is not null;
     switch (e.Lean)
     {
       case VerdictLean.OffMarket:
-        if (StrongMarket(e)) return Accord.Disagree;
-        return hasAny ? Accord.Agree : Accord.Unknown;
+        return StrongMarket(e) ? Accord.Disagree : Accord.Agree;
       case VerdictLean.OnMarket:
         if (e.VelocityPerDay is double v)
           return v <= DeadVelocityPerDay && e.RecentSalesCount == 0 ? Accord.Disagree : Accord.Agree;
@@ -217,10 +222,17 @@ internal static class LedgerConfidence
 
   /// <summary>
   /// The pre-refinement tier from market evidence alone. Any DISAGREE axis
-  /// (sales-vs-verdict or local-vs-community) is Contradicted. Otherwise Unanimous
-  /// requires the full evidence base - enough samples, fresh, tight spread, a
-  /// verdict the sales history actively backs, and no community disagreement; short
-  /// of that it is Mixed.
+  /// (sales-vs-verdict or local-vs-community) is Contradicted. Then the verdict
+  /// direction decides what "enough evidence" means:
+  ///
+  /// - OFF-market: the absence of a live market IS the evidence, so a
+  ///   non-contradicted off-market verdict is Unanimous without needing lane samples
+  ///   (the vendor / churn / melt no-brainers).
+  /// - ON-market: you need a real, fresh, tight lane to confidently keep something
+  ///   listed - enough samples, within the stale window, spread inside the tight
+  ///   band, over a market the sales history actively backs; short of that it is
+  ///   Mixed (shows in the pile, needs the row click).
+  /// - Neutral: never Unanimous - Review and Watch are not bulk actions.
   /// </summary>
   internal static ConfidenceTier BaseTier(in Evidence e)
   {
@@ -228,15 +240,20 @@ internal static class LedgerConfidence
     if (sales == Accord.Disagree || e.LocalCommunityAccord == Accord.Disagree)
       return ConfidenceTier.Contradicted;
 
+    if (e.Lean == VerdictLean.Neutral)
+      return ConfidenceTier.Mixed;
+
+    if (e.Lean == VerdictLean.OffMarket)
+      return ConfidenceTier.Unanimous; // sales agrees (not strong), community not against
+
+    // ON-market: sales is Agree (live) or Unknown (unmeasured). Unmeasured -> Mixed.
+    if (sales != Accord.Agree)
+      return ConfidenceTier.Mixed;
+
     var enoughSamples = e.LaneSampleCount >= e.MinSamples;
     var fresh = e.EvidenceAgeDays <= e.StaleDays;
     var tight = e.LaneSpread <= MaxTightSpread;
-    var salesBacked = sales == Accord.Agree;
-    var communityOk = e.LocalCommunityAccord != Accord.Disagree;
-
-    return enoughSamples && fresh && tight && salesBacked && communityOk
-      ? ConfidenceTier.Unanimous
-      : ConfidenceTier.Mixed;
+    return enoughSamples && fresh && tight ? ConfidenceTier.Unanimous : ConfidenceTier.Mixed;
   }
 
   /// <summary>

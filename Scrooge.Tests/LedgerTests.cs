@@ -36,44 +36,58 @@ public class LedgerTests
 
   // ---- Tier assignment across the evidence axes ----
 
+  // A live-market ON-market verdict with a full evidence base is the ON-market
+  // Unanimous shape; each ON-market test perturbs one axis off it.
+  private static LedgerConfidence.Evidence LiveList(int laneN = 5, double spread = 0.1,
+    int ageDays = 1) => Ev(lean: VerdictLean.OnMarket, velocity: 0.8, recentSales: 6,
+      laneN: laneN, spread: spread, ageDays: ageDays);
+
   [Fact]
-  public void FullAgreement_IsUnanimous()
+  public void OffMarket_DeadMarket_IsUnanimous()
   {
-    // Off-market vendor verdict, dead market, plenty of fresh tight samples.
+    // Vendor/churn/melt over a market that is not buying = the no-brainer disposal
+    // pile: Unanimous by construction, no lane samples required.
     Assert.Equal(ConfidenceTier.Unanimous, LedgerConfidence.BaseTier(Ev()));
   }
 
   [Fact]
-  public void ThinSamples_IsMixed()
+  public void OffMarket_WithNoMarketEvidenceAtAll_IsUnanimous()
   {
-    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(Ev(laneN: 1)));
+    // Untradable vendor-trash gear: no market to measure. Absence IS the evidence -
+    // this is exactly the bulk-vendor case ruling 7 exists to serve.
+    Assert.Equal(ConfidenceTier.Unanimous, LedgerConfidence.BaseTier(Ev(velocity: null, recentSales: 0)));
   }
 
   [Fact]
-  public void StaleEvidence_IsMixed()
+  public void OnMarket_ThinSamples_IsMixed()
   {
-    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(Ev(ageDays: 90)));
+    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(LiveList(laneN: 1)));
   }
 
   [Fact]
-  public void WideSpread_IsMixed()
+  public void OnMarket_StaleEvidence_IsMixed()
   {
-    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(Ev(spread: 1.2)));
+    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(LiveList(ageDays: 90)));
   }
 
   [Fact]
-  public void OffMarketVerdict_WithNoMarketEvidence_IsMixed_NotUnanimous()
+  public void OnMarket_WideSpread_IsMixed()
   {
-    // No sales and no velocity = the sales axis is Unknown, not Agree, so the
-    // verdict is not actively backed - honest Mixed, never a silent Unanimous.
-    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(Ev(velocity: null, recentSales: 0)));
+    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(LiveList(spread: 1.2)));
+  }
+
+  [Fact]
+  public void OnMarket_Unmeasured_IsMixed()
+  {
+    // Listing into a market never measured (no velocity, no sales) is not confident.
+    Assert.Equal(ConfidenceTier.Mixed,
+      LedgerConfidence.BaseTier(Ev(lean: VerdictLean.OnMarket, velocity: null, recentSales: 0)));
   }
 
   [Fact]
   public void OnMarketVerdict_OverLiveMarket_IsUnanimous()
   {
-    var e = Ev(lean: VerdictLean.OnMarket, velocity: 0.8, recentSales: 6);
-    Assert.Equal(ConfidenceTier.Unanimous, LedgerConfidence.BaseTier(e));
+    Assert.Equal(ConfidenceTier.Unanimous, LedgerConfidence.BaseTier(LiveList()));
   }
 
   [Fact]
@@ -162,7 +176,8 @@ public class LedgerTests
   [Fact]
   public void OverrideCount_DoesNotTouchMixed()
   {
-    var e = Ev(laneN: 1); // Mixed (thin)
+    var e = Ev(lean: VerdictLean.OnMarket, velocity: null, recentSales: 0); // Mixed (unmeasured)
+    Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.BaseTier(e));
     Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.Tier(e, overrideCount: 99));
   }
 
