@@ -542,7 +542,10 @@ internal sealed class LedgerWindow : Window
         "Skillup value or yields beat the alternatives. Run from the desynth window (it pre-selects this pile)."))
       return;
 
-    ImGui.TextDisabled("Open the desynthesis window - it marks and selects this pile for you.");
+    if (Plugin.DesynthOrchestrator.IsRunning)
+      ImGui.TextDisabled("Desynth run in progress...");
+    else if (ImGui.Button($"Open desynthesis ({rows.Count} pre-selected)##meltopen"))
+      Plugin.DesynthPreview.OpenSalvageWithPileSelected();
     foreach (var item in rows)
       DrawRoutedRow(item, showMoves: true);
   }

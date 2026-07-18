@@ -2,7 +2,9 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using ECommons;
 using ECommons.DalamudServices;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -47,6 +49,51 @@ internal sealed class DesynthPreviewWindow : Window
     IsOpen = true;
   }
 
+  /// <summary>
+  /// The Ledger's one-click entry for the Melt pile: opens the game's
+  /// desynthesis window if it is not already up (AgentSalvage), waits a beat
+  /// for the item list to populate, then opens this preview with the router's
+  /// Melt pile pre-selected. The player still fires Run here - that click is
+  /// where the protection modal lives, and it stays.
+  /// </summary>
+  public unsafe void OpenSalvageWithPileSelected()
+  {
+    var alreadyOpen = GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageItemSelector", out _);
+    if (!alreadyOpen)
+    {
+      var agent = AgentSalvage.Instance();
+      if (agent == null)
+      {
+        Svc.Chat.PrintError("[Scrooge] Couldn't reach the desynthesis agent.");
+        return;
+      }
+      agent->AgentInterface.Show();
+    }
+
+    Svc.Framework.RunOnTick(() =>
+    {
+      unsafe
+      {
+        if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageItemSelector", out _))
+        {
+          Svc.Chat.PrintError("[Scrooge] Desynthesis window didn't open - open it manually and retry.");
+          return;
+        }
+      }
+      OpenAndScan();
+      SelectMeltPile();
+    }, delay: TimeSpan.FromMilliseconds(alreadyOpen ? 50 : 600));
+  }
+
+  /// <summary>Selects exactly the router's Melt pile (protections excluded) - the same
+  /// action as the "Select Desynth Pile" button, callable by the Ledger hop.</summary>
+  private void SelectMeltPile()
+  {
+    _meltPile = Plugin.Ledger.MeltPileVariants();
+    foreach (var it in _items)
+      it.Selected = !it.IsProtected && _meltPile.Contains((it.ItemId, it.IsHq));
+  }
+
   public override void Draw()
   {
     // Auto-close if the salvage addon went away.
@@ -73,10 +120,7 @@ internal sealed class DesynthPreviewWindow : Window
       {
         ImGui.SameLine();
         if (ImGui.SmallButton("Select Desynth Pile"))
-        {
-          foreach (var it in _items)
-            it.Selected = !it.IsProtected && _meltPile.Contains((it.ItemId, it.IsHq));
-        }
+          SelectMeltPile();
       }
     }
 
