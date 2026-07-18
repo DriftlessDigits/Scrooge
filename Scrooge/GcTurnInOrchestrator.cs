@@ -44,29 +44,20 @@ internal sealed class GcTurnInOrchestrator
   private bool _pendingHqDelivery;
 
   private uint _sealsBefore;
-  private long _sealsEarned;
-  private int _turnedIn;
   private int _itemsUntilLongPause;
-  private System.DateTime _runStarted;
 
-  internal bool IsRunning { get; private set; }
+  /// <summary>
+  /// The shared run-host lifecycle: state, progress (done/total), value (seals),
+  /// self-calibrating ETA, and the stall terminal. This orchestrator was the
+  /// accidental prototype of the contract (the 0129f13 Progress tuple); it now
+  /// drives the generalized core instead of hand-rolling its own bookkeeping.
+  /// </summary>
+  private readonly RunLifecycle _run = new(System.TimeSpan.FromSeconds(30));
 
-  /// <summary>Live progress for the routing window's run readout.</summary>
-  internal (int Done, int Total, long Seals, System.TimeSpan? Eta) Progress
-  {
-    get
-    {
-      var total = _turnedIn + _remaining;
-      // Self-calibrating ETA: observed pace so far spread over what's left.
-      System.TimeSpan? eta = null;
-      if (_turnedIn > 0 && _remaining > 0)
-      {
-        var elapsed = System.DateTime.UtcNow - _runStarted;
-        eta = elapsed * ((double)_remaining / _turnedIn);
-      }
-      return (_turnedIn, total, _sealsEarned, eta);
-    }
-  }
+  internal bool IsRunning => _run.IsRunning;
+
+  /// <summary>The live run, for the standard progress readout (see RunHostRender).</summary>
+  internal RunLifecycle Run => _run;
 
   public GcTurnInOrchestrator()
   {
@@ -85,39 +76,45 @@ internal sealed class GcTurnInOrchestrator
   internal void Abort()
   {
     _taskManager.Abort();
-    FinishState("cancelled");
+    FinishState(RunState.Cancelled, "cancelled");
   }
 
   /// <summary>
-  /// Clears run state without touching the task manager, so it is safe from
-  /// inside a task. Already-queued follow-up tasks no-op on the IsRunning
-  /// guard at their top. Non-complete finishes close a still-open reward
-  /// dialog so an abort never leaves the game mid-prompt.
+  /// Fail-closed teardown: drives the lifecycle to a terminal state and cleans up
+  /// every resource the run holds, on EVERY exit path. Safe from inside a task -
+  /// it never touches the task manager. Already-queued follow-ups no-op on the
+  /// IsRunning guard at their top. A watchdog Stall may have ended the run before
+  /// this call, in which case only the cleanup runs (once). Non-complete finishes
+  /// close a still-open reward dialog so an abort never leaves the game mid-prompt.
   /// </summary>
-  private unsafe void FinishState(string how)
+  private unsafe void FinishState(RunState outcome, string how)
   {
     _approved = null;
     _passedOver.Clear();
-    if (IsRunning)
+    var now = System.DateTime.UtcNow;
+    var justEnded = _run.IsRunning
+      && (outcome == RunState.Complete ? _run.Complete(now)
+          : outcome == RunState.Stalled ? _run.Stall(now)
+          : _run.Cancel(now));
+    if (justEnded)
     {
       Svc.Framework.Update -= OnFrameworkUpdate;
-      if (how != "complete")
+      if (outcome != RunState.Complete)
         CloseRewardDialog();
-      Svc.Chat.Print($"[Scrooge] Turn-in run {how}: {_turnedIn} items, {_sealsEarned:N0} seals.");
+      Svc.Chat.Print($"[Scrooge] Turn-in run {how}: {_run.Done} items, {_run.Value:N0} seals.");
     }
-    IsRunning = false;
   }
 
   /// <summary>
   /// Wedge watchdog. A task timeout clears the queue inside ECommons without
   /// notifying us - IsRunning with an idle task manager is exactly that state
-  /// and nothing else. Finish so the run can't jam StartRun (and the Cancel
-  /// button) until a manual cancel.
+  /// and nothing else. Stall the run (fail closed) so it can't jam StartRun (and
+  /// the Cancel button) until a manual cancel.
   /// </summary>
   private void OnFrameworkUpdate(IFramework framework)
   {
-    if (IsRunning && !_taskManager.IsBusy)
-      FinishState("timed out (the game stopped responding)");
+    if (_run.IsRunning && !_taskManager.IsBusy)
+      FinishState(RunState.Stalled, "timed out (the game stopped responding)");
   }
 
   private static unsafe void CloseRewardDialog()
@@ -157,11 +154,8 @@ internal sealed class GcTurnInOrchestrator
     }
     _remaining = items.Count;
     _passedOver.Clear();
-    _sealsEarned = 0;
-    _turnedIn = 0;
     _itemsUntilLongPause = _random.Next(8, 16);
-    _runStarted = System.DateTime.UtcNow;
-    IsRunning = true;
+    _run.Start(items.Count, RunValueUnit.Seals, System.DateTime.UtcNow, $"Turn in {items.Count} items");
     Svc.Framework.Update += OnFrameworkUpdate;
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
     _taskManager.Enqueue(ProcessNext, "GcProcessNext");
@@ -179,7 +173,7 @@ internal sealed class GcTurnInOrchestrator
 
     if (_approved == null || _remaining == 0)
     {
-      FinishState("complete");
+      FinishState(RunState.Complete, "complete");
       return true;
     }
 
@@ -220,7 +214,7 @@ internal sealed class GcTurnInOrchestrator
     {
       // Loaded list, no checklist rows left - done. Anything unticked never
       // appeared (filtered out, already gone, or ineligible) - say so.
-      FinishState(_remaining > 0
+      FinishState(RunState.Complete, _remaining > 0
         ? $"complete - {_remaining} approved {(_remaining == 1 ? "item" : "items")} never appeared in the delivery list"
         : "complete");
       return true;
@@ -229,12 +223,12 @@ internal sealed class GcTurnInOrchestrator
     // Wallet room - stop before the game starts eating the overflow.
     if (GameSafe.CompanySeals() is not { } seals)
     {
-      FinishState("aborted (seal wallet unreadable mid-run)");
+      FinishState(RunState.Cancelled, "aborted (seal wallet unreadable mid-run)");
       return true;
     }
     if (seals.Current + (uint)item.SealReward > seals.Max)
     {
-      FinishState($"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_remaining} items left");
+      FinishState(RunState.Cancelled, $"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_remaining} items left");
       return true;
     }
     _sealsBefore = seals.Current;
@@ -339,7 +333,7 @@ internal sealed class GcTurnInOrchestrator
       // doesn't carry names in AtkValues at all (RetainerTaskResult disease).
       DumpAddonStrings("GrandCompanySupplyReward", addon);
       addon->Close(true);
-      FinishState($"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
+      FinishState(RunState.Cancelled, $"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
       return true;
     }
 
@@ -395,15 +389,16 @@ internal sealed class GcTurnInOrchestrator
 
     if (GameSafe.CompanySeals() is not { } seals)
     {
-      FinishState("aborted (seal wallet unreadable mid-run)");
+      FinishState(RunState.Cancelled, "aborted (seal wallet unreadable mid-run)");
       return true;
     }
 
     if (seals.Current <= _sealsBefore)
       return false; // not landed yet - keep polling (seals lag the Deliver packet)
 
-    _sealsEarned += seals.Current - _sealsBefore;
-    _turnedIn++;
+    // One delivery landed: advance done + accrue the seal delta, resetting the
+    // stall watchdog. The lifecycle owns the progress/value/ETA bookkeeping now.
+    _run.RecordProgress(1, seals.Current - _sealsBefore, System.DateTime.UtcNow);
     TickOff(item.ItemId);
     return true;
   }

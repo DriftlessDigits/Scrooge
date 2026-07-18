@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -57,14 +58,48 @@ internal class RunData
   /// <summary>Total gil earned from vendor sales during the run.</summary>
   public long VendorSoldGil { get; set; }
 
-  /// <summary>Total items expected in this run (from pre-scan).</summary>
-  public int TotalItems { get; set; }
+  // --- Lifecycle (run-host contract, M6 session 1) ---
+  // The RunLifecycle core is the ONE owner of run state, counts and ETA - the old
+  // TotalItems/ItemsProcessed/IsComplete fields delegate so no counter exists twice.
+  // 60s stall bound: a generous multiple of the MB retry ladder's longest window.
 
-  /// <summary>Items processed so far (success or skip).</summary>
-  public int ItemsProcessed { get; set; }
+  /// <summary>The run-host lifecycle this run rides (state, progress, ETA, summary).</summary>
+  internal RunLifecycle Lifecycle { get; } = new(TimeSpan.FromSeconds(60));
 
-  /// <summary>Whether the run has completed (or was cancelled).</summary>
-  public bool IsComplete { get; set; }
+  /// <summary>Total items expected in this run (from pre-scan). Setter starts the lifecycle when idle.</summary>
+  public int TotalItems
+  {
+    get => Lifecycle.Total;
+    set => Lifecycle.SetTotal(value, RunValueUnit.Gil, DateTime.UtcNow,
+      seededMsPerItem: Plugin.Configuration?.AvgMsPerItem ?? 0);
+  }
+
+  /// <summary>Items processed so far (success or skip). Advance with <see cref="Beat"/>.</summary>
+  public int ItemsProcessed => Lifecycle.Done;
+
+  /// <summary>Whether the run has ended (complete or cancelled). Set via <see cref="MarkComplete"/>/<see cref="MarkCancelled"/>.</summary>
+  public bool IsComplete => Lifecycle.IsTerminal;
+
+  /// <summary>One item processed. Starts the lifecycle if the path never declared a total (desynth).</summary>
+  public void Beat()
+  {
+    Lifecycle.EnsureRunning(RunValueUnit.Gil, DateTime.UtcNow);
+    Lifecycle.RecordProgress(1, 0, DateTime.UtcNow);
+  }
+
+  /// <summary>The run finished its work. Safe on never-started paths (starts then completes).</summary>
+  public void MarkComplete()
+  {
+    Lifecycle.EnsureRunning(RunValueUnit.Gil, DateTime.UtcNow);
+    Lifecycle.Complete(DateTime.UtcNow);
+  }
+
+  /// <summary>The player cancelled. Safe on never-started paths.</summary>
+  public void MarkCancelled()
+  {
+    Lifecycle.EnsureRunning(RunValueUnit.Gil, DateTime.UtcNow);
+    Lifecycle.Cancel(DateTime.UtcNow);
+  }
 
   /// <summary>
   /// FK into desynth_runs.id while a desynth run is in flight. Null for
@@ -74,14 +109,8 @@ internal class RunData
 
   // --- Timing ---
 
-  /// <summary>Tracks total run duration.</summary>
+  /// <summary>Tracks total run duration (display + the AvgMsPerItem persistence blend).</summary>
   public Stopwatch RunStopwatch { get; } = new();
-
-  /// <summary>Tracks time since last ETA update.</summary>
-  public Stopwatch EtaStopwatch { get; } = new();
-
-  /// <summary>Estimated remaining time in milliseconds.</summary>
-  public float EtaCountdownMs { get; set; }
 
   // --- Price cache (survives across items within a run) ---
 

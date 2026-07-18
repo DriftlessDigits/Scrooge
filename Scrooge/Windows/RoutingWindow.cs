@@ -246,24 +246,24 @@ internal sealed class RoutingWindow : Window
 
     // Location session 2: the GC counter. Same one-confirm contract - the
     // Churn button only lights up at an open Expert Delivery window.
-    if (gcCount > 0)
+    // The RUNNING branch is gated on the run, not the pile: the pile count
+    // drains to zero as the run turns items in, and a readout gated on
+    // work-remaining vanishes mid-run (2026-07-18 report).
+    if (Plugin.GcTurnIn.IsRunning)
     {
       ImGui.SameLine();
-      if (Plugin.GcTurnIn.IsRunning)
-      {
-        if (ImGui.Button("Cancel turn-in"))
-          Plugin.GcTurnIn.Abort();
+      if (ImGui.Button("Cancel turn-in"))
+        Plugin.GcTurnIn.Abort();
 
-        // Run readout - one grammar for every executor once the ledger
-        // lands; this is the prototype (done/total, value, ETA).
-        var (done, total, seals, eta) = Plugin.GcTurnIn.Progress;
-        ImGui.SameLine();
-        var etaText = eta is { } t
-          ? t.TotalMinutes >= 1 ? $" — ~{(int)t.TotalMinutes}m {t.Seconds}s left" : $" — ~{t.Seconds}s left"
-          : "";
-        ImGui.TextColored(ScroogeColors.Earned, $"Turning in {done}/{total} — {seals:N0} seals{etaText}");
-      }
-      else
+      // Run readout - the ONE grammar for every executor now (RunHostRender),
+      // reading the shared run-host lifecycle. This retires the GC stopgap
+      // one-liner that read the 0129f13 Progress tuple inline.
+      ImGui.SameLine();
+      RunHostRender.Progress(Plugin.GcTurnIn.Run, "Turning in");
+    }
+    else if (gcCount > 0)
+    {
+      ImGui.SameLine();
       {
         var atGc = GcTurnInOrchestrator.AtExpertDelivery();
         ImGui.BeginDisabled(!atGc);
