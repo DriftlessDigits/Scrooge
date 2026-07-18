@@ -436,13 +436,13 @@ internal sealed class LedgerWindow : Window
     var rows = _items.Where(i => i.ActivePile == LedgerPile.List).ToList();
     if (rows.Count == 0) return;
 
-    var atBell = AtRetainerSellView();
-    if (!PileHeader($"List - at a retainer's sell window{LocationTag(atBell)}", "List", rows.Count, ScroogeColors.Earned,
-        "Earns real gil on the market board. The Hawk run lists it - open a retainer's sell view."))
+    var atBell = AtRetainerBell();
+    if (!PileHeader($"List - at a retainer bell{LocationTag(atBell)}", "List", rows.Count, ScroogeColors.Earned,
+        "Earns real gil on the market board. The Hawk run lists it - summon your retainers."))
       return;
 
     BulkConfirmButton(rows, atBell, "list",
-      set => RunHawkForRouted(set), "Open a retainer's sell view to list these.");
+      set => RunHawkForRouted(set), "Summon your retainers (any bell) to list these.");
     foreach (var item in rows)
       DrawRoutedRow(item, showMoves: true);
   }
@@ -471,8 +471,8 @@ internal sealed class LedgerWindow : Window
     var listed = triageRows.Where(r => EffectiveTriagePile(r.Item) == LedgerPile.PullAndVendor).ToList();
     if (bagVendor.Count == 0 && listed.Count == 0) return;
 
-    var atBell = AtRetainerSellView();
-    if (!PileHeader($"Pull & Vendor - at a retainer's sell window{LocationTag(atBell)}", "PullVendor",
+    var atBell = AtRetainerBell();
+    if (!PileHeader($"Pull & Vendor - at a retainer bell{LocationTag(atBell)}", "PullVendor",
         bagVendor.Count + listed.Count, ScroogeColors.Muted,
         "No better exit in evidence: pull the listing and/or vendor-sell. Executed at a retainer."))
       return;
@@ -481,7 +481,7 @@ internal sealed class LedgerWindow : Window
     // on Unanimous only.
     if (bagVendor.Count > 0)
       BulkConfirmButton(bagVendor, atBell, "vendor",
-        set => RunHawkForRouted(set), "Open a retainer's sell view to vendor these.");
+        set => RunHawkForRouted(set), "Summon your retainers (any bell) to vendor these.");
     if (listed.Count > 0)
       BulkConfirmTriage(listed, TriageAction.Vendor, "vendor");
 
@@ -851,7 +851,7 @@ internal sealed class LedgerWindow : Window
       });
     }
     if (hawkItems.Count == 0) return;
-    Plugin.AutoPinch.StartHawkRun(hawkItems);
+    Plugin.AutoPinch.NavigateAndStartHawkRun(hawkItems);
     IsOpen = false;
   }
 
@@ -948,6 +948,11 @@ internal sealed class LedgerWindow : Window
     };
   }
 
-  private static unsafe bool AtRetainerSellView()
-    => GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _);
+  /// <summary>
+  /// True anywhere Hawk can start from: the bell roster (NavigateAndStartHawkRun
+  /// hops to a retainer's sell view itself) or already inside a sell view.
+  /// </summary>
+  private static unsafe bool AtRetainerBell()
+    => GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out _)
+    || GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _);
 }
