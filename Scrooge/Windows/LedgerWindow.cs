@@ -484,8 +484,7 @@ internal sealed class LedgerWindow : Window
         "Earns real gil on the market board. The Hawk run lists it - summon your retainers."))
       return;
 
-    BulkConfirmButton(rows, atBell, "list",
-      set => RunHawkForRouted(set), "Summon your retainers (any bell) to list these.");
+    BellConfirmButton(atBell, "L");
     foreach (var item in rows)
       DrawRoutedRow(item, showMoves: true);
   }
@@ -520,11 +519,9 @@ internal sealed class LedgerWindow : Window
         "No better exit in evidence: pull the listing and/or vendor-sell. Executed at a retainer."))
       return;
 
-    // Bag gear -> Hawk vendor pass; listed rows -> triage vendor batch. Both bulk
-    // on Unanimous only.
+    // Bag gear rides the shared bell run; listed rows -> triage vendor batch.
     if (bagVendor.Count > 0)
-      BulkConfirmButton(bagVendor, atBell, "vendor",
-        set => RunHawkForRouted(set), "Summon your retainers (any bell) to vendor these.");
+      BellConfirmButton(atBell, "V");
     if (listed.Count > 0)
       BulkConfirmTriage(listed, TriageAction.Vendor, "vendor");
 
@@ -704,29 +701,38 @@ internal sealed class LedgerWindow : Window
   // Bulk confirm (design Section 4 - only Unanimous rows enumerate)
   // ==========================================================================
 
-  private void BulkConfirmButton(List<RoutedItem> rows, bool locationReady, string verb,
-    Action<List<RoutedItem>> execute, string offLocationHint)
+  /// <summary>
+  /// ONE confirm for everything ruled at the bell: List and Pull-and-Vendor bag
+  /// rows execute through the same Hawk run (it lists and vendors per item), so
+  /// one trip to the bell is one click - the pile split is presentation, not two
+  /// jobs. Drawn in both piles; either instance fires the whole set. Only rows
+  /// the confidence gate cleared (Unanimous or player-ruled) ride.
+  /// </summary>
+  private void BellConfirmButton(bool atBell, string idSuffix)
   {
-    var confirmable = LedgerConfidence.BulkSet(rows.Select(r => (r, r.Confidence, r.PlayerResolved)));
-    var chosen = confirmable.Count(r => r.PlayerResolved && !LedgerConfidence.IsBulkEligible(r.Confidence));
-    var label = chosen > 0
-      ? $"Confirm all {verb} ({confirmable.Count - chosen} unanimous + {chosen} chosen)"
-      : $"Confirm all {verb} ({confirmable.Count} unanimous)";
-    ImGui.BeginDisabled(!locationReady || confirmable.Count == 0);
-    if (ImGui.Button($"{label}##bulk{verb}"))
+    var listRows = _items.Where(i => i.ActivePile == LedgerPile.List).ToList();
+    var vendorRows = _items.Where(i => i.ActivePile == LedgerPile.PullAndVendor).ToList();
+    var listSet = LedgerConfidence.BulkSet(listRows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+    var vendSet = LedgerConfidence.BulkSet(vendorRows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+    var total = listSet.Count + vendSet.Count;
+
+    ImGui.BeginDisabled(!atBell || total == 0);
+    if (ImGui.Button($"Confirm bell run ({listSet.Count} list + {vendSet.Count} vendor)##bellrun{idSuffix}"))
     {
-      foreach (var item in confirmable)
+      var all = listSet.Concat(vendSet).ToList();
+      foreach (var item in all)
         RecordRoutedSignal(item, item.Pile); // a bulk confirm is mass agreement
-      execute(confirmable);
+      RunHawkForRouted(all);
     }
     ImGui.EndDisabled();
-    if (!locationReady && confirmable.Count > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-      ImGui.SetTooltip(offLocationHint);
-    var mixed = rows.Count - confirmable.Count;
-    if (mixed > 0)
+    if (!atBell && total > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+      ImGui.SetTooltip("Summon your retainers (any bell) to run these.");
+
+    var pending = (listRows.Count - listSet.Count) + (vendorRows.Count - vendSet.Count);
+    if (pending > 0)
     {
       ImGui.SameLine();
-      ImGui.TextDisabled($"{mixed} need a row click");
+      ImGui.TextDisabled($"{pending} need a row click");
     }
   }
 
