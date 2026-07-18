@@ -281,10 +281,13 @@ public sealed class Configuration : IPluginConfiguration
   // you WILL be, not where you are. Inert until a full week of snapshots exists.
   public int VentureBandCruise { get; set; } = 2000;
 
-  // Sam's value hierarchy (07-18): skillup melts outrank ordinary gil; gil at
-  // this level ("selling for like 150k") outranks the skillup. Sale evidence
-  // (own or community) at or above this routes a skillup item to the market.
-  public int SkillupYieldsToGilAt { get; set; } = 150_000;
+  // What a skillup is worth in gil (Sam 07-18: price the skillup, don't gate
+  // it). The desynth candidate for a skillup-eligible item scores at least
+  // this and competes in the ordinary value comparison; red is rarer than
+  // yellow, so it is worth more. A sale comfortably above the worth wins the
+  // market; below it, the melter wins; near it, Review.
+  public int SkillupWorthYellow { get; set; } = 50_000;
+  public int SkillupWorthRed { get; set; } = 100_000;
 
   // Slow-mover pressure - the routing brain pointed at already-listed
   // inventory. Rides the pinch run; gated by EnableRoutingBrain too.

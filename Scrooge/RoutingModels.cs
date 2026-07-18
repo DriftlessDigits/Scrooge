@@ -28,11 +28,15 @@ internal sealed record RoutingConfig
   /// </summary>
   public int VentureBandCruise { get; init; } = 2000;
   /// <summary>
-  /// The very-very-high gil line (Sam's hierarchy 07-18: skillup outranks
-  /// ordinary gil; gil at this level outranks the skillup). Sale evidence at or
-  /// above this makes a skillup-eligible item route to the market instead.
+  /// What a skillup is WORTH in gil (Sam's iteration 07-18: price the skillup,
+  /// don't gate it). A skillup-eligible item's desynth candidate scores at least
+  /// this, then competes in the ordinary value comparison - "very-very-high gil
+  /// beats a skillup" becomes emergent instead of a special-case threshold, and
+  /// near-worth sales land in Review like any honest coin flip. Red is rarer
+  /// than yellow, so it is worth more.
   /// </summary>
-  public int SkillupYieldsToGilAt { get; init; } = 150_000;
+  public int SkillupWorthYellow { get; init; } = 50_000;
+  public int SkillupWorthRed { get; init; } = 100_000;
 }
 
 /// <summary>

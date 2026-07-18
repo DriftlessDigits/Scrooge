@@ -235,12 +235,14 @@ public class SkillupTests
     => Assert.Equal(RoutingExit.Desynth,
       RoutingRules.Evaluate(T.Gear(skillup: true, melt: 600, vendor: 500), T.Batch()).Exit);
 
-  // ---- Sam's value hierarchy (07-18): very-very-high gil > skillup > ordinary gil ----
+  // ---- Sam's value hierarchy (07-18): the skillup is PRICED, not gated.
+  // Worth seeds: yellow 50k, red 100k. Gil above the worth wins the market;
+  // below it, the melter; near it, Review - all emergent from one comparison.
 
   [Fact]
   public void Skillup_OutranksOrdinaryLocalSale()
   {
-    // A 20k floor-clearing sale is ORDINARY gil - the rare skillup wins.
+    // 20k sale vs a yellow worth 50k: the rare skillup wins.
     var v = RoutingRules.Evaluate(T.Gear(skillup: true, sale: (20_000, 0, 5)), T.Batch());
     Assert.Equal(RoutingExit.Desynth, v.Exit);
     Assert.Contains("Skillup", v.Reason);
@@ -249,7 +251,7 @@ public class SkillupTests
   [Fact]
   public void VeryVeryHighLocalSale_OutranksSkillup()
   {
-    // 200k >= the 150k line: melting this is burning gil - market rules win.
+    // 200k sale vs yellow 50k: melting this is burning gil - market wins.
     var v = RoutingRules.Evaluate(T.Gear(skillup: true, sale: (200_000, 0, 5)), T.Batch());
     Assert.Equal(RoutingExit.List, v.Exit);
   }
@@ -257,12 +259,31 @@ public class SkillupTests
   [Fact]
   public void VeryVeryHighCommunityValue_OutranksSkillup()
   {
-    // Never sold locally, but the DC pays 200k on enough samples; seals exist so
-    // the community veto can route it to the Hawk run instead of the melter.
+    // Never sold locally, but the DC pays 200k on enough samples - the
+    // community veto outbids both the seals and the priced skillup.
     var v = RoutingRules.Evaluate(
       T.Gear(skillup: true, seals: 500, communityMedian: 200_000, communityCount: 5),
       T.Batch());
     Assert.Equal(RoutingExit.List, v.Exit);
+  }
+
+  [Fact]
+  public void RedSkillup_WorthMoreThanYellow()
+  {
+    // An 80k sale outbids a yellow (50k) but NOT a red (100k) - red is rarer.
+    Assert.Equal(RoutingExit.List,
+      RoutingRules.Evaluate(T.Gear(skillup: true, sale: (80_000, 0, 5)), T.Batch()).Exit);
+    Assert.Equal(RoutingExit.Desynth,
+      RoutingRules.Evaluate(T.Gear(redSkillup: true, sale: (80_000, 0, 5)), T.Batch()).Exit);
+  }
+
+  [Fact]
+  public void SaleNearSkillupWorth_LandsInReview()
+  {
+    // 95k sale vs a red worth 100k: inside the review band - honest coin flip,
+    // the player rules it.
+    var v = RoutingRules.Evaluate(T.Gear(redSkillup: true, sale: (95_000, 0, 5)), T.Batch());
+    Assert.True(v.IsReview);
   }
 }
 

@@ -97,6 +97,22 @@ internal static class RoutingRules
     var meltScore = item.MeltValuePerAttempt;
     var meltReason = meltScore is long mv ? $"Desynth: yields ~{mv:N0} gil/attempt from your ledger." : "";
 
+    // Skillup pricing (Sam 07-18: price the skillup, don't gate it). A rare
+    // red/yellow skillup makes the desynth candidate worth AT LEAST the
+    // configured gil value; it then competes in the ordinary comparison, so
+    // "very-very-high gil beats a skillup" is emergent (a 200k sale outbids a
+    // 100k red; a 20k sale loses to it; near-worth lands in Review honestly).
+    if (item.DesynthSkillupEligible)
+    {
+      long worth = item.DesynthColor == DesynthSkillupColor.Red
+        ? cfg.SkillupWorthRed : cfg.SkillupWorthYellow;
+      if (worth > (meltScore ?? 0))
+      {
+        meltScore = worth;
+        meltReason = $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — worth ~{worth:N0} gil to you (skillups are scarce).";
+      }
+    }
+
     var vendorScore = item.VendorPrice > 0 ? (long)item.VendorPrice : (long?)null;
     var vendorReason = vendorScore is long vv ? $"Vendor: {vv:N0} gil." : "";
 
@@ -119,27 +135,10 @@ internal static class RoutingRules
       }
     }
 
-    // Rule 5 — desynth skillup, hoisted ABOVE ordinary list evidence. Sam's
-    // value hierarchy (07-18): "Melt for a skill up is VERY high. Selling an
-    // item for like 150k gil is VERY VERY high." Red/yellow skillups are rare;
-    // seals and ordinary gil are common - so a skillup outranks a floor-clearing
-    // sale, and yields (even proven junk) never block it. The ONE thing that
-    // outranks a skillup is very-very-high gil: sale evidence (own or community,
-    // min samples) at or above SkillupYieldsToGilAt falls through to the market
-    // rules instead - melting a 150k sale to move a skill number is burning gil.
-    if (item.DesynthSkillupEligible)
-    {
-      var bigLocal = item.LastSale is { } bigSale && bigSale.Price >= cfg.SkillupYieldsToGilAt;
-      var bigCommunity = item.CommunityMedian is long bigCm
-        && item.CommunitySampleCount >= cfg.CommunityMinSamples
-        && bigCm >= cfg.SkillupYieldsToGilAt;
-      if (!bigLocal && !bigCommunity)
-        return new(RoutingExit.Desynth,
-          $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — skillups are scarce, gil can wait.");
-      // Very-very-high gil: fall through to the market rules below.
-    }
-
-    if (listScore is long list)
+    // Rule 4 winner check honors the priced skillup: List only wins outright
+    // when the sale actually outbids the desynth candidate (which a skillup
+    // inflates); otherwise fall through to the value rules below.
+    if (listScore is long list && list >= (meltScore ?? 0))
     {
       // Sub-750 stock: default to churn unless the item is worth a lot.
       if (gcScore is not null && stock is int lowStock && lowStock < cfg.VentureBandLow
@@ -184,7 +183,7 @@ internal static class RoutingRules
       if (item.IsMarketable && item.LastSale is null
           && item.CommunityMedian is long cm
           && item.CommunitySampleCount >= cfg.CommunityMinSamples
-          && cm > gc)
+          && cm > gc && cm > (meltScore ?? 0))
         return Resolve(RoutingExit.List, cm,
           $"List: the DC pays ~{cm:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — beats {gcReason.TrimEnd('.')}. The Hawk run prices it off the live MB.",
           (RoutingExit.Gc, gcScore, gcReason), stock, burn, cfg);
@@ -204,8 +203,12 @@ internal static class RoutingRules
     {
       var vendorFloor = vendorScore ?? 0;
       if (melt > vendorFloor * MeltOverVendorFactor)
+        // List rides as a runner-up candidate: a sale just under a priced
+        // skillup's worth reaches here, and the review band should see it.
         return Resolve(RoutingExit.Desynth, melt, meltReason,
-          (RoutingExit.Vendor, vendorScore, vendorReason), stock, burn, cfg);
+          BestOf((RoutingExit.Vendor, vendorScore, vendorReason),
+                 (RoutingExit.List, listScore, listReason)),
+          stock, burn, cfg);
       if (melt > vendorFloor)
         return new(RoutingExit.Desynth, meltReason, IsReview: true,
           RunnerUp: RoutingExit.Vendor,

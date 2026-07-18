@@ -68,7 +68,8 @@ internal static class RoutingInputService
         VentureBandPanic = cfg.VentureBandPanic,
         VenturePanicValueMultiplier = cfg.VenturePanicValueMultiplier,
         VentureBandCruise = cfg.VentureBandCruise,
-        SkillupYieldsToGilAt = cfg.SkillupYieldsToGilAt,
+        SkillupWorthYellow = cfg.SkillupWorthYellow,
+        SkillupWorthRed = cfg.SkillupWorthRed,
       },
     };
   }
