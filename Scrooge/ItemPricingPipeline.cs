@@ -453,6 +453,48 @@ internal sealed class ItemPricingPipeline : IDisposable
           currentItem.CurrentListingPrice);
         currentItem.Lane = decision;
 
+        // Decision receipt (M4): one row per pricing decision, coordinates RELATIVE
+        // (item-agnostic) and read from the LIVE board + lane at decision time, never
+        // from the event log (design Section 7). arm_id rides null - M4 is the seam
+        // only; the race-site policy resolver (DecisionReceipts.ResolveRacePolicy)
+        // always returns floor-wait, which the lane already implements. The outcome
+        // join fills later from a GilTrack confirm / evict, never here.
+        try
+        {
+          var foreignDepth = 0;
+          foreach (var l in board) if (!l.IsOwn) foreignDepth++;
+          double spread = 0;
+          long lo = long.MaxValue, hi = 0; var laneN = 0;
+          foreach (var s in sales)
+            if (s.IsHq == hqPricing) { laneN++; if (s.UnitPrice < lo) lo = s.UnitPrice; if (s.UnitPrice > hi) hi = s.UnitPrice; }
+          if (laneN > 1 && lane != null && lane.Median > 0)
+            spread = (hi - lo) / lane.Median;
+
+          long decidedPrice = decision.Anchor ?? currentItem.CurrentListingPrice ?? 0;
+          long? undercutTarget = decision.AnchorIsListing ? decision.Anchor : null;
+
+          var coords = DecisionReceipts.Compute(new DecisionReceipts.ReceiptInputs(
+            DecidedPrice: decidedPrice,
+            LaneMedian: lane?.Median ?? 0,
+            LaneSampleCount: lane?.SampleCount ?? 0,
+            LaneWeightedAgeDays: lane?.WeightedAgeDays ?? 0,
+            LaneSpread: spread,
+            BoardDepth: foreignDepth,
+            UndercutTarget: undercutTarget,
+            VelocityPerDay: velocity,
+            Quantity: currentItem.Quantity,
+            LaneStackNorm: null)); // lane sale quantity not surfaced yet - column rides for later
+
+          GilStorage.InsertDecisionReceipt(
+            currentItem.ItemId, currentItem.IsHq, currentItem.RetainerName,
+            GilTracker.GetItemCategory(currentItem.ItemId), null,
+            coords, decision.Outcome.ToString(), decision.Evidence);
+        }
+        catch (Exception ex)
+        {
+          Svc.Log.Warning($"[Receipt] Failed to write decision receipt: {ex.Message}");
+        }
+
         if (decision.Outcome == LaneOutcome.HeldThinHistory)
         {
           if (currentItem.BypassPriceGuards)
@@ -556,6 +598,27 @@ internal sealed class ItemPricingPipeline : IDisposable
         Plugin.PinchRunLog.AddListingValue(listingValue * listingQuantity);
         if (!IsHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
           GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
+      }
+
+      // Market memory (M4): diff the captured board against the stored snapshot and
+      // append events + refresh the snapshot - ONE write path. Runs at the pricing
+      // door for EVERY board packet that arrived this pass, even for items the pricer
+      // skipped/held (the observation was made, record it - ruling 3). Guarded on a
+      // real captured board so cache hits (no MB query) and empty passes no-op.
+      // Must run BEFORE ClearHistory wipes the captured board.
+      if (Plugin.Configuration.EnableGilTracking && _mbHandler.BoardItemId != 0)
+      {
+        try
+        {
+          var boardId = _mbHandler.BoardItemId;
+          var snapshot = _mbHandler.GetBoardSnapshot(boardId);
+          if (snapshot.Count > 0)
+            GilStorage.ApplyBoardScan(boardId, snapshot, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        }
+        catch (Exception ex)
+        {
+          Svc.Log.Warning($"[MarketMemory] Board diff failed: {ex.Message}");
+        }
       }
 
       _hotKeyPrice = null;
@@ -743,7 +806,13 @@ internal sealed class ItemPricingPipeline : IDisposable
               currentItem.RetainerName, currentItem.SlotIndex, "lane_held",
               timedOut ? $"Held (MB timeout) — {evidence}" : $"Held (thin history) — {evidence}",
               currentItem.CurrentListingPrice ?? 0, 0,
-              currentItem.LaneEvidence, Plugin.Configuration.LaneMinHistorySamples);
+              currentItem.LaneEvidence, Plugin.Configuration.LaneMinHistorySamples,
+              // Scope tags the container this flag points at, for the zombie sweep:
+              // a pinch holds an item in the retainer's sell LISTINGS (board); a Hawk
+              // run holds an unlisted item in the sell INVENTORY. Only a run that walks
+              // the matching container may later close it as item_gone.
+              scope: IsHawkRun ? TriageMemory.ScopeTag(TriageMemory.FlagScope.Inventory)
+                               : TriageMemory.ScopeTag(TriageMemory.FlagScope.Board));
           }
           catch (Exception ex)
           {

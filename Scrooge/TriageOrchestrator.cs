@@ -468,7 +468,7 @@ internal sealed class TriageOrchestrator : IDisposable
       _taskManager.DelayNext(500);
 
       // Track the sale and retire the row (flags close on COMPLETION, not queue)
-      _taskManager.Enqueue(() => { if (!Skipped(item)) { TrackVendorSale(item); Plugin.TriageWindow.RemoveItem(item); } return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { TrackVendorSale(item); CloseReceiptsNeverCleared(item); Plugin.TriageWindow.RemoveItem(item); } return true; },
         $"TriageTrack_{item.ItemName}");
       _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; },
         $"TriageUnblockCatchall_{item.ItemName}");
@@ -476,7 +476,7 @@ internal sealed class TriageOrchestrator : IDisposable
     else
     {
       // Pull only — track the pull and retire the row on completion
-      _taskManager.Enqueue(() => { if (!Skipped(item)) { _pulledCount++; Plugin.TriageWindow.RemoveItem(item); } return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { _pulledCount++; CloseReceiptsNeverCleared(item); Plugin.TriageWindow.RemoveItem(item); } return true; },
         $"TriagePulled_{item.ItemName}");
     }
 
@@ -548,6 +548,20 @@ internal sealed class TriageOrchestrator : IDisposable
 
     Svc.Log.Warning($"[Triage] Retainer '{retainerName}' not found — skipping");
     return true;
+  }
+
+  /// <summary>
+  /// Outcome join (M4): a pull/vendor evicts the listing from the board WITHOUT an MB
+  /// sale, so the item's open decision receipts close as never-cleared - the forecast
+  /// never got its test, and that absence is the finding (design Section 4). A GilTrack
+  /// MB sale, by contrast, fills them cleared; the two paths never collide because a
+  /// sold item is skipped here (SellListRow returns null) before it reaches a pull.
+  /// </summary>
+  private static void CloseReceiptsNeverCleared(PricingItem item)
+  {
+    if (!Plugin.Configuration.EnableGilTracking || item.ItemId == 0) return;
+    try { GilStorage.CloseReceiptsNeverCleared(item.ItemId, item.IsHq); }
+    catch (Exception ex) { Svc.Log.Warning($"[Receipt] never-cleared close failed for {item.ItemId}: {ex.Message}"); }
   }
 
   /// <summary>Tracks a vendor sale for the triage summary.</summary>

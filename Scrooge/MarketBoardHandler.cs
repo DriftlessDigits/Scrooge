@@ -45,7 +45,9 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   // The board only exists inside the offerings event; the lane decision runs
   // later in SetNewPrice where history + velocity are also in hand. Batches
   // (10 listings each, ascending) accumulate here per item.
-  private readonly List<(long Price, bool IsOwn, bool IsHq)> _board = [];
+  // Retainer + quantity ride alongside price so market memory (M4) can diff on
+  // soft identity (retainer, qty, HQ); lane pricing still reads price/own/hq only.
+  private readonly List<(long Price, bool IsOwn, bool IsHq, string Retainer, int Quantity)> _board = [];
   private readonly HashSet<int> _boardRequestIds = [];
 
   /// <summary>Item ID the captured board belongs to.</summary>
@@ -244,7 +246,8 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
       return; // batch already captured
 
     foreach (var listing in offerings.ItemListings)
-      _board.Add(((long)listing.PricePerUnit, GameSafe.IsOwnRetainer(listing.RetainerId), listing.IsHq));
+      _board.Add(((long)listing.PricePerUnit, GameSafe.IsOwnRetainer(listing.RetainerId),
+        listing.IsHq, listing.RetainerName ?? "", (int)listing.ItemQuantity));
   }
 
   /// <summary>
@@ -259,6 +262,22 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     return _board
       .Where(l => !hqOnly || l.IsHq)
       .Select(l => new LaneListing(l.Price, l.IsOwn))
+      .ToList();
+  }
+
+  /// <summary>
+  /// The full-identity captured board for market memory (M4): every listing (both
+  /// qualities - quality is part of the soft-identity key) with its retainer, stack
+  /// size, price and own-ness. Empty when the captured board belongs to another item.
+  /// Read at the pricing door to diff against the stored snapshot.
+  /// </summary>
+  internal List<MarketEvents.BoardListing> GetBoardSnapshot(uint itemId)
+  {
+    if (itemId != BoardItemId)
+      return [];
+
+    return _board
+      .Select(l => new MarketEvents.BoardListing(l.Retainer, l.Quantity, l.IsHq, l.Price, l.IsOwn))
       .ToList();
   }
 

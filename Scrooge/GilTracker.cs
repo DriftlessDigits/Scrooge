@@ -98,6 +98,7 @@ internal static class GilTracker
     // Step 1: Read existing first_seen values before we delete
     // (so we can preserve them for items that are still listed)
     var existingFirstSeen = new Dictionary<string, long>();
+    var seenItemIds = new HashSet<uint>(); // for the zombie lane_held sweep below
     for (int i = 0; i < itemCount; i++)
     {
       var baseIdx = 10 + (i * 13);
@@ -106,10 +107,25 @@ internal static class GilTracker
       var payload = Communicator.RawItemNameToItemPayload(itemName);
       var itemID = payload?.ItemId ?? 0u;
       if (itemID == 0) continue;
+      seenItemIds.Add(itemID);
 
       var fs = GilStorage.GetFirstSeen(CurrentRetainerName, slotIndex, itemID);
       if (fs.HasValue)
         existingFirstSeen[$"{slotIndex}|{itemID}"] = fs.Value;
+    }
+
+    // Zombie lane_held heal (M4): this pinch just observed the FULL sell-listings
+    // container for this retainer. Any open board-scope lane_held flag whose item is
+    // NOT among the listings has left the board - close it as item_gone. TriageMemory
+    // makes the pick; an inventory-scope flag (Molybdenum-in-inventory) or an unknown
+    // legacy flag is left open - a pinch only proves board absence, never inventory.
+    try
+    {
+      GilStorage.ZombieSweepLaneHeldFlags(CurrentRetainerName, TriageMemory.FlagScope.Board, seenItemIds);
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning($"[Triage] Zombie lane_held sweep failed: {ex.Message}");
     }
 
     // Step 2+3: Delete and re-insert in a transaction.
@@ -309,6 +325,15 @@ internal static class GilTracker
         soldAfterDays = (int)(((long)entry.UnixTimeSeconds - firstSeen) / 86400);
 
       GilStorage.UpsertLastSalePrice(entry.ItemID, entry.IsHQ, realUnitPrice, (long)entry.UnixTimeSeconds, soldAfterDays);
+
+      // Outcome join (M4): a confirmed sale fills time-to-clear on the item's open
+      // decision receipts and marks them cleared, and upgrades the item's own
+      // market-events disappearance from pulled/observed to sold/confirmed. Same
+      // certainty-tier discipline as the flag heal - a confirm is the only thing that
+      // says "sold"; foreign rows never move. Best-effort: a storage hiccup here must
+      // not drop the sale that already recorded above.
+      try { GilStorage.FillReceiptOutcomeOnSale(entry.ItemID, entry.IsHQ, (long)entry.UnixTimeSeconds); }
+      catch (Exception ex) { Svc.Log.Warning($"[Receipt] Outcome join failed for {entry.ItemID}: {ex.Message}"); }
     }
 
     if (newCount > 0 || promotedCount > 0 || dedupedCount > 0)
