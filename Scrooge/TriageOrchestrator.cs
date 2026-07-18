@@ -92,8 +92,11 @@ internal sealed class TriageOrchestrator : IDisposable
       return false;
     }
 
-    // Reset item state for repricing
+    // Reset item state for repricing. QueuedAction is the Skipped() contract:
+    // without a real action stamped here, every chained step no-ops.
+    item.QueuedAction = TriageAction.Reprice;
     item.BypassPriceGuards = true;
+    var priorResult = item.Result;
     item.Result = PricingResult.Pending;
     item.FinalPrice = null;
 
@@ -185,7 +188,12 @@ internal sealed class TriageOrchestrator : IDisposable
       else if (item.Result == PricingResult.Skipped)
         Plugin.TriageWindow.RemoveItem(item); // no longer listed - row is moot
       else
+      {
         Svc.Chat.PrintError($"[Scrooge] Reprice failed for {item.ItemName}: {item.Result}");
+        // Restore the pre-reprice verdict so the triage row keeps its real
+        // reason (and its Reprc button) instead of degrading to Unknown.
+        item.Result = priorResult;
+      }
 
       // Chain next reprice if batch has more
       if (_repriceQueue != null && _repriceQueue.Count > 0)
@@ -487,7 +495,7 @@ internal sealed class TriageOrchestrator : IDisposable
 
   /// <summary>An item marked skipped mid-batch (no longer listed) - queued follow-up tasks no-op.</summary>
   private static bool Skipped(PricingItem item)
-    => item.QueuedAction == TriageAction.None || item.Result == PricingResult.Skipped;
+    => TriageMemory.ItemSkipped(item.QueuedAction, item.Result);
 
   /// <summary>
   /// Translates a context-menu clicker's tri-state for the TaskManager: a

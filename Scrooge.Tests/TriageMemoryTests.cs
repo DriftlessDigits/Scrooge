@@ -266,4 +266,39 @@ public class TriageMemoryTests
     Assert.Equal(FlagScope.Unknown, ParseScope(""));
     Assert.Equal(FlagScope.Unknown, ParseScope(null));
   }
+
+  // =========================================================================
+  // ItemSkipped - the batch-chain no-op guard (2026-07-18 regression pin)
+  // =========================================================================
+
+  [Fact]
+  public void ItemSkipped_RepriceWithStampedAction_IsNotSkipped()
+  {
+    // The regression: batch reprice items were never stamped with a QueuedAction,
+    // so every chained step no-oped and the reprice "failed: Pending". A stamped
+    // reprice mid-chain (Result reset to Pending) must run.
+    Assert.False(TriageMemory.ItemSkipped(TriageAction.Reprice, PricingResult.Pending));
+  }
+
+  [Fact]
+  public void ItemSkipped_NoQueuedAction_IsSkipped()
+  {
+    // QueuedAction None is the "nothing to do / fail-closed" contract - skip.
+    Assert.True(TriageMemory.ItemSkipped(TriageAction.None, PricingResult.Pending));
+  }
+
+  [Fact]
+  public void ItemSkipped_SoldSinceFlagging_IsSkipped()
+  {
+    // A row that marked itself Skipped (no longer listed) skips regardless of action.
+    Assert.True(TriageMemory.ItemSkipped(TriageAction.Reprice, PricingResult.Skipped));
+    Assert.True(TriageMemory.ItemSkipped(TriageAction.Vendor, PricingResult.Skipped));
+  }
+
+  [Fact]
+  public void ItemSkipped_VendorAndPull_AreNotSkipped()
+  {
+    Assert.False(TriageMemory.ItemSkipped(TriageAction.Vendor, PricingResult.Pending));
+    Assert.False(TriageMemory.ItemSkipped(TriageAction.Pull, PricingResult.Pending));
+  }
 }

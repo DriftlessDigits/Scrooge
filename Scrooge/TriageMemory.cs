@@ -199,6 +199,18 @@ internal static class TriageMemory
     };
   }
 
+  /// <summary>
+  /// The per-item no-op guard for triage batch chains: a step runs only when the
+  /// item still carries a real queued action and has not marked itself Skipped
+  /// (sold since flagging). QueuedAction is a CONTRACT - every path that queues an
+  /// item for chain execution must stamp its action, or the whole chain silently
+  /// no-ops step by step (the 2026-07-18 batch-reprice regression: vendor/pull
+  /// stamped it, reprice never did, and four reprices "completed" without ever
+  /// touching a price).
+  /// </summary>
+  internal static bool ItemSkipped(TriageAction queuedAction, PricingResult result)
+    => queuedAction == TriageAction.None || result == PricingResult.Skipped;
+
   // =========================================================================
   // Zombie flag heal (M4)
   // =========================================================================
