@@ -220,11 +220,14 @@ public class SkillupTests
   }
 
   [Fact]
-  public void SkillupEligible_ProvenJunkYields_IsBlocked()
+  public void SkillupEligible_ProvenJunkYields_StillDesynths()
   {
-    // Melt 100 below vendor 500: the ledger PROVES junk; vendor wins downstream.
+    // Melt 100 below vendor 500: the yields are proven junk and it does not
+    // matter - red/yellow skillups are RARE, seals and gil are common (Sam's
+    // ruling 07-18). The skillup is the value; the yield was never the point.
     var v = RoutingRules.Evaluate(T.Gear(skillup: true, melt: 100, vendor: 500), T.Batch());
-    Assert.Equal(RoutingExit.Vendor, v.Exit);
+    Assert.Equal(RoutingExit.Desynth, v.Exit);
+    Assert.Contains("Skillup", v.Reason);
   }
 
   [Fact]

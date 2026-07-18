@@ -135,9 +135,11 @@ internal static class RoutingRules
         stock, burn, cfg);
     }
 
-    // Rule 5 — desynth skillup: scarce, gil can wait. Only blocked when the
-    // ledger PROVES the yields are junk (known melt below vendor).
-    if (item.DesynthSkillupEligible && (meltScore is null || meltScore >= vendorScore.GetValueOrDefault()))
+    // Rule 5 — desynth skillup: unconditional on eligibility. Red/yellow
+    // skillups are RARE; seals and gil, by comparison, are common (Sam's
+    // ruling, 07-18) - so proven-junk yields do NOT block the route. The
+    // yield was never the point; the skillup is the value.
+    if (item.DesynthSkillupEligible)
       return new(RoutingExit.Desynth,
         $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — skillups are scarce, gil can wait.");
 
