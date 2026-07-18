@@ -181,4 +181,89 @@ public class TriageMemoryTests
     var snap = new EvidenceSnapshot(500, 2, 1000, 0);
     Assert.Equal(FlagAction.Refresh, DecideUpsert(stored, snap, MinSamples));
   }
+
+  // --- Zombie flag heal (M4) --------------------------------------------
+  // A lane_held flag whose item left the retainer never gets re-processed, so the
+  // self-heal sweep never touches it. The zombie sweep closes it - but ONLY when
+  // the run genuinely observed the flag's own container and the item was absent.
+
+  private const uint Molybdenum = 19947; // the live inventory-flag trap
+  private const uint LuncheonToad = 12345;
+
+  private static System.Collections.Generic.HashSet<uint> Observed(params uint[] ids)
+    => new(ids);
+
+  [Fact]
+  public void Zombie_ClosesBoardFlag_WhenPinchSawTheListingsAndItemAbsent()
+  {
+    // Pinch (board) run walked the retainer's listings; the flagged item wasn't
+    // among them. Its container was observed, the item is gone -> close as item_gone.
+    var flags = new[] { new ZombieFlagRow(91, LuncheonToad, FlagScope.Board) };
+    var close = ZombieFlagsToClose(FlagScope.Board, Observed(111, 222), flags);
+    Assert.Equal(new long[] { 91 }, close);
+  }
+
+  [Fact]
+  public void Zombie_DoesNotClose_WhenItemStillPresent_MerelySkipped()
+  {
+    // The item was still in the sell list (mannequin/bound/banned -> skipped, not
+    // evaluated). Present in the observed container -> leave the flag open.
+    var flags = new[] { new ZombieFlagRow(91, LuncheonToad, FlagScope.Board) };
+    var close = ZombieFlagsToClose(FlagScope.Board, Observed(LuncheonToad, 222), flags);
+    Assert.Empty(close);
+  }
+
+  [Fact]
+  public void Zombie_DoesNotClose_InventoryFlag_FromAPinchThatOnlySawTheBoard()
+  {
+    // The Molybdenum-in-inventory case: a Hawk-raised flag points at an unlisted
+    // item in the sell inventory. A pinch run only walks the board, never that
+    // container, so it must NOT close the flag even though it didn't see the item.
+    var flags = new[] { new ZombieFlagRow(81, Molybdenum, FlagScope.Inventory) };
+    var close = ZombieFlagsToClose(FlagScope.Board, Observed(111, 222), flags);
+    Assert.Empty(close);
+  }
+
+  [Fact]
+  public void Zombie_ClosesInventoryFlag_WhenHawkSawInventoryAndItemAbsent()
+  {
+    // The matching run type (Hawk observes inventory) DID walk that container and
+    // the item is gone -> close is now provable.
+    var flags = new[] { new ZombieFlagRow(81, Molybdenum, FlagScope.Inventory) };
+    var close = ZombieFlagsToClose(FlagScope.Inventory, Observed(555), flags);
+    Assert.Equal(new long[] { 81 }, close);
+  }
+
+  [Fact]
+  public void Zombie_NeverClosesUnknownScope_LegacyFlagsUnprovable()
+  {
+    // A pre-M4 flag has no recorded container; absence is unprovable -> leave open.
+    var flags = new[] { new ZombieFlagRow(70, LuncheonToad, FlagScope.Unknown) };
+    Assert.Empty(ZombieFlagsToClose(FlagScope.Board, Observed(111), flags));
+    Assert.Empty(ZombieFlagsToClose(FlagScope.Inventory, Observed(111), flags));
+  }
+
+  [Fact]
+  public void Zombie_MixedBatch_ClosesOnlyTheProvableOnes()
+  {
+    var flags = new[]
+    {
+      new ZombieFlagRow(91, LuncheonToad, FlagScope.Board),      // gone from board -> close
+      new ZombieFlagRow(81, Molybdenum, FlagScope.Inventory),    // wrong run type -> open
+      new ZombieFlagRow(70, 999, FlagScope.Board),               // still present -> open
+      new ZombieFlagRow(60, 888, FlagScope.Unknown),             // unprovable -> open
+    };
+    var close = ZombieFlagsToClose(FlagScope.Board, Observed(999), flags);
+    Assert.Equal(new long[] { 91 }, close);
+  }
+
+  [Fact]
+  public void Zombie_ScopeTag_RoundTrips()
+  {
+    Assert.Equal(FlagScope.Board, ParseScope(ScopeTag(FlagScope.Board)));
+    Assert.Equal(FlagScope.Inventory, ParseScope(ScopeTag(FlagScope.Inventory)));
+    Assert.Equal("", ScopeTag(FlagScope.Unknown));
+    Assert.Equal(FlagScope.Unknown, ParseScope(""));
+    Assert.Equal(FlagScope.Unknown, ParseScope(null));
+  }
 }

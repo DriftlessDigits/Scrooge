@@ -198,4 +198,76 @@ internal static class TriageMemory
       _ => FlagAction.Silent, // Unchanged, ManualPrice, Undercut — the question is unchanged
     };
   }
+
+  // =========================================================================
+  // Zombie flag heal (M4)
+  // =========================================================================
+
+  /// <summary>
+  /// The container a lane_held flag points at - and therefore the run type that can
+  /// prove its item absent. A pinch observes the market BOARD (the retainer's live
+  /// listings); a Hawk run observes the retainer's sell INVENTORY (unlisted items a
+  /// pinch never sees). <see cref="Unknown"/> is a pre-M4 flag whose container was
+  /// never recorded: absence is unprovable, so it is never zombie-closed.
+  /// </summary>
+  internal enum FlagScope { Unknown, Board, Inventory }
+
+  /// <summary>Parses the stored scope tag; anything unrecognized (incl. legacy '') reads Unknown.</summary>
+  internal static FlagScope ParseScope(string? scope) => scope switch
+  {
+    "board" => FlagScope.Board,
+    "inventory" => FlagScope.Inventory,
+    _ => FlagScope.Unknown,
+  };
+
+  /// <summary>The persisted tag for a scope (Unknown persists as '').</summary>
+  internal static string ScopeTag(FlagScope scope) => scope switch
+  {
+    FlagScope.Board => "board",
+    FlagScope.Inventory => "inventory",
+    _ => "",
+  };
+
+  /// <summary>An open lane_held flag as the zombie sweep sees it.</summary>
+  internal readonly record struct ZombieFlagRow(long Id, uint ItemId, FlagScope Scope);
+
+  /// <summary>
+  /// Whether a run may close ONE open lane_held flag as item_gone. The rule fails
+  /// toward OPEN flags at every branch - it closes only when the run genuinely
+  /// observed the flag's own container and the item was absent from it:
+  ///
+  /// - Unknown scope → leave open. A pre-M4 flag's container is unprovable.
+  /// - Run walked a different container than the flag points at → leave open. This
+  ///   is the Molybdenum trap: a pinch (board) run must never close an inventory
+  ///   flag for an unlisted item it structurally cannot see.
+  /// - Item still present in what the run observed → leave open. It was merely
+  ///   skipped (mannequin/bound/banned) or re-held, not gone.
+  /// - Otherwise → close as item_gone.
+  /// </summary>
+  internal static bool ShouldCloseAsItemGone(FlagScope runScope, FlagScope flagScope, bool itemObservedPresent)
+  {
+    if (flagScope == FlagScope.Unknown) return false;
+    if (runScope != flagScope) return false;
+    if (itemObservedPresent) return false;
+    return true;
+  }
+
+  /// <summary>
+  /// The batch zombie sweep (pure/tested; the storage layer reads rows and stamps the
+  /// closes). Given the container this run walked and the set of item ids it actually
+  /// observed in that container, returns the ids of open lane_held flags to close as
+  /// item_gone. A flag pointing at a container this run did not walk, or whose item was
+  /// observed present, is left open - fail toward open flags, never toward silent closes.
+  /// </summary>
+  internal static List<long> ZombieFlagsToClose(
+    FlagScope runScope,
+    IReadOnlySet<uint> observedItemIds,
+    IEnumerable<ZombieFlagRow> openLaneHeldFlags)
+  {
+    var toClose = new List<long>();
+    foreach (var flag in openLaneHeldFlags)
+      if (ShouldCloseAsItemGone(runScope, flag.Scope, observedItemIds.Contains(flag.ItemId)))
+        toClose.Add(flag.Id);
+    return toClose;
+  }
 }
