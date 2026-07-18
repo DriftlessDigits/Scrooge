@@ -132,6 +132,12 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 18);
     }
 
+    if (version < 19)
+    {
+      MigrateV19(connection);
+      SetSchemaVersion(connection, 19);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
@@ -1116,6 +1122,39 @@ internal class GilStorageBootstrap
     var removed = dedup.ExecuteNonQuery();
 
     Svc.Log.Info($"V18 migration: deduped triage_flags — removed {removed} duplicate open flags (oldest row kept, evidence adopted)");
+  }
+
+  /// <summary>
+  /// V19: market memory + decision receipts (M4, [[Scrooge - Market Memory - Design]]).
+  /// Creates three new tables and one guarded column; the old listings table's shape
+  /// is NOT touched. This migration RETIRES the listings-table tripwire: writes to
+  /// market memory through the append-diff path below are expected and correct, while
+  /// ad hoc writes to the old listings table remain wrong.
+  ///
+  /// - market_board_snapshot: the current-board read model (the "cache of the last
+  ///   diff"). One row per live foreign/own board listing, keyed by soft identity
+  ///   (item, hq, retainer, qty); price mutable. The design's "snapshot table" - it
+  ///   did not exist per-listing before M4 (the board was in-memory only), so it is
+  ///   created here rather than repurposed.
+  /// - market_events: the append-only diff log (appeared/disappeared/price_moved),
+  ///   with observation-window columns (seen_after/seen_by - no foreign point
+  ///   timestamp), observer provenance (own_scan now, community is the 4.0 seam), and
+  ///   certainty tier + disappearance resolution (own upgrades to sold via GilTrack;
+  ///   foreign stays gone).
+  /// - decision_receipts: one row per pricing decision, all coordinates RELATIVE,
+  ///   carrying arm_id + item_category + stack coords from day one; the outcome join
+  ///   (time_to_clear / outcome_state) fills later, never at write time.
+  /// - triage_flags.scope: the container a lane_held flag points at (board vs
+  ///   inventory) so the zombie sweep only closes what the observing run can prove
+  ///   absent. Guarded ALTER; legacy rows default '' (Unknown = never zombie-closed).
+  ///
+  /// Diffable + idempotent (V11 model): every CREATE is IF NOT EXISTS and the ALTER is
+  /// column-guarded, so a re-run is a no-op.
+  /// </summary>
+  private static void MigrateV19(SqliteConnection connection)
+  {
+    MarketMemorySchema.ApplyV19(connection);
+    Svc.Log.Info("V19 migration: market_board_snapshot + market_events + decision_receipts tables, triage_flags.scope column; listings-table tripwire retired");
   }
 
   // =========================================================================

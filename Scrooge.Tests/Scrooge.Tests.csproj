@@ -25,6 +25,8 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" PrivateAssets="all" />
+    <!-- Migration idempotency test runs the real V19 DDL against a temp SQLite DB. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.1" />
   </ItemGroup>
 
   <ItemGroup>
@@ -38,6 +40,7 @@
     <Compile Include="..\Scrooge\TriageMemory.cs" Link="Linked\TriageMemory.cs" />
     <Compile Include="..\Scrooge\MarketEvents.cs" Link="Linked\MarketEvents.cs" />
     <Compile Include="..\Scrooge\DecisionReceipts.cs" Link="Linked\DecisionReceipts.cs" />
+    <Compile Include="..\Scrooge\MarketMemorySchema.cs" Link="Linked\MarketMemorySchema.cs" />
   </ItemGroup>
 
 </Project>
