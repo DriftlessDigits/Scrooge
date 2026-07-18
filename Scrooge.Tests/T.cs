@@ -14,9 +14,10 @@ internal static class T
   };
 
   public static RoutingBatch Batch(int? stock = null, int sealRate = 25,
-    bool empirical = false, RoutingConfig? cfg = null) => new()
+    bool empirical = false, RoutingConfig? cfg = null, int? weeklyBurn = null) => new()
   {
     VentureStock = stock,
+    WeeklyVentureBurn = weeklyBurn,
     SealToGilRate = sealRate,
     SealRateEmpirical = empirical,
     Rules = cfg ?? new RoutingConfig(),

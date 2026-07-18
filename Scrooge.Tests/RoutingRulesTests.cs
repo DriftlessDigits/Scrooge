@@ -161,6 +161,52 @@ public class ReviewBandTests
     var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)), T.Batch(stock: 1_300));
     Assert.True(v.IsReview);
   }
+
+  // ---- Saturation: the 7-day projection tilts borderline calls AWAY from churn ----
+
+  [Fact]
+  public void BorderlineGcContender_ProjectionStillCruising_TiltsAwayFromChurn()
+  {
+    // Projected 3,500 - 800 = 2,700 > 2,000 cruise: the marginal seal funds a
+    // venture weeks out, so the borderline call keeps the gil exit.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)),
+      T.Batch(stock: 3_500, weeklyBurn: 800));
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.False(v.IsReview);
+    Assert.Contains("seals saturated", v.Reason);
+    Assert.Equal(RoutingExit.Gc, v.RunnerUp);
+  }
+
+  [Fact]
+  public void BorderlineGcContender_ProjectionBelowCruise_StaysReview()
+  {
+    // Sam's live numbers the day this shipped: 2,262 - 740 = 1,522 < 2,000.
+    // Stock LOOKS saturated; the projection says the seals get spent - no tilt.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)),
+      T.Batch(stock: 2_262, weeklyBurn: 740));
+    Assert.True(v.IsReview);
+  }
+
+  [Fact]
+  public void BorderlineGcContender_NoBurnMeasurement_NoSaturationTilt()
+  {
+    // No measured burn = no projection = no tilt, however high the stock. The
+    // saturation rule never acts on a guess.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)),
+      T.Batch(stock: 9_999));
+    Assert.True(v.IsReview);
+  }
+
+  [Fact]
+  public void ClearGcWinner_ProjectionCruising_NotBorderline_StillChurns()
+  {
+    // Saturation only breaks TIES. A clear seal win (no gil contender near it)
+    // still churns - the tilt is a tie-break, not a repricer.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 2_000, vendor: 1_000),
+      T.Batch(stock: 3_500, weeklyBurn: 800));
+    Assert.Equal(RoutingExit.Gc, v.Exit);
+    Assert.False(v.IsReview);
+  }
 }
 
 public class SkillupTests

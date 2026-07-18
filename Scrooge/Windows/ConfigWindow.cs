@@ -677,6 +677,16 @@ public sealed class ConfigWindow : Window
         ImGui.BeginGroup();
         ImGui.Text("Venture bands:");
         ImGui.SameLine();
+        ImGui.TextDisabled("cruise");
+        ImGui.SameLine();
+        var bandCruise = Plugin.Configuration.VentureBandCruise;
+        ImGui.SetNextItemWidth(70);
+        if (ImGui.InputInt("##ventureBandCruise", ref bandCruise, 0, 0) && bandCruise >= 0)
+        {
+          Plugin.Configuration.VentureBandCruise = bandCruise;
+          Plugin.Configuration.Save();
+        }
+        ImGui.SameLine();
         ImGui.TextDisabled("tilt");
         ImGui.SameLine();
         var bandFull = Plugin.Configuration.VentureBandFull;
@@ -713,6 +723,9 @@ public sealed class ConfigWindow : Window
         {
           ImGui.BeginTooltip();
           ImGui.SetTooltip("Venture token stock thresholds, high to low.\n" +
+                           "'cruise': when the 7-DAY PROJECTION (stock minus measured weekly burn)\n" +
+                           "  still clears this, borderline calls tilt AWAY from turn-in (saturated).\n" +
+                           "  Inert until a full week of token snapshots exists.\n" +
                            "Above 'tilt': GC competes on pure value.\n" +
                            "Below 'tilt': borderline calls tilt to turn-in.\n" +
                            "Below 'turn in': turn in unless the item is worth the floor x multiplier.\n" +

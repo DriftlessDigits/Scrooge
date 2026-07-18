@@ -77,6 +77,7 @@ internal static class RoutingRules
 
     var cfg = batch.Rules;
     var stock = batch.VentureStock is int s && s > 0 ? s : (int?)null;
+    var burn = batch.WeeklyVentureBurn;
 
     if (item.SealValue is int panicSeals && stock is int panicStock && panicStock < cfg.VentureBandPanic)
       return new(RoutingExit.Gc,
@@ -131,7 +132,7 @@ internal static class RoutingRules
         BestOf((RoutingExit.Desynth, meltScore, meltReason),
                (RoutingExit.Gc, gcScore, gcReason),
                (RoutingExit.Vendor, vendorScore, vendorReason)),
-        stock, cfg);
+        stock, burn, cfg);
     }
 
     // Rule 5 — desynth skillup: scarce, gil can wait. Only blocked when the
@@ -172,13 +173,13 @@ internal static class RoutingRules
           && cm > gc)
         return Resolve(RoutingExit.List, cm,
           $"List: the DC pays ~{cm:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — beats {gcReason.TrimEnd('.')}. The Hawk run prices it off the live MB.",
-          (RoutingExit.Gc, gcScore, gcReason), stock, cfg);
+          (RoutingExit.Gc, gcScore, gcReason), stock, burn, cfg);
 
       if (gc > bestGil)
         return Resolve(RoutingExit.Gc, gc, gcReason,
           BestOf((RoutingExit.Desynth, meltScore, meltReason),
                  (RoutingExit.Vendor, vendorScore, vendorReason)),
-          stock, cfg);
+          stock, burn, cfg);
     }
 
     // Rule 7 — melt for gil: yields must beat vendor meaningfully. No vendor
@@ -190,7 +191,7 @@ internal static class RoutingRules
       var vendorFloor = vendorScore ?? 0;
       if (melt > vendorFloor * MeltOverVendorFactor)
         return Resolve(RoutingExit.Desynth, melt, meltReason,
-          (RoutingExit.Vendor, vendorScore, vendorReason), stock, cfg);
+          (RoutingExit.Vendor, vendorScore, vendorReason), stock, burn, cfg);
       if (melt > vendorFloor)
         return new(RoutingExit.Desynth, meltReason, IsReview: true,
           RunnerUp: RoutingExit.Vendor,
@@ -270,13 +271,17 @@ internal static class RoutingRules
   /// <summary>
   /// Finalizes a value-rule winner against its best-scoring alternative.
   /// Within the review band the verdict degrades to Review — unless venture
-  /// stock is below the full band and GC is the contender, in which case the
-  /// borderline call tilts to churn (BP4 Q5: escalating bands).
+  /// stock tilts the borderline call: stock below the full band tilts TO churn
+  /// (BP4 Q5: escalating bands), and a 7-day projection still cruising tilts
+  /// AWAY from churn (saturation: the marginal seal funds a venture weeks out).
+  /// The projection - stock minus measured weekly burn - is the operand, not
+  /// current stock: "where will I be", not "where am I". No burn measurement
+  /// means no saturation tilt, never a guess.
   /// </summary>
   private static RoutingVerdict Resolve(
     RoutingExit winner, long winnerScore, string winnerReason,
     (RoutingExit Exit, long? Score, string Reason) runnerUp,
-    int? ventureStock, RoutingConfig cfg)
+    int? ventureStock, int? weeklyBurn, RoutingConfig cfg)
   {
     if (runnerUp.Score is not long rScore || rScore <= 0)
       return new(winner, winnerReason);
@@ -300,6 +305,20 @@ internal static class RoutingRules
       return new(RoutingExit.Gc,
         $"{reason} Borderline vs {other} — tilted to turn-in ({stock:N0} tokens < {cfg.VentureBandFull:N0}).",
         RunnerUp: other, RunnerUpReason: otherReason);
+    }
+
+    // Borderline + saturated projection: the tie-break goes AWAY from churn.
+    if (gcContender is RoutingExit satGc
+        && ventureStock is int satStock && weeklyBurn is int wb && wb > 0
+        && (long)satStock - wb > cfg.VentureBandCruise)
+    {
+      var projected = satStock - wb;
+      var (keepExit, keepReason, gcSideReason) = satGc == winner
+        ? (runnerUp.Exit, runnerUp.Reason, winnerReason)
+        : (winner, winnerReason, runnerUp.Reason);
+      return new(keepExit,
+        $"{keepReason} Borderline vs turn-in — seals saturated (~{projected:N0} tokens in 7d at your burn, still > {cfg.VentureBandCruise:N0}), tilted away.",
+        RunnerUp: RoutingExit.Gc, RunnerUpReason: gcSideReason);
     }
 
     return new(winner, winnerReason, IsReview: true,

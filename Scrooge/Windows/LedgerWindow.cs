@@ -73,6 +73,7 @@ internal sealed class LedgerWindow : Window
   // --- Bag-routing state ---
   private List<RoutedItem> _items = [];
   private int? _ventureStock;
+  private int? _weeklyBurn;
   private int _uniVersion;
   private int _uniHistVersion;
 
@@ -127,6 +128,7 @@ internal sealed class LedgerWindow : Window
     _uniHistVersion = UniversalisHistory.Version;
     var batch = RoutingInputService.BeginBatch();
     _ventureStock = batch.VentureStock;
+    _weeklyBurn = batch.WeeklyVentureBurn;
     var gearsetIds = DesynthInventoryScanner.SnapshotGearsetItemIds();
     var itemSheet = Svc.Data.GetExcelSheet<Item>();
 
@@ -394,7 +396,13 @@ internal sealed class LedgerWindow : Window
     ImGui.Text("the ledger speaks in last-pinch tense");
     ImGui.SameLine();
     if (_ventureStock is int stock)
-      ImGui.TextDisabled($"- {stock:N0} venture tokens");
+    {
+      // Projection beside the stock: where the tokens WILL be in a week at the
+      // measured burn - the operand the saturation tilt actually reads.
+      ImGui.TextDisabled(_weeklyBurn is int wb && wb > 0
+        ? $"- {stock:N0} venture tokens (~{stock - wb:N0} in 7d at your burn)"
+        : $"- {stock:N0} venture tokens");
+    }
 
     var uniPending = UniversalisStats.PendingCount;
     if (uniPending > 0)

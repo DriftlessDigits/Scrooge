@@ -1336,6 +1336,47 @@ internal static class GilStorage
   }
 
   /// <summary>
+  /// Measured venture-token burn over the trailing FULL week: the sum of downward
+  /// deltas between consecutive gil_snapshots token reads (upward jumps are
+  /// purchases and are ignored). Whole-week window on purpose - weekday and
+  /// weekend usage differ heavily, and a 7-day window contains its own mix, so
+  /// the shape cancels out of any 7-day projection. Returns null until snapshots
+  /// actually cover the week (earliest read within the window must be at least
+  /// 6.5 days old) - a partial week would smuggle the weekday/weekend bias right
+  /// back in, so no measurement means the saturation tilt stays off.
+  /// </summary>
+  internal static int? MeasureWeeklyVentureBurn()
+  {
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var weekAgo = now - 7 * 86400;
+    using var cmd = new SqliteCommand(
+      @"SELECT timestamp, venture_tokens FROM gil_snapshots
+        WHERE venture_tokens IS NOT NULL AND venture_tokens > 0 AND timestamp >= @cutoff
+        ORDER BY timestamp",
+      _connection);
+    cmd.Parameters.AddWithValue("@cutoff", weekAgo);
+    using var reader = cmd.ExecuteReader();
+
+    long? firstTs = null;
+    int? prev = null;
+    var burn = 0;
+    while (reader.Read())
+    {
+      var ts = reader.GetInt64(0);
+      var tokens = reader.GetInt32(1);
+      firstTs ??= ts;
+      if (prev is int p && tokens < p)
+        burn += p - tokens;
+      prev = tokens;
+    }
+
+    // Coverage gate: the window must actually span the week, not just dip into it.
+    if (firstTs is not long first || now - first < (long)(6.5 * 86400))
+      return null;
+    return burn;
+  }
+
+  /// <summary>
   /// The player's most recent ruling per (item, HQ, router verdict) - the read side
   /// of persistent Ledger rulings. Keyed on the router's verdict so a ruling sticks
   /// exactly as long as it answers the SAME question: if the router's verdict for
