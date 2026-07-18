@@ -208,6 +208,36 @@ public class LedgerTests
     Assert.Empty(LedgerConfidence.BulkSet(rows));
   }
 
+  [Fact]
+  public void BulkSet_PlayerResolution_ConfirmsAnyTier()
+  {
+    // A player ruling makes the row confirmable regardless of tier (the Green
+    // Beret fix); untouched rows still gate on Unanimous.
+    var rows = new (string, ConfidenceTier, bool)[]
+    {
+      ("unanimous", ConfidenceTier.Unanimous, false),
+      ("mixed-untouched", ConfidenceTier.Mixed, false),
+      ("contra-ruled", ConfidenceTier.Contradicted, true),
+      ("mixed-ruled", ConfidenceTier.Mixed, true),
+    };
+    Assert.Equal(new[] { "unanimous", "contra-ruled", "mixed-ruled" },
+      LedgerConfidence.BulkSet(rows));
+  }
+
+  [Fact]
+  public void Effective_PlayerResolution_BeatsContradictedDemotion()
+  {
+    // Untouched Contradicted demotes to Review; once the player rules, the row
+    // goes where they put it - otherwise a Contradicted row is stuck forever.
+    Assert.Equal(LedgerPile.Review,
+      LedgerPiles.Effective(LedgerPile.PullAndVendor, ConfidenceTier.Contradicted));
+    Assert.Equal(LedgerPile.PullAndVendor,
+      LedgerPiles.Effective(LedgerPile.PullAndVendor, ConfidenceTier.Contradicted, playerResolved: true));
+    // Resolution is a no-op on tiers that never demoted.
+    Assert.Equal(LedgerPile.List,
+      LedgerPiles.Effective(LedgerPile.List, ConfidenceTier.Unanimous, playerResolved: true));
+  }
+
   // ---- Pile assignment: verdict -> pile ----
 
   [Fact]

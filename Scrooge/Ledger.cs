@@ -105,10 +105,12 @@ internal static class LedgerPiles
   /// <summary>
   /// The pile a row is ACTUALLY drawn in: a Contradicted verdict is demoted to Review
   /// (the Alexander Miniature rule) no matter what its natural pile was; everything
-  /// else stays where its verdict put it.
+  /// else stays where its verdict put it. A player resolution beats the demotion -
+  /// Review exists to collect the player's ruling, so once it lands the row goes
+  /// where the player put it (otherwise Contradicted rows are stuck forever).
   /// </summary>
-  internal static LedgerPile Effective(LedgerPile natural, ConfidenceTier tier)
-    => tier == ConfidenceTier.Contradicted ? LedgerPile.Review : natural;
+  internal static LedgerPile Effective(LedgerPile natural, ConfidenceTier tier, bool playerResolved = false)
+    => !playerResolved && tier == ConfidenceTier.Contradicted ? LedgerPile.Review : natural;
 
   /// <summary>
   /// Precedence for merging a two-reason WorkItem into ONE row (design Section 7 /
@@ -285,6 +287,15 @@ internal static class LedgerConfidence
   /// </summary>
   internal static List<T> BulkSet<T>(IEnumerable<(T Item, ConfidenceTier Tier)> rows)
     => rows.Where(r => IsBulkEligible(r.Tier)).Select(r => r.Item).ToList();
+
+  /// <summary>
+  /// Bulk set with player resolutions: a row the player explicitly ruled on (a move
+  /// click) is confirmable regardless of tier - the human decision IS the resolution
+  /// the confidence gate was waiting for. Evidence tiers still gate everything the
+  /// player has not touched.
+  /// </summary>
+  internal static List<T> BulkSet<T>(IEnumerable<(T Item, ConfidenceTier Tier, bool PlayerResolved)> rows)
+    => rows.Where(r => r.PlayerResolved || IsBulkEligible(r.Tier)).Select(r => r.Item).ToList();
 
   /// <summary>
   /// The Watch pile's one-line count summary (ruling 3). Omits zero categories;

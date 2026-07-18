@@ -51,10 +51,16 @@ internal sealed class LedgerWindow : Window
     public bool OverrideRecorded { get; set; }
     /// <summary>Evidence-refined confidence for this verdict (design Section 4). Bulk gates on Unanimous.</summary>
     public ConfidenceTier Confidence { get; set; } = ConfidenceTier.Mixed;
+    /// <summary>
+    /// The player clicked a move button this session: their ruling resolves Review
+    /// (even a Contradicted demotion) and makes the row bulk-confirmable. Session
+    /// state - a Refresh re-reads the world and re-asks.
+    /// </summary>
+    public bool PlayerResolved { get; set; }
 
     /// <summary>The Ledger pile this row is drawn in (confidence-demoted Contradicted -> Review).</summary>
     public LedgerPile ActivePile
-      => LedgerPiles.Effective(LedgerPiles.ForRoutingExit(Pile, InReview), Confidence);
+      => LedgerPiles.Effective(LedgerPiles.ForRoutingExit(Pile, InReview), Confidence, PlayerResolved);
   }
 
   /// <summary>One inbox row: a live run item, or a held flag wearing a synthetic PricingItem.</summary>
@@ -664,18 +670,22 @@ internal sealed class LedgerWindow : Window
   private void BulkConfirmButton(List<RoutedItem> rows, bool locationReady, string verb,
     Action<List<RoutedItem>> execute, string offLocationHint)
   {
-    var unanimous = LedgerConfidence.BulkSet(rows.Select(r => (r, r.Confidence)));
-    ImGui.BeginDisabled(!locationReady || unanimous.Count == 0);
-    if (ImGui.Button($"Confirm all {verb} ({unanimous.Count} unanimous)##bulk{verb}"))
+    var confirmable = LedgerConfidence.BulkSet(rows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+    var chosen = confirmable.Count(r => r.PlayerResolved && !LedgerConfidence.IsBulkEligible(r.Confidence));
+    var label = chosen > 0
+      ? $"Confirm all {verb} ({confirmable.Count - chosen} unanimous + {chosen} chosen)"
+      : $"Confirm all {verb} ({confirmable.Count} unanimous)";
+    ImGui.BeginDisabled(!locationReady || confirmable.Count == 0);
+    if (ImGui.Button($"{label}##bulk{verb}"))
     {
-      foreach (var item in unanimous)
+      foreach (var item in confirmable)
         RecordRoutedSignal(item, item.Pile); // a bulk confirm is mass agreement
-      execute(unanimous);
+      execute(confirmable);
     }
     ImGui.EndDisabled();
-    if (!locationReady && unanimous.Count > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+    if (!locationReady && confirmable.Count > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
       ImGui.SetTooltip(offLocationHint);
-    var mixed = rows.Count - unanimous.Count;
+    var mixed = rows.Count - confirmable.Count;
     if (mixed > 0)
     {
       ImGui.SameLine();
@@ -724,15 +734,19 @@ internal sealed class LedgerWindow : Window
 
   private void DrawMoveButton(RoutedItem item, RoutingExit target, string label)
   {
-    var isCurrent = !item.InReview && item.Pile == target;
+    // "Current" means the row actually SITS at this exit - a Contradicted row
+    // demoted into Review shows no green until the player rules, so its buttons
+    // stay live and the click IS the resolution (confirm or move alike).
+    var isCurrent = item.ActivePile != LedgerPile.Review && item.Pile == target;
     if (isCurrent)
       ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.25f, 0.45f, 0.25f, 1f));
 
     if (ImGui.SmallButton($"{label}##move{item.Container}_{item.SlotIndex}_{target}") && !isCurrent)
     {
-      RecordRoutedSignal(item, target); // moving to a different exit = a disagreement
+      RecordRoutedSignal(item, target); // confirmation or disagreement - both teach
       item.Pile = target;
       item.InReview = false;
+      item.PlayerResolved = true;
     }
 
     if (isCurrent)
