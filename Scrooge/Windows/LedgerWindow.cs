@@ -52,9 +52,10 @@ internal sealed class LedgerWindow : Window
     /// <summary>Evidence-refined confidence for this verdict (design Section 4). Bulk gates on Unanimous.</summary>
     public ConfidenceTier Confidence { get; set; } = ConfidenceTier.Mixed;
     /// <summary>
-    /// The player clicked a move button this session: their ruling resolves Review
-    /// (even a Contradicted demotion) and makes the row bulk-confirmable. Session
-    /// state - a Refresh re-reads the world and re-asks.
+    /// The player ruled on this row - a move click now, or a persisted ruling
+    /// re-applied from routing_overrides on refresh. Resolves Review (even a
+    /// Contradicted demotion) and makes the row bulk-confirmable. A ruling holds
+    /// while the router's verdict is unchanged; a new verdict re-asks.
     /// </summary>
     public bool PlayerResolved { get; set; }
 
@@ -83,6 +84,7 @@ internal sealed class LedgerWindow : Window
 
   // --- Confidence refinement (design Section 4) ---
   private Dictionary<string, int> _overrideCounts = new(StringComparer.Ordinal);
+  private Dictionary<(uint, bool, string), string> _persistedRulings = new();
   private readonly HashSet<(uint, bool, string)> _signalsRecorded = [];
 
   public LedgerWindow()
@@ -118,6 +120,7 @@ internal sealed class LedgerWindow : Window
   {
     _items = [];
     _overrideCounts = LoadOverrideCounts();
+    _persistedRulings = LoadPersistedRulings();
     if (!Plugin.Configuration.EnableRoutingBrain) return;
 
     _uniVersion = UniversalisStats.Version;
@@ -166,7 +169,7 @@ internal sealed class LedgerWindow : Window
             continue;
 
           var verdict = RoutingRules.Evaluate(inputs, batch);
-          _items.Add(new RoutedItem
+          var item = new RoutedItem
           {
             ItemId = itemId,
             Name = inputs.Name,
@@ -180,12 +183,38 @@ internal sealed class LedgerWindow : Window
             Pile = verdict.Exit,
             InReview = verdict.IsReview,
             Confidence = ScoreRouted(inputs, verdict, batch.Rules),
-          });
+          };
+          ApplyPersistedRuling(item);
+          _items.Add(item);
         }
       }
     }
 
     _items = _items.OrderByDescending(i => i.Ilvl).ThenBy(i => i.Name).ToList();
+  }
+
+  /// <summary>
+  /// Re-applies the player's most recent persisted ruling to a freshly routed row.
+  /// A ruling holds only while it answers the SAME question - keyed on the router's
+  /// current verdict, so a changed verdict (new evidence) misses and re-asks. This
+  /// is what stops the Ledger asking the same question every reload.
+  /// </summary>
+  private void ApplyPersistedRuling(RoutedItem item)
+  {
+    var routerVerdict = item.Verdict.IsReview ? "Review" : item.Verdict.Exit.ToString();
+    if (!_persistedRulings.TryGetValue((item.ItemId, item.IsHq, routerVerdict), out var ruled))
+      return;
+    if (!Enum.TryParse<RoutingExit>(ruled, out var exit))
+      return;
+    item.Pile = exit;
+    item.InReview = false;
+    item.PlayerResolved = true;
+  }
+
+  private static Dictionary<(uint, bool, string), string> LoadPersistedRulings()
+  {
+    try { return GilStorage.GetLatestRoutingRulings(); }
+    catch { return new Dictionary<(uint, bool, string), string>(); }
   }
 
   private static Dictionary<string, int> LoadOverrideCounts()

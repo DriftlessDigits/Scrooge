@@ -1335,6 +1335,26 @@ internal static class GilStorage
     return counts;
   }
 
+  /// <summary>
+  /// The player's most recent ruling per (item, HQ, router verdict) - the read side
+  /// of persistent Ledger rulings. Keyed on the router's verdict so a ruling sticks
+  /// exactly as long as it answers the SAME question: if the router's verdict for
+  /// the item later changes, the key misses and the Ledger honestly re-asks.
+  /// </summary>
+  internal static Dictionary<(uint ItemId, bool IsHq, string RouterVerdict), string> GetLatestRoutingRulings()
+  {
+    var rulings = new Dictionary<(uint, bool, string), string>();
+    using var cmd = new SqliteCommand(
+      @"SELECT item_id, is_hq, router_verdict, player_verdict, MAX(created_at)
+        FROM routing_overrides
+        GROUP BY item_id, is_hq, router_verdict",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      rulings[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0, reader.GetString(2))] = reader.GetString(3);
+    return rulings;
+  }
+
   /// <summary>Gets listings older than the cutoff timestamp (slow movers).</summary>
   internal static List<ListingRecord> GetSlowMovers(long olderThan)
   {
