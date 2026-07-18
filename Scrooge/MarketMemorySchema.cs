@@ -25,6 +25,7 @@ internal static class MarketMemorySchema
   {
     using var cmd = new SqliteCommand(
       @"CREATE TABLE IF NOT EXISTS market_board_snapshot (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
           item_id       INTEGER NOT NULL,
           is_hq         INTEGER NOT NULL DEFAULT 0,
           retainer_name TEXT NOT NULL DEFAULT '',
@@ -33,9 +34,13 @@ internal static class MarketMemorySchema
           is_own        INTEGER NOT NULL DEFAULT 0,
           world_id      INTEGER NOT NULL DEFAULT 0,
           observer      TEXT NOT NULL DEFAULT 'own_scan',
-          seen_at       INTEGER NOT NULL,
-          PRIMARY KEY (item_id, is_hq, retainer_name, quantity)
+          seen_at       INTEGER NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS ix_market_board_snapshot_item ON market_board_snapshot(item_id);
+        -- Surrogate PK, NOT a natural (item,hq,retainer,qty) key: two twin listings
+        -- share that soft identity, and a natural PK would silently drop one - which
+        -- would then read as a phantom disappear/appear on the next scan. The write
+        -- path deletes-all-for-item then inserts, so twins persist faithfully.
         CREATE TABLE IF NOT EXISTS market_events (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
           item_id         INTEGER NOT NULL,

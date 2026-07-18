@@ -106,6 +106,28 @@ public class MarketMemorySchemaTests
   }
 
   [Fact]
+  public void BoardSnapshot_PersistsTwinListings_NotDroppedByANaturalKey()
+  {
+    // Two listings share the soft identity (item, hq, retainer, qty). A natural PK
+    // would keep only one and phantom a disappear next scan; the surrogate key keeps both.
+    using var conn = OpenTempDb();
+    Scrooge.MarketMemorySchema.ApplyV19(conn);
+
+    for (var i = 0; i < 2; i++)
+      using (var ins = new SqliteCommand(
+        @"INSERT INTO market_board_snapshot (item_id, is_hq, retainer_name, quantity, unit_price, seen_at)
+          VALUES (100, 0, 'Alice', 1, @p, 1000)", conn))
+      {
+        ins.Parameters.AddWithValue("@p", 90 + i);
+        ins.ExecuteNonQuery();
+      }
+
+    using var count = new SqliteCommand(
+      "SELECT COUNT(*) FROM market_board_snapshot WHERE item_id = 100 AND retainer_name = 'Alice'", conn);
+    Assert.Equal(2L, System.Convert.ToInt64(count.ExecuteScalar()));
+  }
+
+  [Fact]
   public void DecisionReceipts_CarryArmAndCategoryAndStackFromDayOne()
   {
     using var conn = OpenTempDb();

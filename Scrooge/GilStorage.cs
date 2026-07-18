@@ -1443,8 +1443,10 @@ internal static class GilStorage
     }
     foreach (var l in currentBoard)
     {
+      // Plain INSERT (not OR REPLACE): the DELETE above cleared the item, and twin
+      // listings must both survive - a natural-key upsert would drop one.
       using var ins = new SqliteCommand(
-        @"INSERT OR REPLACE INTO market_board_snapshot
+        @"INSERT INTO market_board_snapshot
             (item_id, is_hq, retainer_name, quantity, unit_price, is_own, world_id, observer, seen_at)
           VALUES (@iid, @hq, @ret, @qty, @price, @own, @world, @observer, @seen)",
         _connection, tx);
