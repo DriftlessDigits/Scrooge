@@ -1073,7 +1073,8 @@ internal static class GilStorage
   /// </summary>
   internal static void UpsertTriageFlag(uint itemId, bool isHq, string retainerName, int slotIndex,
       string reason, string detail, int oldPrice, int flaggedPrice,
-      TriageMemory.EvidenceSnapshot? evidence = null, int minHistorySamples = 0)
+      TriageMemory.EvidenceSnapshot? evidence = null, int minHistorySamples = 0,
+      string scope = "")
   {
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
@@ -1094,7 +1095,8 @@ internal static class GilStorage
       using var update = new SqliteCommand(
         @"UPDATE triage_flags
           SET detail = @detail, old_price = @old, flagged_price = @flagged,
-              slot_index = @slot, created_at = @now, evidence = @evidence
+              slot_index = @slot, created_at = @now, evidence = @evidence,
+              scope = CASE WHEN @scope <> '' THEN @scope ELSE scope END
           WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
             AND reason = @reason AND status = 'open'",
         _connection);
@@ -1104,6 +1106,7 @@ internal static class GilStorage
       update.Parameters.AddWithValue("@slot", slotIndex);
       update.Parameters.AddWithValue("@now", now);
       update.Parameters.AddWithValue("@evidence", evidenceStr);
+      update.Parameters.AddWithValue("@scope", scope);
       update.Parameters.AddWithValue("@iid", (long)itemId);
       update.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
       update.Parameters.AddWithValue("@ret", retainerName);
@@ -1113,8 +1116,8 @@ internal static class GilStorage
 
     using var insert = new SqliteCommand(
       @"INSERT INTO triage_flags
-          (created_at, item_id, is_hq, retainer_name, slot_index, reason, detail, old_price, flagged_price, evidence)
-        VALUES (@now, @iid, @hq, @ret, @slot, @reason, @detail, @old, @flagged, @evidence)",
+          (created_at, item_id, is_hq, retainer_name, slot_index, reason, detail, old_price, flagged_price, evidence, scope)
+        VALUES (@now, @iid, @hq, @ret, @slot, @reason, @detail, @old, @flagged, @evidence, @scope)",
       _connection);
     insert.Parameters.AddWithValue("@now", now);
     insert.Parameters.AddWithValue("@iid", (long)itemId);
@@ -1126,6 +1129,7 @@ internal static class GilStorage
     insert.Parameters.AddWithValue("@old", oldPrice);
     insert.Parameters.AddWithValue("@flagged", flaggedPrice);
     insert.Parameters.AddWithValue("@evidence", evidenceStr);
+    insert.Parameters.AddWithValue("@scope", scope);
     insert.ExecuteNonQuery();
   }
 
@@ -1338,6 +1342,328 @@ internal static class GilStorage
       });
     }
     return listings;
+  }
+
+  // =========================================================================
+  // Market memory (V19) — append-diff events + current-board snapshot
+  // =========================================================================
+
+  private static string EventKindTag(MarketEvents.EventKind k) => k switch
+  {
+    MarketEvents.EventKind.Appeared => "appeared",
+    MarketEvents.EventKind.Disappeared => "disappeared",
+    _ => "price_moved",
+  };
+
+  private static string ResolutionTag(MarketEvents.DisappearResolution r) => r switch
+  {
+    MarketEvents.DisappearResolution.Sold => "sold",
+    MarketEvents.DisappearResolution.Pulled => "pulled",
+    _ => "gone",
+  };
+
+  /// <summary>
+  /// The stored current-board snapshot for one item — the prior scan the next diff
+  /// compares against. Returns the listings plus the timestamp of the scan that
+  /// produced them (0 when the item has never been scanned), which becomes the
+  /// next event's seen_after (the window's start).
+  /// </summary>
+  internal static (List<MarketEvents.BoardListing> Prior, long PriorScanAt) GetBoardSnapshot(uint itemId)
+  {
+    var prior = new List<MarketEvents.BoardListing>();
+    long priorScanAt = 0;
+    using var cmd = new SqliteCommand(
+      @"SELECT retainer_name, quantity, is_hq, unit_price, is_own, seen_at
+        FROM market_board_snapshot WHERE item_id = @iid",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      prior.Add(new MarketEvents.BoardListing(
+        reader.GetString(0), reader.GetInt32(1), reader.GetInt32(2) != 0,
+        reader.GetInt64(3), reader.GetInt32(4) != 0));
+      priorScanAt = Math.Max(priorScanAt, reader.GetInt64(5));
+    }
+    return (prior, priorScanAt);
+  }
+
+  /// <summary>
+  /// The ONE write path for market memory (design Section 3): diffs the incoming
+  /// board for an item against the stored snapshot, APPENDS the resulting events, and
+  /// REPLACES the snapshot with the new board — atomically. Every board packet that
+  /// reaches a pricing door runs this, even for items the pricer skips (the
+  /// observation was made, record it). Foreign timing is the (seen_after, seen_by)
+  /// window only; own disappearances land as 'pulled'/observed, upgradeable to
+  /// 'sold'/confirmed by a later GilTrack confirm. Returns the number of events appended.
+  /// </summary>
+  internal static int ApplyBoardScan(uint itemId, IReadOnlyList<MarketEvents.BoardListing> currentBoard,
+      long scanAt, uint worldId = 0, MarketEvents.Observer observer = MarketEvents.Observer.OwnScan)
+  {
+    var (prior, priorScanAt) = GetBoardSnapshot(itemId);
+    var events = MarketEvents.Diff(prior, currentBoard);
+    var window = new MarketEvents.ObservationWindow(priorScanAt, scanAt);
+    var observerTag = observer == MarketEvents.Observer.Community ? "community" : "own_scan";
+
+    using var tx = Connection.BeginTransaction();
+
+    foreach (var ev in events)
+    {
+      var row = MarketEvents.ToRow(ev, window, observer);
+      using var insert = new SqliteCommand(
+        @"INSERT INTO market_events
+            (item_id, is_hq, retainer_name, quantity, kind, old_price, new_price,
+             is_own, observer, certainty, resolution, ambiguous_match, seen_after, seen_by, world_id)
+          VALUES (@iid, @hq, @ret, @qty, @kind, @old, @new, @own, @observer, @certainty,
+                  @resolution, @amb, @after, @by, @world)",
+        _connection, tx);
+      insert.Parameters.AddWithValue("@iid", (long)itemId);
+      insert.Parameters.AddWithValue("@hq", ev.IsHq ? 1 : 0);
+      insert.Parameters.AddWithValue("@ret", ev.Retainer);
+      insert.Parameters.AddWithValue("@qty", ev.Quantity);
+      insert.Parameters.AddWithValue("@kind", EventKindTag(ev.Kind));
+      insert.Parameters.AddWithValue("@old", (object?)ev.OldPrice ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@new", (object?)ev.NewPrice ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@own", ev.IsOwn ? 1 : 0);
+      insert.Parameters.AddWithValue("@observer", observerTag);
+      insert.Parameters.AddWithValue("@certainty", row.Certainty == MarketEvents.Certainty.Confirmed ? "confirmed" : "observed");
+      insert.Parameters.AddWithValue("@resolution", ev.Resolution is MarketEvents.DisappearResolution r ? ResolutionTag(r) : (object)DBNull.Value);
+      insert.Parameters.AddWithValue("@amb", ev.Ambiguous ? 1 : 0);
+      insert.Parameters.AddWithValue("@after", window.SeenAfter);
+      insert.Parameters.AddWithValue("@by", window.SeenBy);
+      insert.Parameters.AddWithValue("@world", worldId);
+      insert.ExecuteNonQuery();
+    }
+
+    // Replace the snapshot: the current board IS the new read model.
+    using (var del = new SqliteCommand("DELETE FROM market_board_snapshot WHERE item_id = @iid", _connection, tx))
+    {
+      del.Parameters.AddWithValue("@iid", (long)itemId);
+      del.ExecuteNonQuery();
+    }
+    foreach (var l in currentBoard)
+    {
+      using var ins = new SqliteCommand(
+        @"INSERT OR REPLACE INTO market_board_snapshot
+            (item_id, is_hq, retainer_name, quantity, unit_price, is_own, world_id, observer, seen_at)
+          VALUES (@iid, @hq, @ret, @qty, @price, @own, @world, @observer, @seen)",
+        _connection, tx);
+      ins.Parameters.AddWithValue("@iid", (long)itemId);
+      ins.Parameters.AddWithValue("@hq", l.IsHq ? 1 : 0);
+      ins.Parameters.AddWithValue("@ret", l.Retainer);
+      ins.Parameters.AddWithValue("@qty", l.Quantity);
+      ins.Parameters.AddWithValue("@price", l.UnitPrice);
+      ins.Parameters.AddWithValue("@own", l.IsOwn ? 1 : 0);
+      ins.Parameters.AddWithValue("@world", worldId);
+      ins.Parameters.AddWithValue("@observer", observerTag);
+      ins.Parameters.AddWithValue("@seen", scanAt);
+      ins.ExecuteNonQuery();
+    }
+
+    tx.Commit();
+    return events.Count;
+  }
+
+  // =========================================================================
+  // Decision receipts (V19) — one row per pricing decision, relative coords
+  // =========================================================================
+
+  /// <summary>
+  /// Writes one decision receipt (design Section 4) and prunes the item back to its
+  /// most-recent <paramref name="keepPerItem"/> receipts (bounded by inventory, not
+  /// time). All coordinates are relative and item-agnostic; arm_id + item_category +
+  /// stack coords ride from day one. The outcome join (time_to_clear / outcome_state)
+  /// is left open — a GilTrack confirm or an evict fills it later, never here.
+  /// </summary>
+  internal static void InsertDecisionReceipt(uint itemId, bool isHq, string retainerName,
+      string itemCategory, string? armId, DecisionReceipts.ReceiptCoordinates c,
+      string outcome, string evidence, int keepPerItem = 3)
+  {
+    using var tx = Connection.BeginTransaction();
+
+    using (var insert = new SqliteCommand(
+      @"INSERT INTO decision_receipts
+          (created_at, item_id, is_hq, retainer_name, item_category, arm_id,
+           position_in_lane, board_depth, undercut_target_ratio, velocity_per_day,
+           lane_n, lane_spread, weighted_lane_age_days, forecast_clearing_days,
+           quantity, lane_stack_norm, outcome, evidence, outcome_state)
+        VALUES (@now, @iid, @hq, @ret, @cat, @arm,
+                @pos, @depth, @undercut, @vel,
+                @n, @spread, @age, @forecast,
+                @qty, @stacknorm, @outcome, @evidence, 'open')",
+      _connection, tx))
+    {
+      insert.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+      insert.Parameters.AddWithValue("@iid", (long)itemId);
+      insert.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      insert.Parameters.AddWithValue("@ret", retainerName);
+      insert.Parameters.AddWithValue("@cat", itemCategory);
+      insert.Parameters.AddWithValue("@arm", (object?)armId ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@pos", (object?)c.PositionInLane ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@depth", c.BoardDepth);
+      insert.Parameters.AddWithValue("@undercut", (object?)c.UndercutTargetRatio ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@vel", (object?)c.VelocityPerDay ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@n", c.LaneSampleCount);
+      insert.Parameters.AddWithValue("@spread", c.LaneSpread);
+      insert.Parameters.AddWithValue("@age", c.LaneWeightedAgeDays);
+      insert.Parameters.AddWithValue("@forecast", (object?)c.ForecastClearingDays ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@qty", c.Quantity);
+      insert.Parameters.AddWithValue("@stacknorm", (object?)c.LaneStackNorm ?? DBNull.Value);
+      insert.Parameters.AddWithValue("@outcome", outcome);
+      insert.Parameters.AddWithValue("@evidence", evidence);
+      insert.ExecuteNonQuery();
+    }
+
+    // Retention: keep the newest N for this (item, quality); prune the rest.
+    var ids = new List<long>();
+    using (var read = new SqliteCommand(
+      @"SELECT id FROM decision_receipts WHERE item_id = @iid AND is_hq = @hq
+        ORDER BY created_at DESC, id DESC",
+      _connection, tx))
+    {
+      read.Parameters.AddWithValue("@iid", (long)itemId);
+      read.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      using var reader = read.ExecuteReader();
+      while (reader.Read()) ids.Add(reader.GetInt64(0));
+    }
+    foreach (var id in DecisionReceipts.ReceiptsToPrune(ids, keepPerItem))
+    {
+      using var del = new SqliteCommand("DELETE FROM decision_receipts WHERE id = @id", _connection, tx);
+      del.Parameters.AddWithValue("@id", id);
+      del.ExecuteNonQuery();
+    }
+
+    tx.Commit();
+  }
+
+  /// <summary>
+  /// Outcome join on a GilTrack sale confirm (design Section 4): fills time_to_clear
+  /// on every OPEN receipt for the sold (item, quality) and marks it cleared. The V13
+  /// sold_after_days capture is the wiring model — the confirm is the only thing that
+  /// closes a receipt as sold. Also upgrades the item's own market_events disappearance
+  /// rows to sold/confirmed (same certainty-tier discipline; foreign rows never move).
+  /// Returns the number of receipts cleared.
+  /// </summary>
+  internal static int FillReceiptOutcomeOnSale(uint itemId, bool isHq, long soldAtUnix)
+  {
+    // Read open receipts, compute per-row time_to_clear from their created_at.
+    var open = new List<(long Id, long CreatedAt)>();
+    using (var read = new SqliteCommand(
+      @"SELECT id, created_at FROM decision_receipts
+        WHERE item_id = @iid AND is_hq = @hq AND outcome_state = 'open'",
+      _connection))
+    {
+      read.Parameters.AddWithValue("@iid", (long)itemId);
+      read.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      using var reader = read.ExecuteReader();
+      while (reader.Read()) open.Add((reader.GetInt64(0), reader.GetInt64(1)));
+    }
+
+    foreach (var (id, createdAt) in open)
+    {
+      using var upd = new SqliteCommand(
+        @"UPDATE decision_receipts SET time_to_clear_days = @days, outcome_state = 'cleared'
+          WHERE id = @id",
+        _connection);
+      upd.Parameters.AddWithValue("@days", DecisionReceipts.TimeToClearDays(createdAt, soldAtUnix));
+      upd.Parameters.AddWithValue("@id", id);
+      upd.ExecuteNonQuery();
+    }
+
+    // Upgrade own disappearance events to confirmed-sold (foreign rows untouched).
+    using (var evUpd = new SqliteCommand(
+      @"UPDATE market_events SET resolution = 'sold', certainty = 'confirmed'
+        WHERE item_id = @iid AND is_hq = @hq AND kind = 'disappeared'
+          AND is_own = 1 AND resolution = 'pulled'",
+      _connection))
+    {
+      evUpd.Parameters.AddWithValue("@iid", (long)itemId);
+      evUpd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      evUpd.ExecuteNonQuery();
+    }
+
+    return open.Count;
+  }
+
+  /// <summary>
+  /// Closes every OPEN receipt for a pulled/evicted (item, quality) as never-cleared
+  /// (design Section 4): the listing left the board before it sold, so the forecast
+  /// never got its test — that absence is the finding, not a gap to leave open.
+  /// </summary>
+  internal static int CloseReceiptsNeverCleared(uint itemId, bool isHq)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE decision_receipts SET outcome_state = 'never_cleared'
+        WHERE item_id = @iid AND is_hq = @hq AND outcome_state = 'open'",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    return cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// Half-life scorekeeping seed (design Section 5 / the M4 brief): a single aggregate
+  /// line — for cleared receipts, how realized time-to-clear compares to the forecast,
+  /// split by whether the lane leaned on old evidence (weighted age >= agedDays). A
+  /// debug/dashboard readout is enough for v0; the resolver upgrade is post-3.0.
+  /// </summary>
+  internal static List<(bool OldEvidence, int N, double AvgForecastDays, double AvgActualDays)>
+      GetClearingVsForecast(double agedDays = 30.0)
+  {
+    var rows = new List<(bool, int, double, double)>();
+    using var cmd = new SqliteCommand(
+      @"SELECT weighted_lane_age_days >= @aged AS old_evidence,
+               COUNT(*) AS n,
+               AVG(forecast_clearing_days) AS avg_forecast,
+               AVG(time_to_clear_days) AS avg_actual
+        FROM decision_receipts
+        WHERE outcome_state = 'cleared' AND time_to_clear_days IS NOT NULL
+          AND forecast_clearing_days IS NOT NULL
+        GROUP BY old_evidence",
+      _connection);
+    cmd.Parameters.AddWithValue("@aged", agedDays);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      rows.Add((reader.GetInt64(0) != 0, reader.GetInt32(1),
+        reader.IsDBNull(2) ? 0 : reader.GetDouble(2),
+        reader.IsDBNull(3) ? 0 : reader.GetDouble(3)));
+    return rows;
+  }
+
+  // =========================================================================
+  // Zombie lane_held flag heal (V19) — container-scoped close
+  // =========================================================================
+
+  /// <summary>
+  /// The zombie sweep (M4): closes open lane_held flags whose item has left the
+  /// container this run observed — but ONLY the container this run type can prove.
+  /// A pinch passes FlagScope.Board with the sell-list item ids it saw; a Hawk run
+  /// passes FlagScope.Inventory with the inventory item ids it saw. TriageMemory makes
+  /// the pick (pure/tested); a flag pointing at the other container, or an Unknown-
+  /// scope legacy flag, is left OPEN (fail toward open). Closes as 'item_gone' — a
+  /// later GilTrack confirm may relabel it 'sold'. Returns the number closed.
+  /// </summary>
+  internal static int ZombieSweepLaneHeldFlags(string retainerName,
+      TriageMemory.FlagScope runScope, IReadOnlySet<uint> observedItemIds)
+  {
+    var open = new List<TriageMemory.ZombieFlagRow>();
+    using (var cmd = new SqliteCommand(
+      @"SELECT id, item_id, scope FROM triage_flags
+        WHERE retainer_name = @ret AND reason = 'lane_held' AND status = 'open'",
+      _connection))
+    {
+      cmd.Parameters.AddWithValue("@ret", retainerName);
+      using var reader = cmd.ExecuteReader();
+      while (reader.Read())
+        open.Add(new TriageMemory.ZombieFlagRow(
+          reader.GetInt64(0), (uint)reader.GetInt64(1),
+          TriageMemory.ParseScope(reader.IsDBNull(2) ? "" : reader.GetString(2))));
+    }
+
+    var toClose = TriageMemory.ZombieFlagsToClose(runScope, observedItemIds, open);
+    foreach (var id in toClose)
+      SetTriageFlagStatus(id, "item_gone");
+    return toClose.Count;
   }
 
   // =========================================================================
