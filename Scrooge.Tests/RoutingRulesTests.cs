@@ -234,6 +234,36 @@ public class SkillupTests
   public void SkillupEligible_MeltAtLeastVendor_Desynths()
     => Assert.Equal(RoutingExit.Desynth,
       RoutingRules.Evaluate(T.Gear(skillup: true, melt: 600, vendor: 500), T.Batch()).Exit);
+
+  // ---- Sam's value hierarchy (07-18): very-very-high gil > skillup > ordinary gil ----
+
+  [Fact]
+  public void Skillup_OutranksOrdinaryLocalSale()
+  {
+    // A 20k floor-clearing sale is ORDINARY gil - the rare skillup wins.
+    var v = RoutingRules.Evaluate(T.Gear(skillup: true, sale: (20_000, 0, 5)), T.Batch());
+    Assert.Equal(RoutingExit.Desynth, v.Exit);
+    Assert.Contains("Skillup", v.Reason);
+  }
+
+  [Fact]
+  public void VeryVeryHighLocalSale_OutranksSkillup()
+  {
+    // 200k >= the 150k line: melting this is burning gil - market rules win.
+    var v = RoutingRules.Evaluate(T.Gear(skillup: true, sale: (200_000, 0, 5)), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+  }
+
+  [Fact]
+  public void VeryVeryHighCommunityValue_OutranksSkillup()
+  {
+    // Never sold locally, but the DC pays 200k on enough samples; seals exist so
+    // the community veto can route it to the Hawk run instead of the melter.
+    var v = RoutingRules.Evaluate(
+      T.Gear(skillup: true, seals: 500, communityMedian: 200_000, communityCount: 5),
+      T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+  }
 }
 
 public class GcRuleTests

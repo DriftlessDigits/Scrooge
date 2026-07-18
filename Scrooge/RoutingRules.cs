@@ -119,6 +119,26 @@ internal static class RoutingRules
       }
     }
 
+    // Rule 5 — desynth skillup, hoisted ABOVE ordinary list evidence. Sam's
+    // value hierarchy (07-18): "Melt for a skill up is VERY high. Selling an
+    // item for like 150k gil is VERY VERY high." Red/yellow skillups are rare;
+    // seals and ordinary gil are common - so a skillup outranks a floor-clearing
+    // sale, and yields (even proven junk) never block it. The ONE thing that
+    // outranks a skillup is very-very-high gil: sale evidence (own or community,
+    // min samples) at or above SkillupYieldsToGilAt falls through to the market
+    // rules instead - melting a 150k sale to move a skill number is burning gil.
+    if (item.DesynthSkillupEligible)
+    {
+      var bigLocal = item.LastSale is { } bigSale && bigSale.Price >= cfg.SkillupYieldsToGilAt;
+      var bigCommunity = item.CommunityMedian is long bigCm
+        && item.CommunitySampleCount >= cfg.CommunityMinSamples
+        && bigCm >= cfg.SkillupYieldsToGilAt;
+      if (!bigLocal && !bigCommunity)
+        return new(RoutingExit.Desynth,
+          $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — skillups are scarce, gil can wait.");
+      // Very-very-high gil: fall through to the market rules below.
+    }
+
     if (listScore is long list)
     {
       // Sub-750 stock: default to churn unless the item is worth a lot.
@@ -134,14 +154,6 @@ internal static class RoutingRules
                (RoutingExit.Vendor, vendorScore, vendorReason)),
         stock, burn, cfg);
     }
-
-    // Rule 5 — desynth skillup: unconditional on eligibility. Red/yellow
-    // skillups are RARE; seals and gil, by comparison, are common (Sam's
-    // ruling, 07-18) - so proven-junk yields do NOT block the route. The
-    // yield was never the point; the skillup is the value.
-    if (item.DesynthSkillupEligible)
-      return new(RoutingExit.Desynth,
-        $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — skillups are scarce, gil can wait.");
 
     // Rule 6 — GC turn-in: seals beat every gil exit, or low stock tilts it.
     if (gcScore is long gc)

@@ -27,6 +27,12 @@ internal sealed record RoutingConfig
   /// where-will-I-be is the right one.
   /// </summary>
   public int VentureBandCruise { get; init; } = 2000;
+  /// <summary>
+  /// The very-very-high gil line (Sam's hierarchy 07-18: skillup outranks
+  /// ordinary gil; gil at this level outranks the skillup). Sale evidence at or
+  /// above this makes a skillup-eligible item route to the market instead.
+  /// </summary>
+  public int SkillupYieldsToGilAt { get; init; } = 150_000;
 }
 
 /// <summary>
