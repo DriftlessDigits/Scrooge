@@ -65,7 +65,7 @@ namespace Scrooge.Windows
     /// <summary>
     /// Clears the log and opens the window. Called at the start of each pinch run.
     /// </summary>
-    public void StartNewRun(bool isHawkRun = false, bool isDesynthRun = false)
+    public void StartNewRun(bool isHawkRun = false, bool isDesynthRun = false, bool isGcRun = false)
     {
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
@@ -77,7 +77,12 @@ namespace Scrooge.Windows
       run.RunStopwatch.Restart();
 
       string label;
-      if (isDesynthRun)
+      if (isGcRun)
+      {
+        label = "GC Turn-In Run";
+        WindowName = "Scrooge - GC Turn-In Log";
+      }
+      else if (isDesynthRun)
       {
         label = "Desynth Run";
         WindowName = "Scrooge - Desynth Run Log";
@@ -197,25 +202,30 @@ namespace Scrooge.Windows
 
       var isHawkRun = run.Mode == RunMode.Hawk;
       var isDesynthRun = run.Mode == RunMode.Desynth;
-      var label = isDesynthRun ? "Desynth Run"
+      var isGcRun = run.Mode == RunMode.Gc;
+      var label = isGcRun ? "GC Turn-In Run"
+                : isDesynthRun ? "Desynth Run"
                 : isHawkRun ? "Hawk Run"
                 : "Run";
 
       run.AddRunEntry(RunEvent.End, $"{label} Complete — {DateTime.Now:h:mm tt}");
-      run.AddRunEntry(RunEvent.Summary, isDesynthRun
-        ? $"{run.ItemsProcessed} desynthed"
-        : isHawkRun
-          ? $"{run.ItemsAdjusted} listed"
-          : $"{run.ItemsAdjusted} adjusted");
+      run.AddRunEntry(RunEvent.Summary, isGcRun
+        ? $"{run.ItemsProcessed} turned in"
+        : isDesynthRun
+          ? $"{run.ItemsProcessed} desynthed"
+          : isHawkRun
+            ? $"{run.ItemsAdjusted} listed"
+            : $"{run.ItemsAdjusted} adjusted");
 
       // Desynth headline = what the materials are worth, not vendor forfeit —
       // vendor prices for gear are jokingly cheap, so "net vs vendor" always wins.
       if (isDesynthRun && run.MaterialsValueGil > 0)
         run.AddRunEntry(RunEvent.Summary, $"~{run.MaterialsValueGil:N0} gil in materials (cached prices)");
 
-      // Desynth runs don't carry vendor / listing / outlier semantics — skip
-      // those summary lines for them.
-      if (!isDesynthRun)
+      // Desynth and GC runs don't carry vendor / listing / lane semantics — skip
+      // those summary lines for them (GC's seals summary is added by the
+      // orchestrator, which owns the seal-value RunLifecycle).
+      if (!isDesynthRun && !isGcRun)
       {
         if (run.SkippedCount > 0)
           run.AddRunEntry(RunEvent.Summary, $"{run.SkippedCount} skipped");
@@ -242,14 +252,16 @@ namespace Scrooge.Windows
 
       // Hand off triage data to the triage window
       if (run.TriageItems.Count > 0)
-        Plugin.TriageWindow.SetRun(run);
+        Plugin.Ledger.SetRun(run);
 
       // Stop timer and mark run complete (lifecycle terminal - fail closed)
       run.MarkComplete();
       run.RunStopwatch.Stop();
 
-      // Update the rolling per-item average
-      if (run.ItemsProcessed > 0)
+      // Update the rolling per-item average. GC turn-in cadence differs from a
+      // pinch/hawk pass and must not pollute the pinch ETA seed (existing desynth
+      // behavior is left unchanged).
+      if (run.ItemsProcessed > 0 && !isGcRun)
       {
         var currentAvg = (float)run.RunStopwatch.ElapsedMilliseconds / run.ItemsProcessed;
         var stored = Plugin.Configuration.AvgMsPerItem;
@@ -440,8 +452,8 @@ namespace Scrooge.Windows
         ImGui.Text($"{run.TriageItems.Count} {(run.TriageItems.Count == 1 ? "item needs" : "items need")} triage");
         ImGui.PopStyleColor();
         ImGui.SameLine();
-        if (ImGui.SmallButton("Open Triage"))
-          Plugin.TriageWindow.IsOpen = true;
+        if (ImGui.SmallButton("Open Ledger"))
+          Plugin.Ledger.IsOpen = true;
         ImGui.Unindent(16);
       }
 

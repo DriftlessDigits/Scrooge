@@ -42,7 +42,7 @@ internal sealed class DesynthPreviewWindow : Window
   /// </summary>
   public void OpenAndScan()
   {
-    Plugin.RoutingWindow.Refresh();
+    Plugin.Ledger.Refresh();
     _items = DesynthInventoryScanner.Scan();
     IsOpen = true;
   }
@@ -62,7 +62,7 @@ internal sealed class DesynthPreviewWindow : Window
     // Location-session parity with the GC counter's Churn button: the
     // router's Melt pile meets its executor here — remind, mark the rows,
     // and offer one-click selection (protections still excluded).
-    _meltPile = Plugin.RoutingWindow.MeltPileVariants();
+    _meltPile = Plugin.Ledger.MeltPileVariants();
     if (_meltPile.Count > 0)
     {
       var visible = _items.Count(i => _meltPile.Contains((i.ItemId, i.IsHq)));

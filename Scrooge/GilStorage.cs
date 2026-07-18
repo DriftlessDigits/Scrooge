@@ -1312,6 +1312,29 @@ internal static class GilStorage
     cmd.ExecuteNonQuery();
   }
 
+  /// <summary>
+  /// Override counts per router verdict class - the read side of the Ledger's
+  /// confidence refinement (design Section 4: "manual decisions teach"). Counts
+  /// only genuine DISAGREEMENTS (player_verdict != router_verdict); confirmations
+  /// are recorded in the same table but do not demote a class. v0-simple by
+  /// design: the tier refinement is a single override-count threshold, the
+  /// maturation path (measured quantities) is post-3.0. Storage failure yields an
+  /// empty map (no refinement), never throws.
+  /// </summary>
+  internal static Dictionary<string, int> GetRoutingOverrideCounts()
+  {
+    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+    using var cmd = new SqliteCommand(
+      @"SELECT router_verdict, COUNT(*) FROM routing_overrides
+        WHERE player_verdict <> router_verdict
+        GROUP BY router_verdict",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      counts[reader.GetString(0)] = reader.GetInt32(1);
+    return counts;
+  }
+
   /// <summary>Gets listings older than the cutoff timestamp (slow movers).</summary>
   internal static List<ListingRecord> GetSlowMovers(long olderThan)
   {

@@ -231,13 +231,13 @@ internal sealed class HawkWindow : Window
     if (Plugin.Configuration.EnableRoutingBrain)
     {
       ImGui.SameLine();
-      if (ImGui.Button("Route"))
+      if (ImGui.Button("Ledger"))
       {
-        Plugin.RoutingWindow.Refresh();
-        Plugin.RoutingWindow.IsOpen = true;
+        Plugin.Ledger.Refresh();
+        Plugin.Ledger.IsOpen = true;
       }
       if (ImGui.IsItemHovered())
-        ImGui.SetTooltip("Open the router's pile view: list / desynth / turn-in / vendor verdicts\nfor the gear in your bags, with reasons. One Go runs the List and\nVendor piles from here.");
+        ImGui.SetTooltip("Open the Ledger: one worklist grouped by action (list / reprice / pull /\nmelt / churn / watch) over your gear and listings, with reasons. Confirm\na whole pile of no-brainers at once, or work the Review pile row by row.");
     }
 
     ImGui.Separator();

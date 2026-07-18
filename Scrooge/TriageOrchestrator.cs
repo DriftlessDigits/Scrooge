@@ -184,9 +184,9 @@ internal sealed class TriageOrchestrator : IDisposable
       IsRunning = false;
 
       if (success)
-        Plugin.TriageWindow.RemoveItem(item);
+        Plugin.Ledger.RemoveItem(item);
       else if (item.Result == PricingResult.Skipped)
-        Plugin.TriageWindow.RemoveItem(item); // no longer listed - row is moot
+        Plugin.Ledger.RemoveItem(item); // no longer listed - row is moot
       else
       {
         Svc.Chat.PrintError($"[Scrooge] Reprice failed for {item.ItemName}: {item.Result}");
@@ -476,7 +476,7 @@ internal sealed class TriageOrchestrator : IDisposable
       _taskManager.DelayNext(500);
 
       // Track the sale and retire the row (flags close on COMPLETION, not queue)
-      _taskManager.Enqueue(() => { if (!Skipped(item)) { TrackVendorSale(item); CloseReceiptsNeverCleared(item); Plugin.TriageWindow.RemoveItem(item); } return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { TrackVendorSale(item); CloseReceiptsNeverCleared(item); Plugin.Ledger.RemoveItem(item); } return true; },
         $"TriageTrack_{item.ItemName}");
       _taskManager.Enqueue(() => { _catchallBlock?.Dispose(); _catchallBlock = null; return true; },
         $"TriageUnblockCatchall_{item.ItemName}");
@@ -484,7 +484,7 @@ internal sealed class TriageOrchestrator : IDisposable
     else
     {
       // Pull only — track the pull and retire the row on completion
-      _taskManager.Enqueue(() => { if (!Skipped(item)) { _pulledCount++; CloseReceiptsNeverCleared(item); Plugin.TriageWindow.RemoveItem(item); } return true; },
+      _taskManager.Enqueue(() => { if (!Skipped(item)) { _pulledCount++; CloseReceiptsNeverCleared(item); Plugin.Ledger.RemoveItem(item); } return true; },
         $"TriagePulled_{item.ItemName}");
     }
 
@@ -530,7 +530,7 @@ internal sealed class TriageOrchestrator : IDisposable
       Svc.Chat.Print($"[Scrooge] {item.ItemName} is no longer listed on {item.RetainerName} — skipped (likely sold).");
       if (isReprice) item.Result = PricingResult.Skipped;
       else item.QueuedAction = TriageAction.None;
-      Plugin.TriageWindow.RemoveItem(item); // row is moot - close its flags
+      Plugin.Ledger.RemoveItem(item); // row is moot - close its flags
       return true;
     }
 
