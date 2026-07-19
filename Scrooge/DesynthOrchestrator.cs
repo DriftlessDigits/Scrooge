@@ -35,6 +35,27 @@ internal sealed class DesynthOrchestrator : IDisposable
   private int _itemsUntilNextLongPause;
 
   /// <summary>
+  /// True when the run may auto-continue: the player took everything eligible
+  /// (Select All intent), so a window that repopulates after the queue drains
+  /// (the game's agent list truncates large inventories — run 74 melted
+  /// exactly 100 with a known eligible left over) refills the queue instead
+  /// of announcing a dishonest plain success. Hand-picked subsets never
+  /// auto-continue; they get a leftover report instead.
+  /// </summary>
+  private bool _autoContinue;
+
+  /// <summary>
+  /// Slots already attempted this run. A rescan only feeds the queue slots we
+  /// have not touched — a stuck item must not produce an infinite
+  /// rescan-melt-rescan loop.
+  /// </summary>
+  private readonly HashSet<(InventoryType Container, int Slot)> _attempted = new();
+
+  /// <summary>_processed at the start of the current round; a continuation
+  /// round that makes no progress ends the run loudly instead of rescanning.</summary>
+  private int _roundStartProcessed;
+
+  /// <summary>
   /// Per-run monotonic counter incremented at the head of every act (including
   /// stack continuations). Yields from one act share the same value, used as
   /// desynth_yields.attempt_seq for grouping.
@@ -99,8 +120,13 @@ internal sealed class DesynthOrchestrator : IDisposable
     }
   }
 
-  /// <summary>Entry point. Called by DesynthPreviewWindow when user clicks Run.</summary>
-  internal unsafe void StartRun(List<DesynthItem> items)
+  /// <summary>
+  /// Entry point. Called by DesynthPreviewWindow when user clicks Run.
+  /// <paramref name="allEligibleSelected"/> = the player took every
+  /// non-protected item in the scan (Select All intent) — the run may
+  /// auto-continue if the window repopulates after the queue drains.
+  /// </summary>
+  internal unsafe void StartRun(List<DesynthItem> items, bool allEligibleSelected = false)
   {
     if (IsRunning || _taskManager.IsBusy || items.Count == 0)
       return;
@@ -147,6 +173,9 @@ internal sealed class DesynthOrchestrator : IDisposable
     Plugin.PinchRunLog.SetCurrentRetainer("Desynth");
     _queue = new Queue<DesynthItem>(items);
     _processed = 0;
+    _autoContinue = allEligibleSelected;
+    _attempted.Clear();
+    _roundStartProcessed = 0;
     _itemsUntilNextLongPause = NextPauseInterval();
 
     Plugin.PinchRunLog.StartNewRun(isDesynthRun: true);
@@ -163,11 +192,13 @@ internal sealed class DesynthOrchestrator : IDisposable
   private unsafe bool? ProcessNext()
   {
     if (!IsRunning) return true;
-    if (_queue == null || _queue.Count == 0)
+    if (_queue == null)
     {
       EndRun();
       return true;
     }
+    if (_queue.Count == 0)
+      return TryContinueOrEnd();
 
     // Verify the addon is still open. If the player walked away from Mutamix
     // mid-run, abort cleanly.
@@ -190,7 +221,63 @@ internal sealed class DesynthOrchestrator : IDisposable
       return true;
     }
 
+    _attempted.Add((item.Container, item.SlotIndex));
     EnqueueActChain(item, agentIndex, isContinuation: false);
+    return true;
+  }
+
+  /// <summary>
+  /// Queue drained. Rescan the window before declaring success: the game's
+  /// agent list truncates large inventories, so a drained queue does not mean
+  /// a drained inventory. All-eligible runs refill and continue (progress
+  /// guard: a round that melted nothing ends loudly rather than rescanning);
+  /// hand-picked runs report the leftovers — fail loud even on success.
+  /// </summary>
+  private bool? TryContinueOrEnd()
+  {
+    var leftovers = DesynthInventoryScanner.Scan()
+      .FindAll(i => !i.IsProtected && !_attempted.Contains((i.Container, i.SlotIndex)));
+
+    if (leftovers.Count == 0)
+    {
+      EndRun();
+      return true;
+    }
+
+    if (!_autoContinue)
+    {
+      Svc.Chat.Print(
+        $"[Scrooge] Desynth run complete — {leftovers.Count} more eligible item(s) still in the window.");
+      EndRun();
+      return true;
+    }
+
+    if (_processed <= _roundStartProcessed)
+    {
+      Svc.Chat.PrintError(
+        $"[Scrooge] Desynth window still shows {leftovers.Count} eligible item(s) but the last round made no progress. Stopping.");
+      EndRun();
+      return true;
+    }
+
+    _roundStartProcessed = _processed;
+    _queue = new Queue<DesynthItem>(leftovers);
+    Plugin.PinchRunLog.SetTotalItems(_processed + leftovers.Count);
+    if (Plugin.CurrentRun?.DesynthRunId is long continuedRunId)
+    {
+      try
+      {
+        Plugin.DesynthYieldStore?.UpdateTotalItems(continuedRunId, _processed + leftovers.Count);
+      }
+      catch (Exception ex)
+      {
+        Svc.Log.Error(ex, "Failed to update desynth_runs total_items on auto-continue");
+      }
+    }
+    Svc.Chat.Print(
+      $"[Scrooge] Desynth window refilled — continuing with {leftovers.Count} more item(s).");
+
+    _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
     return true;
   }
 

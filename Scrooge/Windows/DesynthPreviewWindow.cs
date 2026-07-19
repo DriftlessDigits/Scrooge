@@ -249,7 +249,11 @@ internal sealed class DesynthPreviewWindow : Window
 
   private void StartRun(List<DesynthItem> items)
   {
-    Plugin.DesynthOrchestrator.StartRun(items);
+    // Select All intent: every non-protected item in the scan is checked.
+    // Grants the orchestrator permission to auto-continue when the game's
+    // truncated agent list repopulates after the queue drains.
+    bool allEligibleSelected = _items.TrueForAll(i => i.IsProtected || i.Selected);
+    Plugin.DesynthOrchestrator.StartRun(items, allEligibleSelected);
     IsOpen = false;
   }
 
