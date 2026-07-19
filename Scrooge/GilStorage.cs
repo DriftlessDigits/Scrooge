@@ -1324,8 +1324,13 @@ internal static class GilStorage
   internal static Dictionary<string, int> GetRoutingOverrideCounts()
   {
     var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+    // DISTINCT items, not rows: one item re-ruled across evidence flips is a
+    // player changing their mind, not a doctrine pattern - two rows from the
+    // same hat must not demote a whole verdict class (finding 13: the Facet
+    // Choker's two rulings zeroed a 64-item Churn bulk).
     using var cmd = new SqliteCommand(
-      @"SELECT router_verdict, COUNT(*) FROM routing_overrides
+      @"SELECT router_verdict, COUNT(DISTINCT item_id || '_' || is_hq)
+        FROM routing_overrides
         WHERE player_verdict <> router_verdict
         GROUP BY router_verdict",
       _connection);
