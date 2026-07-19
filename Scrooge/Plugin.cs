@@ -82,7 +82,7 @@ public sealed class Plugin : IDalamudPlugin
 
     CommandManager.AddHandler("/scrooge", new CommandInfo(OnScroogeCommand)
     {
-      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config = settings, ledger = the worklist)"
+      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config = settings, ledger = the worklist, sitrep = diagnostics to clipboard)"
     });
 
     // Register chat link handler — clicking Scrooge's chat output opens the dashboard
@@ -263,6 +263,15 @@ public sealed class Plugin : IDalamudPlugin
     else if (args.Trim().Equals("ledger", StringComparison.OrdinalIgnoreCase)
              || args.Trim().Equals("triage", StringComparison.OrdinalIgnoreCase))
       Ledger.Toggle();
+    // One-paste diagnostics: clipboard gets the block, chat confirms. The dump
+    // itself never goes to chat - it's built to be pasted at Fable, not read
+    // off a chat log.
+    else if (args.Trim().Equals("sitrep", StringComparison.OrdinalIgnoreCase))
+    {
+      var dump = Sitrep.Build();
+      Dalamud.Bindings.ImGui.ImGui.SetClipboardText(dump);
+      Svc.Chat.Print($"[Scrooge] Sitrep copied to clipboard ({dump.Split('\n').Length} lines).");
+    }
     else
       ToggleMainUi();
   }

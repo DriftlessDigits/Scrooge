@@ -1353,6 +1353,21 @@ internal static class GilStorage
   }
 
   // =========================================================================
+  // Sitrep - one-paste diagnostics
+  // =========================================================================
+
+  /// <summary>
+  /// Diagnostic scalar for the sitrep dump. Internal trusted SQL only - never
+  /// user input. Returns 0 on NULL (empty table aggregate).
+  /// </summary>
+  internal static long SitrepScalar(string sql)
+  {
+    using var cmd = new SqliteCommand(sql, _connection);
+    var result = cmd.ExecuteScalar();
+    return result is null or DBNull ? 0L : Convert.ToInt64(result);
+  }
+
+  // =========================================================================
   // Ripeness sensors - how stale is the board read
   // =========================================================================
 
