@@ -181,6 +181,48 @@ public class LedgerTests
     Assert.Equal(ConfidenceTier.Mixed, LedgerConfidence.Tier(e, overrideCount: 99));
   }
 
+  // ---- Which overrides are doctrine evidence (Sam's 07-19 ruling) ----
+
+  [Fact]
+  public void CountsTowardDemotion_MarketBoundaryCrossingsCount()
+  {
+    // "The router undervalues things" / "overvalues them" - disagreements no
+    // standing rule explains. Both directions count.
+    Assert.True(LedgerConfidence.CountsTowardDemotion("Gc", "List"));
+    Assert.True(LedgerConfidence.CountsTowardDemotion("Desynth", "List"));
+    Assert.True(LedgerConfidence.CountsTowardDemotion("Vendor", "Reprice"));
+    Assert.True(LedgerConfidence.CountsTowardDemotion("List", "Gc"));
+    Assert.True(LedgerConfidence.CountsTowardDemotion("List", "Vendor"));
+  }
+
+  [Fact]
+  public void CountsTowardDemotion_OffMarketReshufflesAreStandingRuleApplications()
+  {
+    // The Choker+Cesti case: Gc->Melt for the skillup ladder is the value
+    // hierarchy the router already encodes - a higher bidder, not an
+    // indictment. Must not demote the class.
+    Assert.False(LedgerConfidence.CountsTowardDemotion("Gc", "Desynth"));
+    Assert.False(LedgerConfidence.CountsTowardDemotion("Desynth", "Gc"));
+    Assert.False(LedgerConfidence.CountsTowardDemotion("Gc", "Vendor"));
+    Assert.False(LedgerConfidence.CountsTowardDemotion("Vendor", "Desynth"));
+  }
+
+  [Fact]
+  public void CountsTowardDemotion_ConfirmationsNeverCount()
+  {
+    Assert.False(LedgerConfidence.CountsTowardDemotion("List", "List"));
+    Assert.False(LedgerConfidence.CountsTowardDemotion("Gc", "Gc"));
+  }
+
+  [Fact]
+  public void CountsTowardDemotion_OnMarketReshufflesAreAlsoExempt()
+  {
+    // List<->Reprice keeps the item on the board - a pricing mechanics call,
+    // not a market-boundary disagreement.
+    Assert.False(LedgerConfidence.CountsTowardDemotion("List", "Reprice"));
+    Assert.False(LedgerConfidence.CountsTowardDemotion("Reprice", "List"));
+  }
+
   // ---- Bulk eligibility ----
 
   [Fact]

@@ -1328,15 +1328,27 @@ internal static class GilStorage
     // player changing their mind, not a doctrine pattern - two rows from the
     // same hat must not demote a whole verdict class (finding 13: the Facet
     // Choker's two rulings zeroed a 64-item Churn bulk).
+    // Which disagreements are doctrine evidence at all is the pure core's call
+    // (LedgerConfidence.CountsTowardDemotion): only market-boundary crossings
+    // count; off-market value reshuffles are standing-rule applications.
+    var distinctItems = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
     using var cmd = new SqliteCommand(
-      @"SELECT router_verdict, COUNT(DISTINCT item_id || '_' || is_hq)
+      @"SELECT router_verdict, player_verdict, item_id || '_' || is_hq
         FROM routing_overrides
-        WHERE player_verdict <> router_verdict
-        GROUP BY router_verdict",
+        WHERE player_verdict <> router_verdict",
       _connection);
     using var reader = cmd.ExecuteReader();
     while (reader.Read())
-      counts[reader.GetString(0)] = reader.GetInt32(1);
+    {
+      var routerVerdict = reader.GetString(0);
+      if (!LedgerConfidence.CountsTowardDemotion(routerVerdict, reader.GetString(1)))
+        continue;
+      if (!distinctItems.TryGetValue(routerVerdict, out var items))
+        distinctItems[routerVerdict] = items = new HashSet<string>(StringComparer.Ordinal);
+      items.Add(reader.GetString(2));
+    }
+    foreach (var (verdict, items) in distinctItems)
+      counts[verdict] = items.Count;
     return counts;
   }
 
