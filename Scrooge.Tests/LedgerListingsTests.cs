@@ -176,11 +176,16 @@ public class LedgerListingsTests
   [Fact]
   public void ContradictionNote_StatesDcPriceSalesAndVelocity()
   {
-    var note = LedgerListings.ContradictionNote(communityMedian: 98, communitySales: 13, velocityPerDay: 0.9);
+    var note = LedgerListings.ContradictionNote(median: 98, sales: 13, velocityPerDay: 0.9);
     Assert.Contains("the DC pays ~98 on 13 sales", note);
     Assert.Contains("moves ~0.9/day", note);
     Assert.StartsWith("...but", note);
   }
+
+  [Fact]
+  public void ContradictionNote_PayerNamesLocalProvenanceHonestly()
+    => Assert.Contains("settled sales pay ~98 on 2 sales",
+      LedgerListings.ContradictionNote(98, 2, null, payer: "settled sales pay"));
 
   [Fact]
   public void ContradictionNote_SingularSale()

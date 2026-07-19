@@ -176,12 +176,16 @@ internal static class LedgerListings
   /// the deciding number can no longer be invisible behind a bare "!" badge.
   /// "...but the DC pays ~X on N sales / moves ~Y/day". Empty when no market
   /// evidence backs the contradiction (the badge stands alone).
+  /// <paramref name="payer"/> names the evidence's PROVENANCE honestly: "the DC
+  /// pays" for community history, "settled sales pay" for local lanes - the
+  /// note must never dress local numbers as DC-wide ones.
   /// </summary>
-  internal static string ContradictionNote(long? communityMedian, int communitySales, double? velocityPerDay)
+  internal static string ContradictionNote(long? median, int sales, double? velocityPerDay,
+    string payer = "the DC pays")
   {
     var parts = new List<string>(2);
-    if (communityMedian is long cm && cm > 0 && communitySales > 0)
-      parts.Add($"the DC pays ~{cm:N0} on {communitySales} sale{(communitySales == 1 ? "" : "s")}");
+    if (median is long m && m > 0 && sales > 0)
+      parts.Add($"{payer} ~{m:N0} on {sales} sale{(sales == 1 ? "" : "s")}");
     if (velocityPerDay is double v && v > 0)
       parts.Add($"moves ~{v:0.##}/day");
     return parts.Count > 0 ? $"...but {string.Join(" / ", parts)}." : "";

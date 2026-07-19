@@ -813,7 +813,8 @@ internal sealed class LedgerWindow : Window
     {
       var note = LedgerListings.ContradictionNote(
         item.HistoryMedianPrice is int m && m > 0 ? m : (long?)null,
-        item.HistorySaleCount, null);
+        item.HistorySaleCount, null,
+        payer: "settled sales pay"); // LOCAL lane history - never dressed as DC-wide
       if (note.Length > 0) reason += $" {note}";
     }
     ImGui.TextWrapped($"- {reason}");
