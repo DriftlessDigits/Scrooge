@@ -94,6 +94,10 @@ internal sealed class LedgerWindow : Window
   private long _lastFullScanAt;
   private int _eventsSinceScan;
 
+  // --- Yields bridge (minimal): fresh melt output still in bags, ready to hand
+  // to the Hawk run. The data seam of the future full-sweep workflow. ---
+  private List<(uint ItemId, string Name, bool IsHq, int Qty)> _freshYields = [];
+
   // --- Absorbed triage state (was TriageWindow) ---
   private List<PricingItem> _triageItems = [];
   private List<TriageFlag> _heldFlags = [];
@@ -141,8 +145,60 @@ internal sealed class LedgerWindow : Window
       _earliestObs = GilStorage.GetEarliestObservation();
       _lastFullScanAt = GilStorage.GetLastFullScanTime();
       _eventsSinceScan = _lastFullScanAt > 0 ? GilStorage.CountMarketEventsSince(_lastFullScanAt) : 0;
+      _freshYields = LoadFreshYields();
     }
-    catch { _listed = []; _earliestObs = 0; _lastFullScanAt = 0; _eventsSinceScan = 0; }
+    catch { _listed = []; _earliestObs = 0; _lastFullScanAt = 0; _eventsSinceScan = 0; _freshYields = []; }
+  }
+
+  /// <summary>
+  /// Fresh melt output for the yields bridge: distinct yield items from the
+  /// last 24h of desynth runs that are STILL IN THE BAGS and MB-listable.
+  /// Already-swept or consumed yields drop out; crystals and other unlistables
+  /// never appear. Captured data only - no new game reads beyond the bag scan
+  /// the Ledger already performs.
+  /// </summary>
+  private static List<(uint ItemId, string Name, bool IsHq, int Qty)> LoadFreshYields()
+  {
+    var since = DateTimeOffset.UtcNow.AddHours(-24).ToUnixTimeSeconds();
+    var yields = Plugin.DesynthYieldStore?.GetRecentYieldItems(since);
+    if (yields is null || yields.Count == 0) return [];
+
+    var bags = SnapshotBagItems();
+    var sheet = Svc.Data.GetExcelSheet<Item>();
+    var rows = new List<(uint, string, bool, int)>();
+    foreach (var y in yields)
+    {
+      if (!bags.Contains((y.ItemId, y.IsHq))) continue;
+      if (!sheet.TryGetRow(y.ItemId, out var row)) continue;
+      if (row.ItemSearchCategory.RowId == 0) continue; // not MB-listable
+      rows.Add((y.ItemId, row.Name.ToString(), y.IsHq, y.TotalQty));
+    }
+    return rows;
+  }
+
+  /// <summary>Item identities currently in the four main bags.</summary>
+  private static unsafe HashSet<(uint ItemId, bool IsHq)> SnapshotBagItems()
+  {
+    var bags = new HashSet<(uint, bool)>();
+    var im = InventoryManager.Instance();
+    if (im == null) return bags;
+
+    foreach (var containerType in new[]
+    {
+      InventoryType.Inventory1, InventoryType.Inventory2,
+      InventoryType.Inventory3, InventoryType.Inventory4,
+    })
+    {
+      var container = im->GetInventoryContainer(containerType);
+      if (container == null) continue;
+      for (int i = 0; i < container->Size; i++)
+      {
+        var slot = container->GetInventorySlot(i);
+        if (slot == null || slot->ItemId == 0) continue;
+        bags.Add((slot->ItemId, (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0));
+      }
+    }
+    return bags;
   }
 
   // ==========================================================================
@@ -441,6 +497,7 @@ internal sealed class LedgerWindow : Window
     {
       DrawHeader(triageRows);
       ImGui.Separator();
+      DrawFreshYields();
       DrawListedPile();
       return;
     }
@@ -450,12 +507,52 @@ internal sealed class LedgerWindow : Window
 
     DrawReviewPile(triageRows);
     DrawListPile();
+    DrawFreshYields();
     DrawRepricePile(triageRows);
     DrawPullAndVendorPile(triageRows);
     DrawMeltPile();
     DrawChurnPile();
     DrawWatchPile(triageRows);
     DrawListedPile();
+  }
+
+  // ---- Fresh yields (yields bridge, minimal): melt output -> Hawk run ----
+
+  /// <summary>
+  /// The yields bridge's visible seam: fresh melt output (last 24h, still in
+  /// bags, MB-listable) with a one-click handoff into the Hawk run's checklist.
+  /// Melt -> mats -> market stops depending on a human remembering the middle
+  /// step. Minimal by ruling (2026-07-19): the full-sweep choreography is the
+  /// 4.0 workflow layer; this is the data seam it will stand on.
+  /// </summary>
+  private void DrawFreshYields()
+  {
+    if (_freshYields.Count == 0) return;
+
+    ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Info);
+    var open = ImGui.CollapsingHeader(
+      $"Fresh yields - {_freshYields.Count} item type{(_freshYields.Count == 1 ? "" : "s")} from your last melts###pileYields");
+    ImGui.PopStyleColor();
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("Desynth output from the last 24h still sitting in your bags. Check them into the Hawk run and the melt->mats->market loop closes in one errand.");
+    if (!open) return;
+
+    if (ImGui.Button($"Check all {_freshYields.Count} in Hawk Run###yieldsToHawk"))
+    {
+      Plugin.HawkWindow.RefreshInventory();
+      foreach (var y in _freshYields)
+        Plugin.HawkWindow.SetItemSelected(y.ItemId, y.IsHq, true);
+      Plugin.HawkWindow.IsOpen = true;
+    }
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("Opens the Hawk run checklist with these pre-checked. Items the Hawk can't list right now simply stay unchecked.");
+
+    foreach (var (_, name, isHq, qty) in _freshYields)
+    {
+      ImGui.Text($"  {Format.Hq(name, isHq)}");
+      ImGui.SameLine();
+      ImGui.TextDisabled($"x{qty}");
+    }
   }
 
   // ---- Listed (session 3: everything on the board, per retainer) ----
