@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -270,6 +271,29 @@ internal static class LedgerConfidence
     => baseTier == ConfidenceTier.Unanimous && overrideCount >= demoteThreshold
       ? ConfidenceTier.Mixed
       : baseTier;
+
+  /// <summary>Verdict classes that keep or put the item ON the market board.</summary>
+  private static readonly HashSet<string> OnMarketVerdicts =
+    new(StringComparer.Ordinal) { "List", "Reprice" };
+
+  /// <summary>
+  /// Whether an override is doctrine evidence (Sam's 07-19 ruling: a standing
+  /// rule the router already encodes never indicts a class). Only overrides
+  /// that CROSS the market boundary count: X-&gt;List says "the router
+  /// undervalues things", List-&gt;X says "it overvalues them" - both are
+  /// disagreements the router cannot explain with any rule it holds.
+  /// Off-market reshuffles (Gc/Melt/Vend among themselves) are value-hierarchy
+  /// applications the worth knobs already price - a higher bidder, not an
+  /// indictment; the Choker+Cesti pair zeroing a 102-item Turn In was this
+  /// distinction missing. If those pile up, the fix is tuning the knobs the
+  /// receipts point at, not demoting the class. Confirmations never count.
+  /// </summary>
+  internal static bool CountsTowardDemotion(string routerVerdict, string playerVerdict)
+  {
+    if (string.Equals(routerVerdict, playerVerdict, StringComparison.Ordinal))
+      return false;
+    return OnMarketVerdicts.Contains(routerVerdict) != OnMarketVerdicts.Contains(playerVerdict);
+  }
 
   /// <summary>The full score: base tier from evidence, refined by the override history.</summary>
   internal static ConfidenceTier Tier(in Evidence e, int overrideCount = 0,

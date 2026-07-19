@@ -1506,5 +1506,33 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.Save();
     }
     ImGui.TextDisabled("Floor: 1500 ms recommended. Lower values look more bot-like.");
+
+    ImGui.Spacing();
+    ImGui.Separator();
+    ImGui.Spacing();
+
+    ImGui.TextWrapped("What a skillup is worth to you, in gil. These are ROUTER-WIDE value " +
+      "inputs, not desynth settings: a skillup-eligible item's desynth exit is priced at this " +
+      "value and competes in every routing comparison - against its sale evidence, against " +
+      "seals. A sale comfortably above the worth wins the market; below it, the melter wins; " +
+      "near it, the row lands in Review.");
+    ImGui.Spacing();
+
+    var worthYellow = Plugin.Configuration.SkillupWorthYellow;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.InputInt("Yellow skillup worth (gil)", ref worthYellow, 5_000, 25_000))
+    {
+      Plugin.Configuration.SkillupWorthYellow = Math.Max(0, worthYellow);
+      Plugin.Configuration.Save();
+    }
+
+    var worthRed = Plugin.Configuration.SkillupWorthRed;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.InputInt("Red skillup worth (gil)", ref worthRed, 5_000, 25_000))
+    {
+      Plugin.Configuration.SkillupWorthRed = Math.Max(0, worthRed);
+      Plugin.Configuration.Save();
+    }
+    ImGui.TextDisabled("Red is rarer than yellow, so it should be worth more.");
   }
 }

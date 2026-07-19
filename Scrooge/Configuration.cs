@@ -172,6 +172,15 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int DesynthPerActionBaseMs { get; set; } = 1500;
 
+  /// <summary>
+  /// Ceiling for waits that span a server round trip (desynth Confirm ->
+  /// SalvageResult, and future sites of the same shape), in ms. One shared
+  /// knob, not per-site bumps: a laggy server slows every round trip the
+  /// same way. The 2026-07-19 02:38 abort was SalvageResult taking >4000ms
+  /// at a laggy hour; UI-local waits (SalvageDialog) keep their own ceiling.
+  /// </summary>
+  public int ServerRoundTripCeilingMs { get; set; } = 10_000;
+
   // --- Hotkeys ---
 
   /// <summary>Enable hotkey to start auto-pinch from the retainer sell list.</summary>

@@ -15,6 +15,7 @@ namespace Scrooge.Windows
     Skipped,      // red — rule blocked, no price set
     NoData,       // yellow — no competition, player decides
     VendorSold,   // green — vendor-sold through retainer
+    TurnedIn,     // green — GC Expert Delivery turn-in, paid in seals not gil
     Banned,       // blue — on ban list, observed but not changed
     Desynthed,    // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
     SlowMover,    // info blue — slow-mover pressure deepened the cut (price WAS applied)
@@ -402,6 +403,7 @@ namespace Scrooge.Windows
               ItemOutcome.Skipped => ScroogeColors.Spent,
               ItemOutcome.NoData => ScroogeColors.Amber,
               ItemOutcome.VendorSold => ScroogeColors.Earned,
+              ItemOutcome.TurnedIn => ScroogeColors.Earned,
               ItemOutcome.Banned => ScroogeColors.Banned,
               ItemOutcome.Desynthed => ScroogeColors.Muted,
               ItemOutcome.SlowMover => ScroogeColors.Info,
@@ -561,6 +563,7 @@ namespace Scrooge.Windows
               {
                 ItemOutcome.NoData => "No data",
                 ItemOutcome.VendorSold => "Vendor-sold",
+                ItemOutcome.TurnedIn => "Turned in",
                 ItemOutcome.Banned => "Banned",
                 ItemOutcome.Desynthed => "Desynthed",
                 _ => "Entry"

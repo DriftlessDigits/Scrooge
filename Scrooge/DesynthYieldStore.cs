@@ -38,6 +38,22 @@ internal sealed class DesynthYieldStore
     return (long)(cmd.ExecuteScalar() ?? 0L);
   }
 
+  /// <summary>
+  /// Updates a run's total_items. Auto-continue refills the queue mid-run when
+  /// the desynth window repopulates, so the total grows past the initial count.
+  /// </summary>
+  internal void UpdateTotalItems(long runId, int totalItems)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE desynth_runs
+        SET total_items = @total
+        WHERE id = @id;",
+      _connection);
+    cmd.Parameters.AddWithValue("@total", totalItems);
+    cmd.Parameters.AddWithValue("@id", runId);
+    cmd.ExecuteNonQuery();
+  }
+
   /// <summary>Marks a run as complete. Sets ended_at; aborted_reason left null.</summary>
   internal void EndRun(long runId, DateTimeOffset endedAt)
   {
