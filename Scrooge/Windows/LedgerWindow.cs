@@ -42,6 +42,14 @@ internal sealed class LedgerWindow : Window
     public InventoryType Container { get; init; }
     public int SlotIndex { get; init; }
     public int LastSalePrice { get; init; }
+    /// <summary>DC-scope community median (Universalis history), for the Contradicted-row objection. 0 = none.</summary>
+    public long CommunityMedian { get; init; }
+    /// <summary>DC settled sales backing that median.</summary>
+    public int CommunitySampleCount { get; init; }
+    /// <summary>Home-world velocity (units/day), for the Contradicted-row objection. Null = no trusted data.</summary>
+    public double? MarketVelocity { get; init; }
+    /// <summary>The verdict leaned on community fallback (no local sale, community median in play) - tag it while world data warms.</summary>
+    public bool CommunityFallback { get; init; }
     /// <summary>The router's original call - immutable; overrides move Pile, not this.</summary>
     public RoutingVerdict Verdict { get; init; }
     /// <summary>Current routing exit. Starts at Verdict.Exit; the player may move it.</summary>
@@ -77,6 +85,11 @@ internal sealed class LedgerWindow : Window
   private int _uniVersion;
   private int _uniHistVersion;
 
+  // --- Listed pile (session 3): cached own-board snapshot, refreshed with the
+  // rest of the ledger so the section never queries the DB per frame. ---
+  private List<ListedLine> _listed = [];
+  private long _earliestObs;
+
   // --- Absorbed triage state (was TriageWindow) ---
   private List<PricingItem> _triageItems = [];
   private List<TriageFlag> _heldFlags = [];
@@ -105,6 +118,25 @@ internal sealed class LedgerWindow : Window
   {
     Refresh();
     RefreshHeldFlags();
+    RefreshListings();
+  }
+
+  /// <summary>
+  /// Loads the own-board snapshot for the Listed pile from captured data (the
+  /// listings table). Read-only, cached - called on open and on refresh, never
+  /// per frame. Storage failure degrades to an empty section.
+  /// </summary>
+  private void RefreshListings()
+  {
+    try
+    {
+      _listed = GilStorage.GetAllCurrentListings()
+        .Select(l => new ListedLine(
+          l.RetainerName, l.ItemId, l.ItemName, l.IsHQ, l.UnitPrice, l.Quantity, l.FirstSeenTimestamp))
+        .ToList();
+      _earliestObs = GilStorage.GetEarliestObservation();
+    }
+    catch { _listed = []; _earliestObs = 0; }
   }
 
   // ==========================================================================
@@ -181,6 +213,10 @@ internal sealed class LedgerWindow : Window
             Container = containerType,
             SlotIndex = i,
             LastSalePrice = inputs.LastSale?.Price ?? 0,
+            CommunityMedian = inputs.CommunityMedian ?? 0,
+            CommunitySampleCount = inputs.CommunitySampleCount,
+            MarketVelocity = inputs.MarketVelocity,
+            CommunityFallback = inputs.LastSale is null && inputs.CommunityMedian is not null,
             Verdict = verdict,
             Pile = verdict.Exit,
             InReview = verdict.IsReview,
@@ -370,12 +406,22 @@ internal sealed class LedgerWindow : Window
 
     var triageRows = BuildTriageRows();
 
-    if (_items.Count == 0 && triageRows.Count == 0)
+    if (_items.Count == 0 && triageRows.Count == 0 && _listed.Count == 0)
     {
       ImGui.TextDisabled(brainOn
         ? "Nothing on the ledger - no routable gear in your bags and no open flags."
         : "The routing brain is off (config's Routing tab). No open flags to review.");
-      if (ImGui.Button("Refresh")) { Refresh(); RefreshHeldFlags(); }
+      if (ImGui.Button("Refresh")) { Refresh(); RefreshHeldFlags(); RefreshListings(); }
+      return;
+    }
+
+    // Nothing actionable, but there are standing listings - show the header and
+    // fall through to the read-only Listed pile.
+    if (_items.Count == 0 && triageRows.Count == 0)
+    {
+      DrawHeader(triageRows);
+      ImGui.Separator();
+      DrawListedPile();
       return;
     }
 
@@ -389,6 +435,63 @@ internal sealed class LedgerWindow : Window
     DrawMeltPile();
     DrawChurnPile();
     DrawWatchPile(triageRows);
+    DrawListedPile();
+  }
+
+  // ---- Listed (session 3: everything on the board, per retainer) ----
+
+  /// <summary>
+  /// The Listed pile (item 1): a read-only, per-retainer view of everything you
+  /// currently have on the board, from the captured listings snapshot. Not an
+  /// action pile - the actionable listed rows (reprice / pull / outlier / vendor
+  /// floor) surface in the piles above; this is the "what's out there" roll-up.
+  /// Collapsed by default so it never crowds the worklist. Each row carries an
+  /// HONEST age label (item 2): "&gt;=Nd" when first_seen is only a lower bound.
+  /// </summary>
+  private void DrawListedPile()
+  {
+    if (_listed.Count == 0) return;
+
+    var groups = LedgerListings.GroupByRetainer(_listed);
+    var totalGil = groups.Sum(g => g.GilAtAsk);
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var ageCfg = new ListedAgeConfig();
+
+    ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Info);
+    var open = ImGui.CollapsingHeader(
+      $"Listed - {_listed.Count} on the board across {groups.Count} retainer{(groups.Count == 1 ? "" : "s")} ({Format.Gil(totalGil)} at ask)###pileListed");
+    ImGui.PopStyleColor();
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("Everything you currently have listed, grouped by retainer, from the last board scan. Read-only - the actionable listed rows live in the piles above.");
+    if (!open) return;
+
+    foreach (var g in groups)
+    {
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Muted);
+      var groupOpen = ImGui.CollapsingHeader(
+        $"{g.Retainer} - {g.Count} listed ({Format.Gil(g.GilAtAsk)} at ask)###listedRet_{g.Retainer}");
+      ImGui.PopStyleColor();
+      if (!groupOpen) continue;
+
+      foreach (var l in _listed.Where(x => x.Retainer == g.Retainer).OrderByDescending(x => x.UnitPrice))
+      {
+        var ageDays = LedgerListings.AgeDays(l.FirstSeen, now);
+        var exact = LedgerListings.AgeIsExact(l.FirstSeen, _earliestObs);
+        var ageColor = LedgerListings.Tier(ageDays, ageCfg) switch
+        {
+          ListedAgeTier.Stale => ScroogeColors.Stale,
+          ListedAgeTier.Aging => ScroogeColors.Amber,
+          _ => ScroogeColors.Muted,
+        };
+        ImGui.Text($"  {Format.Hq(l.ItemName, l.IsHq)}");
+        ImGui.SameLine();
+        ImGui.TextDisabled(l.Quantity > 1 ? $"x{l.Quantity} @ {Format.Gil(l.UnitPrice)}" : $"@ {Format.Gil(l.UnitPrice)}");
+        ImGui.SameLine();
+        ImGui.PushStyleColor(ImGuiCol.Text, ageColor);
+        ImGui.Text(LedgerListings.AgeLabel(ageDays, exact));
+        ImGui.PopStyleColor();
+      }
+    }
   }
 
   private void DrawHeader(List<InboxRow> triageRows)
@@ -404,14 +507,22 @@ internal sealed class LedgerWindow : Window
         : $"- {stock:N0} venture tokens");
     }
 
+    // Data-warming honesty (session 3, item 7): while Universalis fetches are in
+    // flight the board is scoring on community fallback that world data will
+    // shortly overwrite - say so in the header instead of silently asserting two
+    // different truths per reload.
     var uniPending = UniversalisStats.PendingCount;
     if (uniPending > 0)
     {
       ImGui.SameLine();
-      ImGui.TextDisabled($"- Universalis: checking {uniPending}...");
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
+      ImGui.Text($"- market data warming — {uniPending} pending");
+      ImGui.PopStyleColor();
+      if (ImGui.IsItemHovered())
+        ImGui.SetTooltip("Verdicts marked \"~ community read\" are built on DC-wide fallback while your world's Universalis data is still fetching. They may firm up on the next refresh.");
     }
 
-    if (ImGui.Button("Refresh")) { Refresh(); RefreshHeldFlags(); }
+    if (ImGui.Button("Refresh")) { Refresh(); RefreshHeldFlags(); RefreshListings(); }
     ImGui.SameLine();
 
     // The triage batch Go (absorbed): executes whatever actions are staged on the
@@ -595,9 +706,15 @@ internal sealed class LedgerWindow : Window
     var counts = new Dictionary<WatchCategory, int>();
     void Bump(WatchCategory c) => counts[c] = counts.GetValueOrDefault(c) + 1;
 
+    // Item 5: races / bait / thin come from the flag's machine reason (a held
+    // flag carries lane_held / wall_ignored / outlier_warn / race_declined); a
+    // fresh run row falls back to its pricing result. The categorizer is the
+    // structural home so the buckets can't drift per-caller.
     var watchListed = triageRows.Where(r => EffectiveTriagePile(r.Item) == LedgerPile.Watch).ToList();
     foreach (var r in watchListed)
-      Bump(r.Item.Result == PricingResult.LaneHeld ? WatchCategory.Thin : WatchCategory.Other);
+      Bump(r.IsFresh
+        ? (r.Item.Result == PricingResult.LaneHeld ? WatchCategory.Thin : WatchCategory.Other)
+        : LedgerListings.CategorizeWatchReason(r.Flag!.Reason));
 
     var bagWatch = _items.Where(i => i.ActivePile == LedgerPile.Watch).ToList();
     foreach (var _ in bagWatch) Bump(WatchCategory.Other);
@@ -647,7 +764,22 @@ internal sealed class LedgerWindow : Window
     ImGui.SameLine();
     ImGui.TextDisabled($"ilvl {item.Ilvl}");
     ImGui.SameLine();
-    ImGui.TextWrapped($"- {item.Verdict.Reason}");
+    // Item 7: a verdict built on community fallback while world data warms wears a
+    // "~ community read" suffix - the two-truths-per-reload smell, made honest.
+    var warming = UniversalisStats.PendingCount > 0;
+    var reason = item.Verdict.Reason;
+    if (item.CommunityFallback && warming)
+      reason += "  ~ community read, world data pending";
+    // Item 8 addendum: a Contradicted row must STATE the market number that
+    // overruled it - the deciding evidence can't hide behind the "!" badge.
+    if (item.Confidence == ConfidenceTier.Contradicted)
+    {
+      var note = LedgerListings.ContradictionNote(
+        item.CommunityMedian > 0 ? item.CommunityMedian : null,
+        item.CommunitySampleCount, item.MarketVelocity);
+      if (note.Length > 0) reason += $" {note}";
+    }
+    ImGui.TextWrapped($"- {reason}");
     if (item.Verdict.RunnerUpReason.Length > 0 && ImGui.IsItemHovered())
       ImGui.SetTooltip($"Runner-up ({item.Verdict.RunnerUp}): {item.Verdict.RunnerUpReason}");
 
@@ -674,7 +806,18 @@ internal sealed class LedgerWindow : Window
       ImGui.TextDisabled(ageDays < 1 ? "(today)" : $"({ageDays}d)");
     }
     ImGui.SameLine();
-    ImGui.TextWrapped($"- {(row.IsFresh ? BuildReason(item) : row.Flag!.Detail)}");
+    var reason = row.IsFresh ? BuildReason(item) : row.Flag!.Detail;
+    // Item 8 addendum: surface the market number that contradicted this listed
+    // verdict inline (the settled-sale history the row was judged against).
+    if (tier == ConfidenceTier.Contradicted)
+    {
+      var note = LedgerListings.ContradictionNote(
+        item.HistoryMedianPrice is int m && m > 0 ? m : (long?)null,
+        item.HistorySaleCount, null,
+        payer: "settled sales pay"); // LOCAL lane history - never dressed as DC-wide
+      if (note.Length > 0) reason += $" {note}";
+    }
+    ImGui.TextWrapped($"- {reason}");
 
     if (Plugin.TriageOrchestrator.IsRunning) return;
 

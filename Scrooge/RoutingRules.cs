@@ -256,13 +256,24 @@ internal static class RoutingRules
 
       if (item.MarketVelocity is double marketV)
       {
-        if (marketV >= ListingGate.MarketVelocityFloor(cfg))
-          return new(RoutingExit.List,
-            $"Never sold one, but it moves here (~{marketV:0.##}/day on your world, Universalis) — the Hawk run prices it off the live MB.");
-        return new(RoutingExit.Vendor,
-          $"Nobody buys this here (~{marketV:0.##}/day on your world, Universalis) — a listing just sits. {vendorReason}",
-          RunnerUp: RoutingExit.List,
-          RunnerUpReason: "List anyway if you think the almanac is wrong.");
+        // Finding 9 — price x velocity are ONE witness. Reaching here means the
+        // PRICE witness is silent: no local sale, and no community median that
+        // cleared the sample bar above. Velocity measures MOVEMENT, not WORTH,
+        // so on its own it can no longer confidently route a marketable item in
+        // EITHER direction — both halves of the Cashmere Hood / Green Beret
+        // defect. A live velocity at an unknown price is not a confident List
+        // (an item can "move" at 1 gil forever); a dead world velocity does not
+        // prove a DC-tradable item is worthless (dead-world listings still sell
+        // to world-hoppers). Lean List — marketable, the Hawk run prices it off
+        // the live MB — but land in Review so the player supplies the price read.
+        var moves = marketV >= ListingGate.MarketVelocityFloor(cfg);
+        return new(RoutingExit.List,
+          moves
+            ? $"Moves here (~{marketV:0.##}/day on your world, Universalis) but you've never sold one — no price on record. List and let the Hawk run price it, or vendor if it's junk."
+            : $"Doesn't move on your world (~{marketV:0.##}/day, Universalis), but it's DC-tradable — dead-world listings still sell to world-hoppers. List-and-forget, or vendor if you know it's junk.",
+          IsReview: true,
+          RunnerUp: RoutingExit.Vendor,
+          RunnerUpReason: vendorReason.Length > 0 ? vendorReason : "Vendor if you know it's junk.");
       }
       return new(RoutingExit.List,
         "No local evidence for this gear — never sold or desynthed one. Check the MB if it looks valuable.",

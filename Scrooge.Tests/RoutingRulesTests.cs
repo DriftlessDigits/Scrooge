@@ -373,21 +373,29 @@ public class EvidenceOnlyTests
   }
 
   [Fact]
-  public void HealthyAlmanacVelocity_ListsConfidently()
+  public void HealthyAlmanacVelocity_VelocityAloneIsNotAConfidentList()
   {
+    // Finding 9 (Green Beret): velocity measures MOVEMENT, not WORTH. A live
+    // world velocity with no price witness (never sold, no qualifying community
+    // median) can no longer confident-List — an item can "move" at 1 gil
+    // forever. It leans List but lands in Review; the player supplies the price.
     var v = RoutingRules.Evaluate(T.Gear(velocity: 0.2), T.Batch());
     Assert.Equal(RoutingExit.List, v.Exit);
-    Assert.False(v.IsReview);
-    Assert.Contains("moves here", v.Reason);
+    Assert.True(v.IsReview);
+    Assert.Equal(RoutingExit.Vendor, v.RunnerUp);
   }
 
   [Fact]
-  public void DeadAlmanacMarket_VendorsWithListRunnerUp()
+  public void DeadAlmanacMarket_MarketableGear_IsReviewNotConfidentVendor()
   {
+    // Finding 9 (Cashmere Hood): a dead WORLD velocity does not prove a
+    // DC-tradable item is worthless — dead-world listings still sell to
+    // world-hoppers. With no price witness, a marketable item can no longer be
+    // confident-vendored on velocity alone; it leans List-and-forget in Review.
     var v = RoutingRules.Evaluate(T.Gear(vendor: 100, velocity: 0.05), T.Batch());
-    Assert.Equal(RoutingExit.Vendor, v.Exit);
-    Assert.False(v.IsReview);
-    Assert.Equal(RoutingExit.List, v.RunnerUp);
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.True(v.IsReview);
+    Assert.Equal(RoutingExit.Vendor, v.RunnerUp);
   }
 
   [Fact]
@@ -521,5 +529,71 @@ public class CommunityCrossCheckTests
       T.Gear(velocity: 0.01, communityMedian: 20_000, communityCount: 4), T.Batch());
     Assert.Equal(RoutingExit.List, v.Exit);
     Assert.Contains("the DC buys it", v.Reason);
+  }
+}
+
+/// <summary>
+/// Finding 9 (session 3): price x velocity are ONE witness, not two. Velocity
+/// measures whether an item MOVES; the price witness (a local sale or a
+/// qualifying community median) measures whether it is WORTH listing. The
+/// router must weigh them together — the Cashmere Hood was sold for 1 gil
+/// (~95k EV) and the Green Beret was listed at a 1-gil junk price, both because
+/// velocity was read WITHOUT its price partner.
+/// </summary>
+public class PriceVelocityWitnessTests
+{
+  // ---- High value + dead velocity: List-and-forget / Review, NEVER confident Vendor ----
+
+  [Fact]
+  public void CashmereHood_HighCommunityValue_DeadWorldVelocity_ListsNotVendors()
+  {
+    // The DC pays ~95k on 8 sales; world velocity is 0/day. DC travel means a
+    // dead-world listing still sells to world-hoppers — the price witness
+    // clears the worth floor, so it lists, never confident-vendors for 1 gil.
+    var v = RoutingRules.Evaluate(
+      T.Gear(vendor: 1, velocity: 0.0, communityMedian: 95_000, communityCount: 8),
+      T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.False(v.IsReview);
+    Assert.Contains("the DC buys it", v.Reason);
+  }
+
+  [Fact]
+  public void HighValue_DeadVelocity_NoCommunityYet_IsReviewNeverConfidentVendor()
+  {
+    // The instability half of the Cashmere miss: the price witness (community)
+    // has not arrived, only a dead world velocity has. A marketable item is
+    // NEVER confident-vendored on velocity alone — Review leaning List-and-forget.
+    var v = RoutingRules.Evaluate(T.Gear(vendor: 1, velocity: 0.0), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.True(v.IsReview);
+    Assert.Equal(RoutingExit.Vendor, v.RunnerUp);
+  }
+
+  // ---- Low value + live velocity: Vendor, NEVER List ----
+
+  [Fact]
+  public void GreenBeret_LowCommunityValue_LiveVelocity_VendorsNotLists()
+  {
+    // 7 community receipts at ~1 gil (below the worth floor) with a live world
+    // velocity: it moves, but only at a junk price. The price witness settles it
+    // — Vendor, never a "moves here" List. (This vendor call is correct.)
+    var v = RoutingRules.Evaluate(
+      T.Gear(vendor: 1, velocity: 0.2, communityMedian: 1, communityCount: 7),
+      T.Batch());
+    Assert.Equal(RoutingExit.Vendor, v.Exit);
+    Assert.Equal(RoutingExit.List, v.RunnerUp);
+  }
+
+  [Fact]
+  public void LowValue_LiveVelocity_NoPriceWitness_IsReviewNeverConfidentList()
+  {
+    // The Green Beret smell before the price witness arrives: a live velocity,
+    // no price on record. "Moves here" is no longer a confident List — an item
+    // can move at 1 gil forever. Review, leaning List, vendor as the runner-up.
+    var v = RoutingRules.Evaluate(T.Gear(vendor: 1, velocity: 0.2), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.True(v.IsReview);
+    Assert.Equal(RoutingExit.Vendor, v.RunnerUp);
   }
 }
