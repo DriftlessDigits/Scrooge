@@ -564,10 +564,20 @@ internal sealed class LedgerWindow : Window
 
     if (!Plugin.GcTurnIn.IsRunning)
     {
-      var unanimous = rows.Where(i => LedgerConfidence.IsBulkEligible(i.Confidence)).ToList();
-      ImGui.BeginDisabled(!atGc || unanimous.Count == 0);
-      if (ImGui.Button($"Turn In ({unanimous.Count} unanimous)"))
-        ExecuteChurn(unanimous);
+      // Player rulings ride the bulk exactly like the bell confirm - the third
+      // place the sorted-but-not-executed gap appeared, closed the same way.
+      var confirmable = LedgerConfidence.BulkSet(rows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+      var chosen = confirmable.Count(r => r.PlayerResolved && !LedgerConfidence.IsBulkEligible(r.Confidence));
+      var label = chosen > 0
+        ? $"Turn In ({confirmable.Count - chosen} unanimous + {chosen} chosen)"
+        : $"Turn In ({confirmable.Count} unanimous)";
+      ImGui.BeginDisabled(!atGc || confirmable.Count == 0);
+      if (ImGui.Button(label))
+      {
+        foreach (var item in confirmable)
+          RecordRoutedSignal(item, item.Pile); // bulk confirm = mass agreement
+        ExecuteChurn(confirmable);
+      }
       ImGui.EndDisabled();
       if (!atGc && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         ImGui.SetTooltip("Open your GC personnel officer's Expert Delivery window.");
