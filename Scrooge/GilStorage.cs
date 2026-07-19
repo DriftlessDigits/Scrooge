@@ -1312,6 +1312,95 @@ internal static class GilStorage
     cmd.ExecuteNonQuery();
   }
 
+  /// <summary>
+  /// Override counts per router verdict class - the read side of the Ledger's
+  /// confidence refinement (design Section 4: "manual decisions teach"). Counts
+  /// only genuine DISAGREEMENTS (player_verdict != router_verdict); confirmations
+  /// are recorded in the same table but do not demote a class. v0-simple by
+  /// design: the tier refinement is a single override-count threshold, the
+  /// maturation path (measured quantities) is post-3.0. Storage failure yields an
+  /// empty map (no refinement), never throws.
+  /// </summary>
+  internal static Dictionary<string, int> GetRoutingOverrideCounts()
+  {
+    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+    // DISTINCT items, not rows: one item re-ruled across evidence flips is a
+    // player changing their mind, not a doctrine pattern - two rows from the
+    // same hat must not demote a whole verdict class (finding 13: the Facet
+    // Choker's two rulings zeroed a 64-item Churn bulk).
+    using var cmd = new SqliteCommand(
+      @"SELECT router_verdict, COUNT(DISTINCT item_id || '_' || is_hq)
+        FROM routing_overrides
+        WHERE player_verdict <> router_verdict
+        GROUP BY router_verdict",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      counts[reader.GetString(0)] = reader.GetInt32(1);
+    return counts;
+  }
+
+  /// <summary>
+  /// Measured venture-token burn over the trailing FULL week: the sum of downward
+  /// deltas between consecutive gil_snapshots token reads (upward jumps are
+  /// purchases and are ignored). Whole-week window on purpose - weekday and
+  /// weekend usage differ heavily, and a 7-day window contains its own mix, so
+  /// the shape cancels out of any 7-day projection. Returns null until snapshots
+  /// actually cover the week (earliest read within the window must be at least
+  /// 6.5 days old) - a partial week would smuggle the weekday/weekend bias right
+  /// back in, so no measurement means the saturation tilt stays off.
+  /// </summary>
+  internal static int? MeasureWeeklyVentureBurn()
+  {
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var weekAgo = now - 7 * 86400;
+    using var cmd = new SqliteCommand(
+      @"SELECT timestamp, venture_tokens FROM gil_snapshots
+        WHERE venture_tokens IS NOT NULL AND venture_tokens > 0 AND timestamp >= @cutoff
+        ORDER BY timestamp",
+      _connection);
+    cmd.Parameters.AddWithValue("@cutoff", weekAgo);
+    using var reader = cmd.ExecuteReader();
+
+    long? firstTs = null;
+    int? prev = null;
+    var burn = 0;
+    while (reader.Read())
+    {
+      var ts = reader.GetInt64(0);
+      var tokens = reader.GetInt32(1);
+      firstTs ??= ts;
+      if (prev is int p && tokens < p)
+        burn += p - tokens;
+      prev = tokens;
+    }
+
+    // Coverage gate: the window must actually span the week, not just dip into it.
+    if (firstTs is not long first || now - first < (long)(6.5 * 86400))
+      return null;
+    return burn;
+  }
+
+  /// <summary>
+  /// The player's most recent ruling per (item, HQ, router verdict) - the read side
+  /// of persistent Ledger rulings. Keyed on the router's verdict so a ruling sticks
+  /// exactly as long as it answers the SAME question: if the router's verdict for
+  /// the item later changes, the key misses and the Ledger honestly re-asks.
+  /// </summary>
+  internal static Dictionary<(uint ItemId, bool IsHq, string RouterVerdict), string> GetLatestRoutingRulings()
+  {
+    var rulings = new Dictionary<(uint, bool, string), string>();
+    using var cmd = new SqliteCommand(
+      @"SELECT item_id, is_hq, router_verdict, player_verdict, MAX(created_at)
+        FROM routing_overrides
+        GROUP BY item_id, is_hq, router_verdict",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      rulings[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0, reader.GetString(2))] = reader.GetString(3);
+    return rulings;
+  }
+
   /// <summary>Gets listings older than the cutoff timestamp (slow movers).</summary>
   internal static List<ListingRecord> GetSlowMovers(long olderThan)
   {

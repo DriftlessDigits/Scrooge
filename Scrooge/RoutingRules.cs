@@ -77,6 +77,7 @@ internal static class RoutingRules
 
     var cfg = batch.Rules;
     var stock = batch.VentureStock is int s && s > 0 ? s : (int?)null;
+    var burn = batch.WeeklyVentureBurn;
 
     if (item.SealValue is int panicSeals && stock is int panicStock && panicStock < cfg.VentureBandPanic)
       return new(RoutingExit.Gc,
@@ -95,6 +96,22 @@ internal static class RoutingRules
 
     var meltScore = item.MeltValuePerAttempt;
     var meltReason = meltScore is long mv ? $"Desynth: yields ~{mv:N0} gil/attempt from your ledger." : "";
+
+    // Skillup pricing (Sam 07-18: price the skillup, don't gate it). A rare
+    // red/yellow skillup makes the desynth candidate worth AT LEAST the
+    // configured gil value; it then competes in the ordinary comparison, so
+    // "very-very-high gil beats a skillup" is emergent (a 200k sale outbids a
+    // 100k red; a 20k sale loses to it; near-worth lands in Review honestly).
+    if (item.DesynthSkillupEligible)
+    {
+      long worth = item.DesynthColor == DesynthSkillupColor.Red
+        ? cfg.SkillupWorthRed : cfg.SkillupWorthYellow;
+      if (worth > (meltScore ?? 0))
+      {
+        meltScore = worth;
+        meltReason = $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — worth ~{worth:N0} gil to you (skillups are scarce).";
+      }
+    }
 
     var vendorScore = item.VendorPrice > 0 ? (long)item.VendorPrice : (long?)null;
     var vendorReason = vendorScore is long vv ? $"Vendor: {vv:N0} gil." : "";
@@ -118,7 +135,10 @@ internal static class RoutingRules
       }
     }
 
-    if (listScore is long list)
+    // Rule 4 winner check honors the priced skillup: List only wins outright
+    // when the sale actually outbids the desynth candidate (which a skillup
+    // inflates); otherwise fall through to the value rules below.
+    if (listScore is long list && list >= (meltScore ?? 0))
     {
       // Sub-750 stock: default to churn unless the item is worth a lot.
       if (gcScore is not null && stock is int lowStock && lowStock < cfg.VentureBandLow
@@ -131,14 +151,8 @@ internal static class RoutingRules
         BestOf((RoutingExit.Desynth, meltScore, meltReason),
                (RoutingExit.Gc, gcScore, gcReason),
                (RoutingExit.Vendor, vendorScore, vendorReason)),
-        stock, cfg);
+        stock, burn, cfg);
     }
-
-    // Rule 5 — desynth skillup: scarce, gil can wait. Only blocked when the
-    // ledger PROVES the yields are junk (known melt below vendor).
-    if (item.DesynthSkillupEligible && (meltScore is null || meltScore >= vendorScore.GetValueOrDefault()))
-      return new(RoutingExit.Desynth,
-        $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — skillups are scarce, gil can wait.");
 
     // Rule 6 — GC turn-in: seals beat every gil exit, or low stock tilts it.
     if (gcScore is long gc)
@@ -169,16 +183,16 @@ internal static class RoutingRules
       if (item.IsMarketable && item.LastSale is null
           && item.CommunityMedian is long cm
           && item.CommunitySampleCount >= cfg.CommunityMinSamples
-          && cm > gc)
+          && cm > gc && cm > (meltScore ?? 0))
         return Resolve(RoutingExit.List, cm,
           $"List: the DC pays ~{cm:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — beats {gcReason.TrimEnd('.')}. The Hawk run prices it off the live MB.",
-          (RoutingExit.Gc, gcScore, gcReason), stock, cfg);
+          (RoutingExit.Gc, gcScore, gcReason), stock, burn, cfg);
 
       if (gc > bestGil)
         return Resolve(RoutingExit.Gc, gc, gcReason,
           BestOf((RoutingExit.Desynth, meltScore, meltReason),
                  (RoutingExit.Vendor, vendorScore, vendorReason)),
-          stock, cfg);
+          stock, burn, cfg);
     }
 
     // Rule 7 — melt for gil: yields must beat vendor meaningfully. No vendor
@@ -189,8 +203,12 @@ internal static class RoutingRules
     {
       var vendorFloor = vendorScore ?? 0;
       if (melt > vendorFloor * MeltOverVendorFactor)
+        // List rides as a runner-up candidate: a sale just under a priced
+        // skillup's worth reaches here, and the review band should see it.
         return Resolve(RoutingExit.Desynth, melt, meltReason,
-          (RoutingExit.Vendor, vendorScore, vendorReason), stock, cfg);
+          BestOf((RoutingExit.Vendor, vendorScore, vendorReason),
+                 (RoutingExit.List, listScore, listReason)),
+          stock, burn, cfg);
       if (melt > vendorFloor)
         return new(RoutingExit.Desynth, meltReason, IsReview: true,
           RunnerUp: RoutingExit.Vendor,
@@ -270,13 +288,17 @@ internal static class RoutingRules
   /// <summary>
   /// Finalizes a value-rule winner against its best-scoring alternative.
   /// Within the review band the verdict degrades to Review — unless venture
-  /// stock is below the full band and GC is the contender, in which case the
-  /// borderline call tilts to churn (BP4 Q5: escalating bands).
+  /// stock tilts the borderline call: stock below the full band tilts TO churn
+  /// (BP4 Q5: escalating bands), and a 7-day projection still cruising tilts
+  /// AWAY from churn (saturation: the marginal seal funds a venture weeks out).
+  /// The projection - stock minus measured weekly burn - is the operand, not
+  /// current stock: "where will I be", not "where am I". No burn measurement
+  /// means no saturation tilt, never a guess.
   /// </summary>
   private static RoutingVerdict Resolve(
     RoutingExit winner, long winnerScore, string winnerReason,
     (RoutingExit Exit, long? Score, string Reason) runnerUp,
-    int? ventureStock, RoutingConfig cfg)
+    int? ventureStock, int? weeklyBurn, RoutingConfig cfg)
   {
     if (runnerUp.Score is not long rScore || rScore <= 0)
       return new(winner, winnerReason);
@@ -300,6 +322,20 @@ internal static class RoutingRules
       return new(RoutingExit.Gc,
         $"{reason} Borderline vs {other} — tilted to turn-in ({stock:N0} tokens < {cfg.VentureBandFull:N0}).",
         RunnerUp: other, RunnerUpReason: otherReason);
+    }
+
+    // Borderline + saturated projection: the tie-break goes AWAY from churn.
+    if (gcContender is RoutingExit satGc
+        && ventureStock is int satStock && weeklyBurn is int wb && wb > 0
+        && (long)satStock - wb > cfg.VentureBandCruise)
+    {
+      var projected = satStock - wb;
+      var (keepExit, keepReason, gcSideReason) = satGc == winner
+        ? (runnerUp.Exit, runnerUp.Reason, winnerReason)
+        : (winner, winnerReason, runnerUp.Reason);
+      return new(keepExit,
+        $"{keepReason} Borderline vs turn-in — seals saturated (~{projected:N0} tokens in 7d at your burn, still > {cfg.VentureBandCruise:N0}), tilted away.",
+        RunnerUp: RoutingExit.Gc, RunnerUpReason: gcSideReason);
     }
 
     return new(winner, winnerReason, IsReview: true,

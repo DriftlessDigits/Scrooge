@@ -14,9 +14,10 @@ internal static class T
   };
 
   public static RoutingBatch Batch(int? stock = null, int sealRate = 25,
-    bool empirical = false, RoutingConfig? cfg = null) => new()
+    bool empirical = false, RoutingConfig? cfg = null, int? weeklyBurn = null) => new()
   {
     VentureStock = stock,
+    WeeklyVentureBurn = weeklyBurn,
     SealToGilRate = sealRate,
     SealRateEmpirical = empirical,
     Rules = cfg ?? new RoutingConfig(),
@@ -33,6 +34,7 @@ internal static class T
     bool equipment = true,
     bool marketable = true,
     bool skillup = false,
+    bool redSkillup = false,
     bool banned = false,
     bool alwaysVendor = false,
     bool isProtected = false,
@@ -51,8 +53,8 @@ internal static class T
     MarketVelocity = velocity,
     CommunityMedian = communityMedian,
     CommunitySampleCount = communityCount,
-    DesynthColor = skillup ? DesynthSkillupColor.Yellow : null,
-    DesynthSkillupEligible = skillup,
+    DesynthColor = redSkillup ? DesynthSkillupColor.Red : skillup ? DesynthSkillupColor.Yellow : null,
+    DesynthSkillupEligible = skillup || redSkillup,
     IsBanned = banned,
     IsAlwaysVendor = alwaysVendor,
     IsProtected = isProtected,

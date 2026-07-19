@@ -41,12 +41,19 @@ internal static class RoutingInputService
     try { empirical = VentureReturns.EmpiricalSealToGilRate(); }
     catch { /* storage unavailable - placeholder rate */ }
 
+    // Measured weekly burn (whole-week window) - null until a full week of
+    // snapshots exists, and the saturation tilt simply stays off.
+    int? weeklyBurn = null;
+    try { weeklyBurn = GilStorage.MeasureWeeklyVentureBurn(); }
+    catch { /* storage unavailable - no saturation tilt */ }
+
     var cfg = Plugin.Configuration;
     return new RoutingBatch
     {
       LastSales = sales,
       MeltValues = melts,
       VentureStock = ventures,
+      WeeklyVentureBurn = weeklyBurn,
       SealToGilRate = empirical ?? cfg.SealToGilRate,
       SealRateEmpirical = empirical is not null,
       Rules = new RoutingConfig
@@ -60,6 +67,9 @@ internal static class RoutingInputService
         VentureBandLow = cfg.VentureBandLow,
         VentureBandPanic = cfg.VentureBandPanic,
         VenturePanicValueMultiplier = cfg.VenturePanicValueMultiplier,
+        VentureBandCruise = cfg.VentureBandCruise,
+        SkillupWorthYellow = cfg.SkillupWorthYellow,
+        SkillupWorthRed = cfg.SkillupWorthRed,
       },
     };
   }

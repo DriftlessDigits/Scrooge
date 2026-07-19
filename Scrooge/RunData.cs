@@ -17,6 +17,8 @@ public enum RunMode
   Hawk,
   /// <summary>Hands-off desynthesis automation over the SalvageItemSelector addon.</summary>
   Desynth,
+  /// <summary>GC Expert Delivery turn-in. Renders in the one run window (ruling 9); seals value/ETA stay on the orchestrator's own RunLifecycle for the inline Ledger glance.</summary>
+  Gc,
 }
 
 /// <summary>

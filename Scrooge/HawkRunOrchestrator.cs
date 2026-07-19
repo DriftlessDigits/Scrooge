@@ -146,8 +146,57 @@ internal sealed class HawkRunOrchestrator
     if (_taskManager.IsBusy)
       return;
 
-    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
+    EnqueueNavigateToSellView(totalAvailableSlots => {
+      Plugin.HawkWindow.SetAvailableSlots(totalAvailableSlots);
+      Plugin.HawkWindow.RefreshInventory();
+      Plugin.HawkWindow.IsOpen = true;
+    });
+  }
+
+  /// <summary>
+  /// The Ledger's one-click entry: already in a retainer's sell view -> start the
+  /// run now; at the bell roster -> navigate to the first retainer with sell space
+  /// (the Hawk Wares hop) and start the run on arrival. This is what makes the
+  /// bulk-confirm button live at the bell instead of demanding the old two-step.
+  /// </summary>
+  internal unsafe void NavigateAndStartHawkRun(List<HawkWindow.HawkItem> items)
+  {
+    // Every refusal on this road is LOUD - a confirm button that no-ops
+    // silently reads as a broken button (it was, twice).
+    if (items.Count == 0)
+    {
+      Svc.Chat.PrintError("[Scrooge] Nothing to run - no eligible items.");
       return;
+    }
+    if (_taskManager.IsBusy)
+    {
+      Svc.Chat.PrintError("[Scrooge] Another run is still working - wait for it (or /scrooge to check).");
+      return;
+    }
+
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
+    {
+      StartHawkRunCore(items);
+      return;
+    }
+
+    if (!EnqueueNavigateToSellView(_ => StartHawkRunCore(items)))
+      return; // EnqueueNavigateToSellView already said why
+  }
+
+  /// <summary>
+  /// From the bell roster (RetainerList), navigate to the first retainer with open
+  /// sell slots and open their "Sell items in your inventory" view, then invoke
+  /// <paramref name="onArrived"/> with the total open slots across all retainers.
+  /// Returns false WITH a chat error when it cannot - every refusal is loud.
+  /// </summary>
+  private unsafe bool EnqueueNavigateToSellView(Action<int> onArrived)
+  {
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) || !GenericHelpers.IsAddonReady(addon))
+    {
+      Svc.Chat.PrintError("[Scrooge] Retainer list isn't open (or still loading) - summon your retainers and retry.");
+      return false;
+    }
 
     var retainerList = new AddonMaster.RetainerList(addon);
     var retainers = retainerList.Retainers;
@@ -166,25 +215,24 @@ internal sealed class HawkRunOrchestrator
     if (targetIndex < 0)
     {
       Svc.Chat.PrintError("[Scrooge] All retainers have full sell lists (20/20).");
-      return;
+      return false;
     }
 
     // Auto-dismiss retainer greeting dialog
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "Talk", _skipRetainerDialog);
     Svc.AddonLifecycle.RegisterListener(AddonEvent.PostUpdate, "Talk", _skipRetainerDialog);
 
-    // Navigate: click retainer → sell view → open HawkWindow
+    // Navigate: click retainer -> sell view -> hand off to the caller
     _taskManager.Enqueue(() => GameNavigation.ClickRetainer(targetIndex), "HawkClickRetainer");
     _taskManager.DelayNext(100);
     _taskManager.Enqueue(GameNavigation.ClickSellItems, "HawkClickSellItems");
     _taskManager.DelayNext(500);
     _taskManager.Enqueue(() => {
       _removeTalkListeners();
-      Plugin.HawkWindow.SetAvailableSlots(totalAvailableSlots);
-      Plugin.HawkWindow.RefreshInventory();
-      Plugin.HawkWindow.IsOpen = true;
+      onArrived(totalAvailableSlots);
       return true;
-    }, "HawkOpenWindow");
+    }, "HawkSellViewArrived");
+    return true;
   }
 
   /// <summary>
@@ -197,9 +245,22 @@ internal sealed class HawkRunOrchestrator
     if (_taskManager.IsBusy || items.Count == 0)
       return;
 
+    StartHawkRunCore(items);
+  }
+
+  /// <summary>
+  /// The run start proper, minus the TaskManager busy guard - callable from the
+  /// tail of the sell-view navigation queue (where the manager is by definition
+  /// busy running the very task that arrived here). All fail-closed checks stay.
+  /// </summary>
+  private unsafe void StartHawkRunCore(List<HawkWindow.HawkItem> items)
+  {
+    if (items.Count == 0)
+      return;
+
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
     {
-      Svc.Chat.PrintError("[Scrooge] Not in retainer sell view. Click Hawk Wares first.");
+      Svc.Chat.PrintError("[Scrooge] Not in retainer sell view - couldn't reach one. Summon your retainers and retry.");
       return;
     }
 

@@ -161,6 +161,52 @@ public class ReviewBandTests
     var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)), T.Batch(stock: 1_300));
     Assert.True(v.IsReview);
   }
+
+  // ---- Saturation: the 7-day projection tilts borderline calls AWAY from churn ----
+
+  [Fact]
+  public void BorderlineGcContender_ProjectionStillCruising_TiltsAwayFromChurn()
+  {
+    // Projected 3,500 - 800 = 2,700 > 2,000 cruise: the marginal seal funds a
+    // venture weeks out, so the borderline call keeps the gil exit.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)),
+      T.Batch(stock: 3_500, weeklyBurn: 800));
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.False(v.IsReview);
+    Assert.Contains("seals saturated", v.Reason);
+    Assert.Equal(RoutingExit.Gc, v.RunnerUp);
+  }
+
+  [Fact]
+  public void BorderlineGcContender_ProjectionBelowCruise_StaysReview()
+  {
+    // Sam's live numbers the day this shipped: 2,262 - 740 = 1,522 < 2,000.
+    // Stock LOOKS saturated; the projection says the seals get spent - no tilt.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)),
+      T.Batch(stock: 2_262, weeklyBurn: 740));
+    Assert.True(v.IsReview);
+  }
+
+  [Fact]
+  public void BorderlineGcContender_NoBurnMeasurement_NoSaturationTilt()
+  {
+    // No measured burn = no projection = no tilt, however high the stock. The
+    // saturation rule never acts on a guess.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 720, sale: (20_000, 0, 5)),
+      T.Batch(stock: 9_999));
+    Assert.True(v.IsReview);
+  }
+
+  [Fact]
+  public void ClearGcWinner_ProjectionCruising_NotBorderline_StillChurns()
+  {
+    // Saturation only breaks TIES. A clear seal win (no gil contender near it)
+    // still churns - the tilt is a tie-break, not a repricer.
+    var v = RoutingRules.Evaluate(T.Gear(seals: 2_000, vendor: 1_000),
+      T.Batch(stock: 3_500, weeklyBurn: 800));
+    Assert.Equal(RoutingExit.Gc, v.Exit);
+    Assert.False(v.IsReview);
+  }
 }
 
 public class SkillupTests
@@ -174,17 +220,71 @@ public class SkillupTests
   }
 
   [Fact]
-  public void SkillupEligible_ProvenJunkYields_IsBlocked()
+  public void SkillupEligible_ProvenJunkYields_StillDesynths()
   {
-    // Melt 100 below vendor 500: the ledger PROVES junk; vendor wins downstream.
+    // Melt 100 below vendor 500: the yields are proven junk and it does not
+    // matter - red/yellow skillups are RARE, seals and gil are common (Sam's
+    // ruling 07-18). The skillup is the value; the yield was never the point.
     var v = RoutingRules.Evaluate(T.Gear(skillup: true, melt: 100, vendor: 500), T.Batch());
-    Assert.Equal(RoutingExit.Vendor, v.Exit);
+    Assert.Equal(RoutingExit.Desynth, v.Exit);
+    Assert.Contains("Skillup", v.Reason);
   }
 
   [Fact]
   public void SkillupEligible_MeltAtLeastVendor_Desynths()
     => Assert.Equal(RoutingExit.Desynth,
       RoutingRules.Evaluate(T.Gear(skillup: true, melt: 600, vendor: 500), T.Batch()).Exit);
+
+  // ---- Sam's value hierarchy (07-18): the skillup is PRICED, not gated.
+  // Worth seeds: yellow 50k, red 100k. Gil above the worth wins the market;
+  // below it, the melter; near it, Review - all emergent from one comparison.
+
+  [Fact]
+  public void Skillup_OutranksOrdinaryLocalSale()
+  {
+    // 20k sale vs a yellow worth 50k: the rare skillup wins.
+    var v = RoutingRules.Evaluate(T.Gear(skillup: true, sale: (20_000, 0, 5)), T.Batch());
+    Assert.Equal(RoutingExit.Desynth, v.Exit);
+    Assert.Contains("Skillup", v.Reason);
+  }
+
+  [Fact]
+  public void VeryVeryHighLocalSale_OutranksSkillup()
+  {
+    // 200k sale vs yellow 50k: melting this is burning gil - market wins.
+    var v = RoutingRules.Evaluate(T.Gear(skillup: true, sale: (200_000, 0, 5)), T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+  }
+
+  [Fact]
+  public void VeryVeryHighCommunityValue_OutranksSkillup()
+  {
+    // Never sold locally, but the DC pays 200k on enough samples - the
+    // community veto outbids both the seals and the priced skillup.
+    var v = RoutingRules.Evaluate(
+      T.Gear(skillup: true, seals: 500, communityMedian: 200_000, communityCount: 5),
+      T.Batch());
+    Assert.Equal(RoutingExit.List, v.Exit);
+  }
+
+  [Fact]
+  public void RedSkillup_WorthMoreThanYellow()
+  {
+    // An 80k sale outbids a yellow (50k) but NOT a red (100k) - red is rarer.
+    Assert.Equal(RoutingExit.List,
+      RoutingRules.Evaluate(T.Gear(skillup: true, sale: (80_000, 0, 5)), T.Batch()).Exit);
+    Assert.Equal(RoutingExit.Desynth,
+      RoutingRules.Evaluate(T.Gear(redSkillup: true, sale: (80_000, 0, 5)), T.Batch()).Exit);
+  }
+
+  [Fact]
+  public void SaleNearSkillupWorth_LandsInReview()
+  {
+    // 95k sale vs a red worth 100k: inside the review band - honest coin flip,
+    // the player rules it.
+    var v = RoutingRules.Evaluate(T.Gear(redSkillup: true, sale: (95_000, 0, 5)), T.Batch());
+    Assert.True(v.IsReview);
+  }
 }
 
 public class GcRuleTests

@@ -45,7 +45,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static HawkWindow HawkWindow { get; private set; } = null!;
 
-  internal static RoutingWindow RoutingWindow { get; private set; } = null!;
+  /// <summary>The Ledger: the one worklist surface (M6 session 2). Was RoutingWindow.</summary>
+  internal static LedgerWindow Ledger { get; private set; } = null!;
 
   internal static GcTurnInOrchestrator GcTurnIn { get; private set; } = null!;
 
@@ -53,8 +54,6 @@ public sealed class Plugin : IDalamudPlugin
   internal static DesynthYieldStore? DesynthYieldStore { get; private set; }
 
   internal static DesynthYieldTracker DesynthYieldTracker { get; private set; } = null!;
-
-  internal static TriageWindow TriageWindow { get; private set; } = null!;
 
   internal static TriageOrchestrator TriageOrchestrator { get; private set; } = null!;
 
@@ -83,7 +82,7 @@ public sealed class Plugin : IDalamudPlugin
 
     CommandManager.AddHandler("/scrooge", new CommandInfo(OnScroogeCommand)
     {
-      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config = settings, route = router, triage = inbox)"
+      HelpMessage = "Opens the Scrooge gil dashboard (/scrooge config = settings, ledger = the worklist)"
     });
 
     // Register chat link handler — clicking Scrooge's chat output opens the dashboard
@@ -167,8 +166,8 @@ public sealed class Plugin : IDalamudPlugin
     HawkWindow = new HawkWindow();
     WindowSystem.AddWindow(HawkWindow);
 
-    RoutingWindow = new RoutingWindow();
-    WindowSystem.AddWindow(RoutingWindow);
+    Ledger = new LedgerWindow();
+    WindowSystem.AddWindow(Ledger);
 
     GcTurnIn = new GcTurnInOrchestrator();
 
@@ -199,9 +198,6 @@ public sealed class Plugin : IDalamudPlugin
     {
       Svc.Log.Warning(ex, "Universalis almanac failed to start - local evidence only this session");
     }
-
-    TriageWindow = new TriageWindow();
-    WindowSystem.AddWindow(TriageWindow);
 
     TriageOrchestrator = new TriageOrchestrator();
 
@@ -261,10 +257,12 @@ public sealed class Plugin : IDalamudPlugin
     if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase)
         || args.Trim().Equals("settings", StringComparison.OrdinalIgnoreCase))
       ToggleConfigUI();
-    else if (args.Trim().Equals("route", StringComparison.OrdinalIgnoreCase))
-      RoutingWindow.Toggle();
-    else if (args.Trim().Equals("triage", StringComparison.OrdinalIgnoreCase))
-      TriageWindow.IsOpen = !TriageWindow.IsOpen;
+    // Clean cut at v3.0 (ruling 2): /scrooge ledger REPLACES /scrooge route. The old
+    // command is gone, not aliased. /scrooge triage stays as an alias - triage is now
+    // a set of piles inside the Ledger, so the muscle-memory command lands there too.
+    else if (args.Trim().Equals("ledger", StringComparison.OrdinalIgnoreCase)
+             || args.Trim().Equals("triage", StringComparison.OrdinalIgnoreCase))
+      Ledger.Toggle();
     else
       ToggleMainUi();
   }

@@ -3,6 +3,7 @@ using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
+using Scrooge.Windows;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
@@ -101,6 +102,17 @@ internal sealed class GcTurnInOrchestrator
       Svc.Framework.Update -= OnFrameworkUpdate;
       if (outcome != RunState.Complete)
         CloseRewardDialog();
+
+      // Close out the run window (ruling 9). Only when CurrentRun is OUR GC run -
+      // never touch a live pinch/hawk run's log. The chat summary is preserved as
+      // it was; the run window gets the seals total as its summary line.
+      if (Plugin.CurrentRun?.Mode == RunMode.Gc)
+      {
+        Plugin.CurrentRun.AddRunEntry(RunEvent.Summary, $"{_run.Value:N0} seals earned");
+        Plugin.PinchRunLog.EndRun();
+        Plugin.CurrentRun = null;
+      }
+
       Svc.Chat.Print($"[Scrooge] Turn-in run {how}: {_run.Done} items, {_run.Value:N0} seals.");
     }
   }
@@ -157,6 +169,15 @@ internal sealed class GcTurnInOrchestrator
     _itemsUntilLongPause = _random.Next(8, 16);
     _run.Start(items.Count, RunValueUnit.Seals, System.DateTime.UtcNow, $"Turn in {items.Count} items");
     Svc.Framework.Update += OnFrameworkUpdate;
+
+    // Ruling 9: GC joins the one run window. The run log carries the full view
+    // (start / per-item / summary); the orchestrator's own RunLifecycle (_run)
+    // stays the authority on seals/value/ETA/stall for the inline Ledger glance.
+    Plugin.CurrentRun = new RunData { Mode = RunMode.Gc };
+    Plugin.PinchRunLog.StartNewRun(isGcRun: true);
+    Plugin.PinchRunLog.SetCurrentRetainer("Grand Company");
+    Plugin.PinchRunLog.SetTotalItems(items.Count);
+
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
     _taskManager.Enqueue(ProcessNext, "GcProcessNext");
   }
@@ -398,7 +419,13 @@ internal sealed class GcTurnInOrchestrator
 
     // One delivery landed: advance done + accrue the seal delta, resetting the
     // stall watchdog. The lifecycle owns the progress/value/ETA bookkeeping now.
-    _run.RecordProgress(1, seals.Current - _sealsBefore, System.DateTime.UtcNow);
+    var sealDelta = seals.Current - _sealsBefore;
+    _run.RecordProgress(1, sealDelta, System.DateTime.UtcNow);
+
+    // Mirror the delivery into the one run window (ruling 9).
+    Plugin.PinchRunLog.AddEntry(ItemOutcome.VendorSold, item.Name, $"turned in for {sealDelta:N0} seals");
+    Plugin.PinchRunLog.IncrementProcessed();
+
     TickOff(item.ItemId);
     return true;
   }

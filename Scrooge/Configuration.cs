@@ -275,6 +275,20 @@ public sealed class Configuration : IPluginConfiguration
 
   public float VenturePanicValueMultiplier { get; set; } = 3.0f;
 
+  // The top band ("around 2k is cruisin"): when the 7-day projection - current
+  // stock minus MEASURED weekly burn - still clears this line, borderline calls
+  // tilt away from churn (seals saturated). Projection-based on purpose: where
+  // you WILL be, not where you are. Inert until a full week of snapshots exists.
+  public int VentureBandCruise { get; set; } = 2000;
+
+  // What a skillup is worth in gil (Sam 07-18: price the skillup, don't gate
+  // it). The desynth candidate for a skillup-eligible item scores at least
+  // this and competes in the ordinary value comparison; red is rarer than
+  // yellow, so it is worth more. A sale comfortably above the worth wins the
+  // market; below it, the melter wins; near it, Review.
+  public int SkillupWorthYellow { get; set; } = 50_000;
+  public int SkillupWorthRed { get; set; } = 100_000;
+
   // Slow-mover pressure - the routing brain pointed at already-listed
   // inventory. Rides the pinch run; gated by EnableRoutingBrain too.
 

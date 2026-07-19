@@ -215,13 +215,13 @@ internal sealed class GilWindow: Window
     if (Plugin.Configuration.EnableRoutingBrain)
     {
       ImGui.SameLine(0, 24);
-      if (ImGui.SmallButton("Router"))
+      if (ImGui.SmallButton("Ledger"))
       {
-        Plugin.RoutingWindow.Refresh();
-        Plugin.RoutingWindow.IsOpen = true;
+        Plugin.Ledger.Refresh();
+        Plugin.Ledger.IsOpen = true;
       }
       if (ImGui.IsItemHovered())
-        ImGui.SetTooltip("Route the gear in your bags (also: /scrooge route).");
+        ImGui.SetTooltip("Open the Ledger: your one worklist (also: /scrooge ledger).");
     }
 
     // Split row: player vs retainers, per-retainer balances on hover

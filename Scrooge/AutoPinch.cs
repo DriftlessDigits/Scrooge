@@ -630,6 +630,8 @@ internal sealed class AutoPinch : Window, IDisposable
 
   internal void StartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.StartHawkRun(items);
 
+  internal void NavigateAndStartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.NavigateAndStartHawkRun(items);
+
   /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
   /// <param name="enqueueFunc">Function to queue each item (EnqueueSingleItem or InsertSingleItem).</param>
   /// <param name="reverseOrder">If true, process items bottom-to-top (needed for Insert-based queuing).</param>

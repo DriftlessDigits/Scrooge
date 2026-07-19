@@ -20,6 +20,23 @@ internal sealed record RoutingConfig
   public int VentureBandLow { get; init; } = 750;
   public int VentureBandPanic { get; init; } = 500;
   public double VenturePanicValueMultiplier { get; init; } = 3.0;
+  /// <summary>
+  /// The top band: "around 2k is cruisin". The saturation check tilts borderline
+  /// calls AWAY from GC only when the 7-day PROJECTION (stock minus measured
+  /// weekly burn) still clears this line - current stock is the wrong operand,
+  /// where-will-I-be is the right one.
+  /// </summary>
+  public int VentureBandCruise { get; init; } = 2000;
+  /// <summary>
+  /// What a skillup is WORTH in gil (Sam's iteration 07-18: price the skillup,
+  /// don't gate it). A skillup-eligible item's desynth candidate scores at least
+  /// this, then competes in the ordinary value comparison - "very-very-high gil
+  /// beats a skillup" becomes emergent instead of a special-case threshold, and
+  /// near-worth sales land in Review like any honest coin flip. Red is rarer
+  /// than yellow, so it is worth more.
+  /// </summary>
+  public int SkillupWorthYellow { get; init; } = 50_000;
+  public int SkillupWorthRed { get; init; } = 100_000;
 }
 
 /// <summary>
@@ -34,6 +51,13 @@ internal sealed class RoutingBatch
   public Dictionary<(uint ItemId, bool IsHq), long> MeltValues { get; init; } = [];
   /// <summary>Venture token stock, or null when the inventory read failed. Rules-engine input (venture tilt bands).</summary>
   public int? VentureStock { get; init; }
+  /// <summary>
+  /// Measured tokens burned over the trailing FULL week (gil_snapshots downward
+  /// deltas), or null until a whole week of data exists. Whole-week windows make
+  /// the weekday/weekend shape cancel out of the 7-day projection. No measurement
+  /// = no saturation tilt (fail toward current behavior), never a config guess.
+  /// </summary>
+  public int? WeeklyVentureBurn { get; init; }
   /// <summary>Seals-to-gil rate for this batch: empirical (venture returns) when enough data exists, else the config placeholder.</summary>
   public int SealToGilRate { get; init; }
   /// <summary>True when SealToGilRate was measured from venture returns; false = config placeholder (reasons say so).</summary>
