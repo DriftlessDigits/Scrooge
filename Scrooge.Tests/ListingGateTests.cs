@@ -49,7 +49,9 @@ public class GateMappingTests
     // history, so a healthy market upgrades the REASON, never the verdict.
     var r = ListingGate.Evaluate(T.Gear(velocity: 0.2), T.Batch());
     Assert.Equal(ListingGate.Verdict.Unknown, r.Verdict);
-    Assert.Contains("moves here", r.Reason);
+    // Finding 9: velocity alone leans List into Review (no price witness), which
+    // the gate maps to Unknown — never an auto-Pass. Reason upgraded, verdict not.
+    Assert.Contains("Moves here", r.Reason);
   }
 
   [Fact]
