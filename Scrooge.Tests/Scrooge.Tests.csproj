@@ -45,6 +45,7 @@
     <Compile Include="..\Scrooge\DecisionReceipts.cs" Link="Linked\DecisionReceipts.cs" />
     <Compile Include="..\Scrooge\MarketMemorySchema.cs" Link="Linked\MarketMemorySchema.cs" />
     <Compile Include="..\Scrooge\RoutingReceiptSchema.cs" Link="Linked\RoutingReceiptSchema.cs" />
+    <Compile Include="..\Scrooge\RipenessSensors.cs" Link="Linked\RipenessSensors.cs" />
   </ItemGroup>
 
 </Project>

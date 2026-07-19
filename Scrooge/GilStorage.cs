@@ -1353,6 +1353,27 @@ internal static class GilStorage
   }
 
   // =========================================================================
+  // Ripeness sensors - how stale is the board read
+  // =========================================================================
+
+  /// <summary>The most recent FULL pinch scan (market_snapshots.source = 'full'), or 0 when none.</summary>
+  internal static long GetLastFullScanTime()
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT MAX(timestamp) FROM market_snapshots WHERE source = 'full'", _connection);
+    return cmd.ExecuteScalar() is long l ? l : 0;
+  }
+
+  /// <summary>Market events observed after the given time - the "board moved under you" count.</summary>
+  internal static int CountMarketEventsSince(long since)
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT COUNT(*) FROM market_events WHERE seen_by > @since", _connection);
+    cmd.Parameters.AddWithValue("@since", since);
+    return Convert.ToInt32(cmd.ExecuteScalar());
+  }
+
+  // =========================================================================
   // Routing receipts (V20) - decisions with their alternatives
   // =========================================================================
 
