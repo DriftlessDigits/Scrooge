@@ -1352,6 +1352,100 @@ internal static class GilStorage
     return counts;
   }
 
+  // =========================================================================
+  // Routing receipts (V20) - decisions with their alternatives
+  // =========================================================================
+
+  /// <summary>
+  /// Records one routing decision with the ALTERNATIVE scores on the table when
+  /// it was made (the 4.0 scoreboard's counterfactual food). Deduped: the same
+  /// (item, hq, exit) within 24h is the same standing decision re-observed on a
+  /// refresh, not a new one - one receipt speaks for it. A changed exit (new
+  /// evidence flipped the verdict) always writes; verdict stability across
+  /// evidence phases is one of the reads this table exists to answer.
+  /// </summary>
+  internal static void InsertRoutingReceipt(uint itemId, bool isHq, int ilvl,
+    string exit, string reason, bool isReview, string confidenceTier,
+    RoutingScores? scores, int sealRate, bool sealRateEmpirical,
+    int? ventureStock, int? weeklyBurn, string evidencePhase)
+  {
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    using (var dupe = new SqliteCommand(
+      @"SELECT 1 FROM routing_receipts
+        WHERE item_id = @iid AND is_hq = @hq AND exit = @exit AND created_at >= @since
+        LIMIT 1",
+      _connection))
+    {
+      dupe.Parameters.AddWithValue("@iid", (long)itemId);
+      dupe.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+      dupe.Parameters.AddWithValue("@exit", exit);
+      dupe.Parameters.AddWithValue("@since", now - 86400);
+      if (dupe.ExecuteScalar() is not null) return;
+    }
+
+    using var cmd = new SqliteCommand(
+      @"INSERT INTO routing_receipts
+          (created_at, item_id, is_hq, ilvl, exit, reason, is_review,
+           confidence_tier, list_score, gc_score, melt_score, vendor_score,
+           seal_rate, seal_rate_empirical, venture_stock, weekly_burn, evidence_phase)
+        VALUES (@now, @iid, @hq, @ilvl, @exit, @reason, @review,
+           @tier, @list, @gc, @melt, @vendor,
+           @rate, @emp, @stock, @burn, @phase)",
+      _connection);
+    cmd.Parameters.AddWithValue("@now", now);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.Parameters.AddWithValue("@ilvl", ilvl);
+    cmd.Parameters.AddWithValue("@exit", exit);
+    cmd.Parameters.AddWithValue("@reason", reason);
+    cmd.Parameters.AddWithValue("@review", isReview ? 1 : 0);
+    cmd.Parameters.AddWithValue("@tier", confidenceTier);
+    cmd.Parameters.AddWithValue("@list", (object?)scores?.List ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@gc", (object?)scores?.Gc ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@melt", (object?)scores?.Melt ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@vendor", (object?)scores?.Vendor ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@rate", sealRate);
+    cmd.Parameters.AddWithValue("@emp", sealRateEmpirical ? 1 : 0);
+    cmd.Parameters.AddWithValue("@stock", (object?)ventureStock ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@burn", (object?)weeklyBurn ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@phase", evidencePhase);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>Flags the latest receipt for an item as player-overridden (a ruling moved it off the router's exit).</summary>
+  internal static void MarkRoutingReceiptOverridden(uint itemId, bool isHq)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE routing_receipts SET player_overrode = 1
+        WHERE id = (SELECT id FROM routing_receipts
+                    WHERE item_id = @iid AND is_hq = @hq
+                    ORDER BY created_at DESC LIMIT 1)",
+      _connection);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// Stamps what ACTUALLY happened onto the latest open receipt for an item -
+  /// the executed side of the counterfactual join. Only the newest unexecuted
+  /// receipt takes the stamp; older receipts keep their null (decision made,
+  /// nothing fired - itself a signal).
+  /// </summary>
+  internal static void MarkRoutingReceiptExecuted(uint itemId, bool isHq, string action)
+  {
+    using var cmd = new SqliteCommand(
+      @"UPDATE routing_receipts SET executed_action = @action
+        WHERE id = (SELECT id FROM routing_receipts
+                    WHERE item_id = @iid AND is_hq = @hq AND executed_action IS NULL
+                    ORDER BY created_at DESC LIMIT 1)",
+      _connection);
+    cmd.Parameters.AddWithValue("@action", action);
+    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
+    cmd.ExecuteNonQuery();
+  }
+
   /// <summary>
   /// Measured venture-token burn over the trailing FULL week: the sum of downward
   /// deltas between consecutive gil_snapshots token reads (upward jumps are

@@ -23,17 +23,30 @@ internal enum RoutingExit
 }
 
 /// <summary>
+/// The four gil-equivalent scores on the table at decision time - the
+/// ALTERNATIVES, not just the winner. The routing receipt (V20) persists these
+/// so the 4.0 scoreboard can ask the counterfactual ("what did churning this
+/// leave on the table?"). Null = that exit had no evidence when the call was
+/// made. List carries the value the router actually weighed (own sale, or the
+/// community median when that was the witness).
+/// </summary>
+internal readonly record struct RoutingScores(long? List, long? Gc, long? Melt, long? Vendor);
+
+/// <summary>
 /// The rules engine's answer for one item. The reason string is the product —
 /// it's what makes the pile trustworthy enough to one-confirm. When two exits
 /// score too close to call, IsReview is set and both reasons are carried:
 /// the router prefers a small honest Review pile over a confident wrong routing.
+/// Scores rides along for the receipt; null on the pre-value early exits
+/// (ban / protected / always-vendor / venture panic), where no comparison ran.
 /// </summary>
 internal readonly record struct RoutingVerdict(
   RoutingExit Exit,
   string Reason,
   bool IsReview = false,
   RoutingExit? RunnerUp = null,
-  string RunnerUpReason = "");
+  string RunnerUpReason = "",
+  RoutingScores? Scores = null);
 
 /// <summary>
 /// The routing brain's decision core. Deterministic rules over pre-gathered
@@ -135,6 +148,13 @@ internal static class RoutingRules
       }
     }
 
+    // Every verdict from here down carries the four scores as weighed - the
+    // receipt's alternatives. listOverride: branches where the List witness is
+    // the community median (not an own sale) put the value they actually used
+    // in the List slot.
+    RoutingVerdict Scored(RoutingVerdict v, long? listOverride = null)
+      => v with { Scores = new RoutingScores(listOverride ?? listScore, gcScore, meltScore, vendorScore) };
+
     // Rule 4 winner check honors the priced skillup: List only wins outright
     // when the sale actually outbids the desynth candidate (which a skillup
     // inflates); otherwise fall through to the value rules below.
@@ -143,15 +163,15 @@ internal static class RoutingRules
       // Sub-750 stock: default to churn unless the item is worth a lot.
       if (gcScore is not null && stock is int lowStock && lowStock < cfg.VentureBandLow
           && list < (long)(cfg.ListingFloorGil * cfg.VenturePanicValueMultiplier))
-        return new(RoutingExit.Gc,
+        return Scored(new(RoutingExit.Gc,
           $"Venture low: {lowStock:N0} tokens (< {cfg.VentureBandLow:N0}) — turning in unless it's worth {(long)(cfg.ListingFloorGil * cfg.VenturePanicValueMultiplier):N0}+. {gcReason}",
-          RunnerUp: RoutingExit.List, RunnerUpReason: listReason);
+          RunnerUp: RoutingExit.List, RunnerUpReason: listReason));
 
-      return Resolve(RoutingExit.List, list, listReason,
+      return Scored(Resolve(RoutingExit.List, list, listReason,
         BestOf((RoutingExit.Desynth, meltScore, meltReason),
                (RoutingExit.Gc, gcScore, gcReason),
                (RoutingExit.Vendor, vendorScore, vendorReason)),
-        stock, burn, cfg);
+        stock, burn, cfg));
     }
 
     // Rule 6 — GC turn-in: seals beat every gil exit, or low stock tilts it.
@@ -167,10 +187,10 @@ internal static class RoutingRules
       {
         var alt = BestOf((RoutingExit.Desynth, meltScore, meltReason),
                          (RoutingExit.Vendor, vendorScore, vendorReason));
-        return new(RoutingExit.Gc,
+        return Scored(new(RoutingExit.Gc,
           $"Venture low: {lowStock2:N0} tokens (< {cfg.VentureBandLow:N0}) — turning in unless it's worth {lowCeiling:N0}+. {gcReason}",
           RunnerUp: alt.Score is not null ? alt.Exit : null,
-          RunnerUpReason: alt.Score is not null ? alt.Reason : "");
+          RunnerUpReason: alt.Score is not null ? alt.Reason : ""));
       }
       // Community veto (almanac cross-check): gear with no LOCAL sale can
       // never produce a list score, so seals won by forfeit — the market was
@@ -184,15 +204,15 @@ internal static class RoutingRules
           && item.CommunityMedian is long cm
           && item.CommunitySampleCount >= cfg.CommunityMinSamples
           && cm > gc && cm > (meltScore ?? 0))
-        return Resolve(RoutingExit.List, cm,
+        return Scored(Resolve(RoutingExit.List, cm,
           $"List: the DC pays ~{cm:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — beats {gcReason.TrimEnd('.')}. The Hawk run prices it off the live MB.",
-          (RoutingExit.Gc, gcScore, gcReason), stock, burn, cfg);
+          (RoutingExit.Gc, gcScore, gcReason), stock, burn, cfg), listOverride: cm);
 
       if (gc > bestGil)
-        return Resolve(RoutingExit.Gc, gc, gcReason,
+        return Scored(Resolve(RoutingExit.Gc, gc, gcReason,
           BestOf((RoutingExit.Desynth, meltScore, meltReason),
                  (RoutingExit.Vendor, vendorScore, vendorReason)),
-          stock, burn, cfg);
+          stock, burn, cfg));
     }
 
     // Rule 7 — melt for gil: yields must beat vendor meaningfully. No vendor
@@ -205,14 +225,14 @@ internal static class RoutingRules
       if (melt > vendorFloor * MeltOverVendorFactor)
         // List rides as a runner-up candidate: a sale just under a priced
         // skillup's worth reaches here, and the review band should see it.
-        return Resolve(RoutingExit.Desynth, melt, meltReason,
+        return Scored(Resolve(RoutingExit.Desynth, melt, meltReason,
           BestOf((RoutingExit.Vendor, vendorScore, vendorReason),
                  (RoutingExit.List, listScore, listReason)),
-          stock, burn, cfg);
+          stock, burn, cfg));
       if (melt > vendorFloor)
-        return new(RoutingExit.Desynth, meltReason, IsReview: true,
+        return Scored(new(RoutingExit.Desynth, meltReason, IsReview: true,
           RunnerUp: RoutingExit.Vendor,
-          RunnerUpReason: $"{vendorReason} Desynth lead is thin — attempt time may not pay.");
+          RunnerUpReason: $"{vendorReason} Desynth lead is thin — attempt time may not pay."));
     }
 
     // Evidence-only: gear the router knows nothing about is YOUR call,
@@ -231,11 +251,11 @@ internal static class RoutingRules
       if (!item.IsMarketable)
       {
         if (vendorScore is long uv)
-          return new(RoutingExit.Vendor,
-            $"Untradable, no desynth or seal evidence — vendor is the only exit: {uv:N0} gil.");
-        return new(RoutingExit.Vendor,
+          return Scored(new(RoutingExit.Vendor,
+            $"Untradable, no desynth or seal evidence — vendor is the only exit: {uv:N0} gil."));
+        return Scored(new(RoutingExit.Vendor,
           "No gil exit at all (untradable, no desynth, no seals) — current-tier gear is usually for wearing, not selling.",
-          IsReview: true);
+          IsReview: true));
       }
 
       // DC sale history is stronger evidence than home-world velocity when it
@@ -246,12 +266,14 @@ internal static class RoutingRules
           && item.CommunitySampleCount >= cfg.CommunityMinSamples)
       {
         if (cMed >= cfg.ListingWorthGil)
-          return new(RoutingExit.List,
-            $"Never sold one locally, but the DC buys it: ~{cMed:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — the Hawk run prices it off the live MB.");
-        return new(RoutingExit.Vendor,
+          return Scored(new(RoutingExit.List,
+            $"Never sold one locally, but the DC buys it: ~{cMed:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — the Hawk run prices it off the live MB."),
+            listOverride: cMed);
+        return Scored(new(RoutingExit.Vendor,
           $"DC-wide it only fetches ~{cMed:N0} gil ({item.CommunitySampleCount} sales, Universalis community) — below your {cfg.ListingWorthGil:N0} worth floor. {vendorReason}",
           RunnerUp: RoutingExit.List,
-          RunnerUpReason: "List anyway if you think the community read is wrong.");
+          RunnerUpReason: "List anyway if you think the community read is wrong."),
+          listOverride: cMed);
       }
 
       if (item.MarketVelocity is double marketV)
@@ -267,17 +289,17 @@ internal static class RoutingRules
         // to world-hoppers). Lean List — marketable, the Hawk run prices it off
         // the live MB — but land in Review so the player supplies the price read.
         var moves = marketV >= ListingGate.MarketVelocityFloor(cfg);
-        return new(RoutingExit.List,
+        return Scored(new(RoutingExit.List,
           moves
             ? $"Moves here (~{marketV:0.##}/day on your world, Universalis) but you've never sold one — no price on record. List and let the Hawk run price it, or vendor if it's junk."
             : $"Doesn't move on your world (~{marketV:0.##}/day, Universalis), but it's DC-tradable — dead-world listings still sell to world-hoppers. List-and-forget, or vendor if you know it's junk.",
           IsReview: true,
           RunnerUp: RoutingExit.Vendor,
-          RunnerUpReason: vendorReason.Length > 0 ? vendorReason : "Vendor if you know it's junk.");
+          RunnerUpReason: vendorReason.Length > 0 ? vendorReason : "Vendor if you know it's junk."));
       }
-      return new(RoutingExit.List,
+      return Scored(new(RoutingExit.List,
         "No local evidence for this gear — never sold or desynthed one. Check the MB if it looks valuable.",
-        IsReview: true, RunnerUp: RoutingExit.Vendor, RunnerUpReason: vendorReason);
+        IsReview: true, RunnerUp: RoutingExit.Vendor, RunnerUpReason: vendorReason));
     }
 
     // Rule 8 — nothing beat the vendor. A sale that failed the floor is the
@@ -288,12 +310,12 @@ internal static class RoutingRules
       var soldNote = item.LastSale is { } ls
         ? $" Sold at {ls.Price:N0} once — below your list floor."
         : "";
-      return new(RoutingExit.Vendor, $"Vendor: {vendor:N0} gil — no better exit in evidence.{soldNote}");
+      return Scored(new(RoutingExit.Vendor, $"Vendor: {vendor:N0} gil — no better exit in evidence.{soldNote}"));
     }
 
     // Unvendorable, no evidence for anything else — honest shrug.
-    return new(RoutingExit.Vendor, "No viable exit known (can't even vendor it).",
-      IsReview: true);
+    return Scored(new(RoutingExit.Vendor, "No viable exit known (can't even vendor it).",
+      IsReview: true));
   }
 
   /// <summary>

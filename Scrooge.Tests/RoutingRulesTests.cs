@@ -64,6 +64,66 @@ public class VenturePanicTests
   }
 }
 
+public class RoutingScoresTests
+{
+  // V20 receipts: every value-rule verdict carries the four alternative scores
+  // as weighed - the counterfactual the scoreboard joins against.
+
+  [Fact]
+  public void ValueVerdict_CarriesAllFourScores()
+  {
+    var v = RoutingRules.Evaluate(
+      T.Gear(sale: (50_000, 0, 5), seals: 400, melt: 3_000, vendor: 900), T.Batch(sealRate: 25));
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.NotNull(v.Scores);
+    Assert.Equal(50_000, v.Scores!.Value.List);
+    Assert.Equal(400L * 25, v.Scores!.Value.Gc);
+    Assert.Equal(3_000, v.Scores!.Value.Melt);
+    Assert.Equal(900, v.Scores!.Value.Vendor);
+  }
+
+  [Fact]
+  public void MissingEvidence_LeavesScoreNull_NotZero()
+  {
+    var v = RoutingRules.Evaluate(T.Gear(vendor: 500), T.Batch());
+    Assert.NotNull(v.Scores);
+    Assert.Null(v.Scores!.Value.List);
+    Assert.Null(v.Scores!.Value.Gc);
+    Assert.Null(v.Scores!.Value.Melt);
+    Assert.Equal(500, v.Scores!.Value.Vendor);
+  }
+
+  [Fact]
+  public void CommunityVeto_PutsTheMedianItWeighedInTheListSlot()
+  {
+    // No local sale - the community median IS the list witness the router used.
+    var v = RoutingRules.Evaluate(
+      T.Gear(seals: 400, communityMedian: 60_000, communityCount: 8), T.Batch(sealRate: 25));
+    Assert.Equal(RoutingExit.List, v.Exit);
+    Assert.Equal(60_000, v.Scores!.Value.List);
+  }
+
+  [Fact]
+  public void PreValueEarlyExits_CarryNoScores()
+  {
+    // Ban / protection / always-vendor / panic fire before any value comparison
+    // ran - a receipt with scores there would be an invention.
+    Assert.Null(RoutingRules.Evaluate(T.Gear(banned: true), T.Batch()).Scores);
+    Assert.Null(RoutingRules.Evaluate(T.Gear(isProtected: true), T.Batch()).Scores);
+    Assert.Null(RoutingRules.Evaluate(T.Gear(alwaysVendor: true), T.Batch()).Scores);
+    Assert.Null(RoutingRules.Evaluate(T.Gear(seals: 500), T.Batch(stock: 499)).Scores);
+  }
+
+  [Fact]
+  public void SkillupPricing_ShowsInTheMeltScore()
+  {
+    // The receipt must show the INFLATED melt candidate - that's the number the
+    // comparison actually ran on.
+    var v = RoutingRules.Evaluate(T.Gear(redSkillup: true, vendor: 100), T.Batch());
+    Assert.Equal(new RoutingConfig().SkillupWorthRed, v.Scores!.Value.Melt);
+  }
+}
+
 public class ListEvidenceTests
 {
   [Fact]
