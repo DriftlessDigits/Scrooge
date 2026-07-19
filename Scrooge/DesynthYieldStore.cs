@@ -81,6 +81,28 @@ internal sealed class DesynthYieldStore
     cmd.ExecuteNonQuery();
   }
 
+  /// <summary>
+  /// Distinct yield items captured since the given time - the fresh-melt
+  /// output the Ledger's yields bridge surfaces (melt -> mats -> market must
+  /// not depend on a human remembering the middle step).
+  /// </summary>
+  internal List<(uint ItemId, bool IsHq, int TotalQty)> GetRecentYieldItems(long sinceUnix)
+  {
+    var results = new List<(uint, bool, int)>();
+    using var cmd = new SqliteCommand(
+      @"SELECT yield_item_id, yield_is_hq, SUM(yield_qty)
+        FROM desynth_yields
+        WHERE captured_at >= @since
+        GROUP BY yield_item_id, yield_is_hq
+        ORDER BY SUM(yield_qty) DESC",
+      _connection);
+    cmd.Parameters.AddWithValue("@since", sinceUnix);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+      results.Add(((uint)reader.GetInt64(0), reader.GetInt32(1) != 0, reader.GetInt32(2)));
+    return results;
+  }
+
   /// <summary>Inserts a yield event. Called by DesynthYieldTracker.</summary>
   internal void InsertYield(DesynthYield yield)
   {
