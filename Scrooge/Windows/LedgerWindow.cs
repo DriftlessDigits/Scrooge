@@ -90,6 +90,10 @@ internal sealed class LedgerWindow : Window
   private List<ListedLine> _listed = [];
   private long _earliestObs;
 
+  // --- Ripeness sensors: cached with the listings refresh, never per frame ---
+  private long _lastFullScanAt;
+  private int _eventsSinceScan;
+
   // --- Absorbed triage state (was TriageWindow) ---
   private List<PricingItem> _triageItems = [];
   private List<TriageFlag> _heldFlags = [];
@@ -135,8 +139,10 @@ internal sealed class LedgerWindow : Window
           l.RetainerName, l.ItemId, l.ItemName, l.IsHQ, l.UnitPrice, l.Quantity, l.FirstSeenTimestamp))
         .ToList();
       _earliestObs = GilStorage.GetEarliestObservation();
+      _lastFullScanAt = GilStorage.GetLastFullScanTime();
+      _eventsSinceScan = _lastFullScanAt > 0 ? GilStorage.CountMarketEventsSince(_lastFullScanAt) : 0;
     }
-    catch { _listed = []; _earliestObs = 0; }
+    catch { _listed = []; _earliestObs = 0; _lastFullScanAt = 0; _eventsSinceScan = 0; }
   }
 
   // ==========================================================================
@@ -511,6 +517,11 @@ internal sealed class LedgerWindow : Window
   private void DrawHeader(List<InboxRow> triageRows)
   {
     ImGui.Text("the ledger speaks in last-pinch tense");
+    ImGui.SameLine();
+    // Ripeness sensors (stretch 2): WHICH pinch - age of the last full scan and
+    // how much the board has moved since. Sensors only, no gates: thresholds
+    // wait for receipts data (4.0), a number nobody measured reads like a rule.
+    ImGui.TextDisabled($"({RipenessSensors.HeaderLine(_lastFullScanAt, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), _eventsSinceScan)})");
     ImGui.SameLine();
     if (_ventureStock is int stock)
     {
