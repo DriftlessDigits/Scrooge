@@ -423,7 +423,7 @@ internal sealed class GcTurnInOrchestrator
     _run.RecordProgress(1, sealDelta, System.DateTime.UtcNow);
 
     // Mirror the delivery into the one run window (ruling 9).
-    Plugin.PinchRunLog.AddEntry(ItemOutcome.VendorSold, item.Name, $"turned in for {sealDelta:N0} seals");
+    Plugin.PinchRunLog.AddEntry(ItemOutcome.TurnedIn, item.Name, $"turned in for {sealDelta:N0} seals");
     Plugin.PinchRunLog.IncrementProcessed();
 
     TickOff(item.ItemId);
