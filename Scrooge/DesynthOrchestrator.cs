@@ -356,10 +356,10 @@ internal sealed class DesynthOrchestrator : IDisposable
 
     // Wait for SalvageResult — strict, abort-on-timeout. Per Q1 (2026-05-03
     // in-game observation), SalvageResult always fires after every desynth.
-    // Absence within the 4000ms ceiling means a stale UI state we shouldn't
-    // continue from.
+    // This is the act's server round trip, so it draws the shared ceiling
+    // (ServerRoundTripCeilingMs), not the UI-local 4000ms band above.
     _taskManager.DelayNext(Jitter(600, 200));
-    _taskManager.Enqueue(WaitForAddon("SalvageResult", 4000),
+    _taskManager.Enqueue(WaitForAddon("SalvageResult", Plugin.Configuration.ServerRoundTripCeilingMs),
       $"DesynthWaitResult_{item.Name}");
 
     // PostActDecision logs the act and decides Retry-vs-Close.
