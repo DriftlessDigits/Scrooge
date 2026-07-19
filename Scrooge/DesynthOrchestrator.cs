@@ -469,6 +469,11 @@ internal sealed class DesynthOrchestrator : IDisposable
       $"desynthed{(item.IsHq ? " (HQ)" : "")}");
     Plugin.PinchRunLog.IncrementProcessed();
 
+    // V20: stamp the standing routing receipt - the item's Desynth exit
+    // executed. Only the newest unexecuted receipt takes the stamp, so stack
+    // continuations after the first act are no-ops.
+    try { GilStorage.MarkRoutingReceiptExecuted(item.ItemId, item.IsHq, "Desynthed"); } catch { }
+
     // Long-pause injection — counted per-act, not per-queue-item, so a stack
     // of 99 contributes 99 acts toward the next pause. Decrement first; if
     // <= 0, inject the pause AFTER advancing the chain (so the pause sits

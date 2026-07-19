@@ -408,6 +408,8 @@ internal sealed class HawkRunOrchestrator
     if (result == PricingResult.Listed)
     {
       _hawkRetainerSlotsUsed++;
+      // V20: stamp the standing routing receipt - the item's List verdict executed.
+      try { GilStorage.MarkRoutingReceiptExecuted(item.ItemId, item.IsHq, "Listed"); } catch { }
     }
 
     // One item processed (listed, or held/skipped) - advance the lifecycle and reset
@@ -451,6 +453,9 @@ internal sealed class HawkRunOrchestrator
       $"{reason} — {totalGil:N0} gil ({vendorPrice:N0} × {item.Quantity})");
 
     Communicator.PrintVendorSold(item.Name, vendorPrice, item.Quantity);
+
+    // V20: stamp the standing routing receipt - the item's Vendor exit executed.
+    try { GilStorage.MarkRoutingReceiptExecuted(item.ItemId, item.IsHq, "Vendored"); } catch { }
   }
 
   /// <summary>

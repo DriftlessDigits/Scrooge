@@ -426,6 +426,9 @@ internal sealed class GcTurnInOrchestrator
     Plugin.PinchRunLog.AddEntry(ItemOutcome.TurnedIn, item.Name, $"turned in for {sealDelta:N0} seals");
     Plugin.PinchRunLog.IncrementProcessed();
 
+    // V20: stamp the standing routing receipt - the item's Gc exit executed.
+    try { GilStorage.MarkRoutingReceiptExecuted(item.ItemId, item.IsHq, "TurnedIn"); } catch { }
+
     TickOff(item.ItemId);
     return true;
   }

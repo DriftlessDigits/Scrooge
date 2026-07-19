@@ -138,6 +138,13 @@ internal class GilStorageBootstrap
       SetSchemaVersion(connection, 19);
     }
 
+    if (version < 20)
+    {
+      RoutingReceiptSchema.ApplyV20(connection);
+      Svc.Log.Info("V20 migration: routing_receipts table - routing decisions with alternative scores (the 4.0 scoreboard's food)");
+      SetSchemaVersion(connection, 20);
+    }
+
     // Idempotent fixes — safe to run every startup
     using var fixDashes = new SqliteCommand(
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",

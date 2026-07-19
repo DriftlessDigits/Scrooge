@@ -224,6 +224,20 @@ internal sealed class LedgerWindow : Window
           };
           ApplyPersistedRuling(item);
           _items.Add(item);
+
+          // V20 routing receipt: the decision + its alternatives, deduped in
+          // storage (same item/exit within 24h = same standing decision).
+          // Telemetry only - never blocks routing.
+          try
+          {
+            GilStorage.InsertRoutingReceipt(itemId, isHq, inputs.Ilvl,
+              verdict.Exit.ToString(), verdict.Reason, verdict.IsReview,
+              item.Confidence.ToString(), verdict.Scores,
+              batch.SealToGilRate, batch.SealRateEmpirical,
+              batch.VentureStock, batch.WeeklyVentureBurn,
+              item.CommunityFallback ? "community" : "world");
+          }
+          catch { }
         }
       }
     }
@@ -970,6 +984,9 @@ internal sealed class LedgerWindow : Window
     {
       GilStorage.InsertRoutingOverride(item.ItemId, item.IsHq, item.Ilvl,
         routerVerdict, item.Verdict.Reason, playerExit.ToString());
+      // V20: flag the standing receipt so override rate by confidence tier is queryable.
+      if (routerVerdict != playerExit.ToString())
+        GilStorage.MarkRoutingReceiptOverridden(item.ItemId, item.IsHq);
     }
     catch { /* storage unavailable - the move still applies, just unrecorded */ }
   }
