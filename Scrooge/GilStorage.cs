@@ -1433,6 +1433,54 @@ internal static class GilStorage
     return listings;
   }
 
+  /// <summary>
+  /// All own standing listings from the captured board state (the listings
+  /// table), for the Ledger's Listed pile. READ-only - the listings-table
+  /// tripwire forbids ad hoc WRITES, not reads. Richest-first by unit price.
+  /// </summary>
+  internal static List<ListingRecord> GetAllCurrentListings()
+  {
+    var listings = new List<ListingRecord>();
+    using var cmd = new SqliteCommand(
+      @"SELECT retainer_name, slot_index, item_id, item_name, category,
+      unit_price, quantity, is_hq, first_seen, last_updated
+      FROM listings
+      ORDER BY unit_price DESC",
+      _connection);
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+      listings.Add(new ListingRecord
+      {
+        RetainerName = reader.GetString(0),
+        SlotIndex = reader.GetInt32(1),
+        ItemId = (uint)reader.GetInt64(2),
+        ItemName = reader.GetString(3),
+        Category = reader.GetString(4),
+        UnitPrice = reader.GetInt32(5),
+        Quantity = reader.GetInt32(6),
+        IsHQ = reader.GetInt32(7) != 0,
+        FirstSeenTimestamp = reader.GetInt64(8),
+        LastUpdatedTimestamp = reader.GetInt64(9)
+      });
+    }
+    return listings;
+  }
+
+  /// <summary>
+  /// The earliest board scan we ever recorded (MIN market_snapshots.timestamp),
+  /// or 0 when none. A listing whose first_seen is at or before this cannot have
+  /// a measured age - we can't see before we started looking - so the Ledger
+  /// labels it "&gt;=Nd" instead of inventing precision (session 3, item 2).
+  /// </summary>
+  internal static long GetEarliestObservation()
+  {
+    using var cmd = new SqliteCommand(
+      "SELECT MIN(timestamp) FROM market_snapshots", _connection);
+    var result = cmd.ExecuteScalar();
+    return result is long l ? l : 0;
+  }
+
   // =========================================================================
   // Market memory (V19) — append-diff events + current-board snapshot
   // =========================================================================
