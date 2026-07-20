@@ -223,6 +223,71 @@ public class LedgerTests
     Assert.False(LedgerConfidence.CountsTowardDemotion("Reprice", "List"));
   }
 
+  // ---- Assent clears dissent (Sam's 07-19 ruling, evening session) ----
+
+  [Fact]
+  public void AssentAction_MapsEachExitToItsOwnExecutor()
+  {
+    Assert.Equal("TurnedIn", LedgerConfidence.AssentAction("Gc"));
+    Assert.Equal("Desynthed", LedgerConfidence.AssentAction("Desynth"));
+    Assert.Equal("Listed", LedgerConfidence.AssentAction("List"));
+    Assert.Equal("Vendored", LedgerConfidence.AssentAction("Vendor"));
+    Assert.Null(LedgerConfidence.AssentAction("Review"));
+  }
+
+  [Fact]
+  public void LastAssentByClass_ExecutingTheRoutersOwnCallVouchesForTheClassAndItsGate()
+  {
+    var last = LedgerConfidence.LastAssentByClass(new[]
+    {
+      ("Gc", "TurnedIn", 1000L),
+    });
+    Assert.Equal(1000L, last["Gc"]);
+    Assert.Equal(1000L, last["GateGc"]); // trusting the turn-in IS trusting the gate
+    Assert.False(last.ContainsKey("List"));
+  }
+
+  [Fact]
+  public void LastAssentByClass_ExecutingADifferentExitVouchesForNothing()
+  {
+    // A router-Gc item the player melted: a reshuffle, not a vote of trust.
+    var last = LedgerConfidence.LastAssentByClass(new[]
+    {
+      ("Gc", "Desynthed", 1000L),
+    });
+    Assert.Empty(last);
+  }
+
+  [Fact]
+  public void LastAssentByClass_NewestAssentWins()
+  {
+    var last = LedgerConfidence.LastAssentByClass(new[]
+    {
+      ("Gc", "TurnedIn", 1000L),
+      ("Gc", "TurnedIn", 2000L),
+    });
+    Assert.Equal(2000L, last["Gc"]);
+  }
+
+  [Fact]
+  public void CrossingStands_AssentForgivesEverythingBeforeIt()
+  {
+    // The 78-click case: two boundary crossings, then a turn-in run executed
+    // without overrides. Both crossings are cleared; the class re-earns
+    // Unanimous by the player's own hands on the bell.
+    var last = LedgerConfidence.LastAssentByClass(new[] { ("Gc", "TurnedIn", 5000L) });
+    Assert.False(LedgerConfidence.CrossingStands(4000L, last, "Gc"));
+    Assert.False(LedgerConfidence.CrossingStands(4999L, last, "Gc"));
+    Assert.True(LedgerConfidence.CrossingStands(5001L, last, "Gc")); // dissent AFTER the assent stands
+  }
+
+  [Fact]
+  public void CrossingStands_ClassWithNoAssentKeepsItsCrossings()
+  {
+    var empty = new Dictionary<string, long>(StringComparer.Ordinal);
+    Assert.True(LedgerConfidence.CrossingStands(1L, empty, "Gc"));
+  }
+
   // ---- Bulk eligibility ----
 
   [Fact]

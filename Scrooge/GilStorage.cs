@@ -1331,9 +1331,28 @@ internal static class GilStorage
     // Which disagreements are doctrine evidence at all is the pure core's call
     // (LedgerConfidence.CountsTowardDemotion): only market-boundary crossings
     // count; off-market value reshuffles are standing-rule applications.
+    // Assent clears dissent (Sam's 07-19 ruling): a crossing only stands until
+    // the player's next executed, unoverridden act of the class's own action -
+    // trust demonstrated at the bell forgives the disagreements before it. The
+    // fold and the standing test live in the pure core (LedgerConfidence);
+    // this just feeds it the executed-receipt facts.
+    var assents = new List<(string Exit, string ExecutedAction, long CreatedAt)>();
+    using (var assentCmd = new SqliteCommand(
+      @"SELECT exit, executed_action, MAX(created_at)
+        FROM routing_receipts
+        WHERE player_overrode = 0 AND executed_action IS NOT NULL
+        GROUP BY exit, executed_action",
+      _connection))
+    using (var assentReader = assentCmd.ExecuteReader())
+    {
+      while (assentReader.Read())
+        assents.Add((assentReader.GetString(0), assentReader.GetString(1), assentReader.GetInt64(2)));
+    }
+    var lastAssent = LedgerConfidence.LastAssentByClass(assents);
+
     var distinctItems = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
     using var cmd = new SqliteCommand(
-      @"SELECT router_verdict, player_verdict, item_id || '_' || is_hq
+      @"SELECT router_verdict, player_verdict, item_id || '_' || is_hq, created_at
         FROM routing_overrides
         WHERE player_verdict <> router_verdict",
       _connection);
@@ -1342,6 +1361,8 @@ internal static class GilStorage
     {
       var routerVerdict = reader.GetString(0);
       if (!LedgerConfidence.CountsTowardDemotion(routerVerdict, reader.GetString(1)))
+        continue;
+      if (!LedgerConfidence.CrossingStands(reader.GetInt64(3), lastAssent, routerVerdict))
         continue;
       if (!distinctItems.TryGetValue(routerVerdict, out var items))
         distinctItems[routerVerdict] = items = new HashSet<string>(StringComparer.Ordinal);
