@@ -295,6 +295,66 @@ internal static class LedgerConfidence
     return OnMarketVerdicts.Contains(routerVerdict) != OnMarketVerdicts.Contains(playerVerdict);
   }
 
+  /// <summary>
+  /// The executor stamp that constitutes ASSENT for a receipt exit - the player
+  /// ran the router's own call to completion. Any other stamp on the exit (a
+  /// router-Gc item the player melted) is a reshuffle, not a vote of trust.
+  /// </summary>
+  internal static string? AssentAction(string exit) => exit switch
+  {
+    "Gc" => "TurnedIn",
+    "Desynth" => "Desynthed",
+    "List" => "Listed",
+    "Vendor" => "Vendored",
+    _ => null,
+  };
+
+  /// <summary>
+  /// The verdict classes an executed exit vouches for. Gate variants share the
+  /// destination: trusting the turn-in IS trusting the gate that routed to it.
+  /// </summary>
+  internal static string[] ClassesVouchedBy(string exit) => exit switch
+  {
+    "Gc" => new[] { "Gc", "GateGc" },
+    "Desynth" => new[] { "Desynth", "GateDesynth" },
+    "List" => new[] { "List", "Reprice" },
+    "Vendor" => new[] { "Vendor" },
+    _ => System.Array.Empty<string>(),
+  };
+
+  /// <summary>
+  /// Folds executed, non-overridden receipts into the newest assent time per
+  /// verdict class. Input rows whose executed action is not the exit's own
+  /// assent action are ignored (executing a DIFFERENT exit vouches for nothing).
+  /// </summary>
+  internal static Dictionary<string, long> LastAssentByClass(
+    IEnumerable<(string Exit, string ExecutedAction, long CreatedAt)> executedReceipts)
+  {
+    var last = new Dictionary<string, long>(StringComparer.Ordinal);
+    foreach (var (exit, action, at) in executedReceipts)
+    {
+      if (!string.Equals(AssentAction(exit), action, StringComparison.Ordinal))
+        continue;
+      foreach (var cls in ClassesVouchedBy(exit))
+        if (!last.TryGetValue(cls, out var t) || at > t)
+          last[cls] = at;
+    }
+    return last;
+  }
+
+  /// <summary>
+  /// Whether a boundary-crossing override still stands as doctrine evidence
+  /// (Sam's 07-19 ruling: "assent clears dissent"). A crossing counts only
+  /// until the player's next demonstrated act of trust in the class - running
+  /// the class's own action, unoverridden, forgives everything before it. No
+  /// invented decay constant: the re-earn is the player's own hands on the
+  /// bell, so a class in active use stays trusted and a class being routed
+  /// around stays demoted.
+  /// </summary>
+  internal static bool CrossingStands(long crossingAt,
+    IReadOnlyDictionary<string, long> lastAssentByClass, string routerVerdict)
+    => crossingAt > (lastAssentByClass.TryGetValue(routerVerdict, out var t) ? t : 0L);
+
   /// <summary>The full score: base tier from evidence, refined by the override history.</summary>
   internal static ConfidenceTier Tier(in Evidence e, int overrideCount = 0,
     int demoteThreshold = DefaultDemoteThreshold)
