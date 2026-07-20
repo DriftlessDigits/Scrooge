@@ -628,6 +628,19 @@ internal sealed class AutoPinch : Window, IDisposable
 
   }
 
+  /// <summary>Whether the pinch task chain is mid-flight (sweep deck's busy gate).</summary>
+  internal bool PinchBusy => _taskManager.IsBusy;
+
+  /// <summary>Whether a Hawk run is mid-flight (sweep deck's busy gate).</summary>
+  internal bool HawkRunning => _hawkOrchestrator.IsRunning;
+
+  /// <summary>
+  /// Sweep-deck entry to "pinch all retainers". Self-guarding: a no-op unless
+  /// the RetainerList addon is open and ready and no task chain is busy - the
+  /// same preconditions the overlay button enforces by only existing there.
+  /// </summary>
+  internal void StartPinchAllRetainers() => PinchAllRetainers();
+
   internal void StartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.StartHawkRun(items);
 
   internal void NavigateAndStartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.NavigateAndStartHawkRun(items);

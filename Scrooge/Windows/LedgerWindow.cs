@@ -98,6 +98,9 @@ internal sealed class LedgerWindow : Window
   // to the Hawk run. The data seam of the future full-sweep workflow. ---
   private List<(uint ItemId, string Name, bool IsHq, int Qty)> _freshYields = [];
 
+  // The one-button sweep's cursor (v0, zero intelligence - see SweepPlan).
+  private readonly SweepPlan _sweep = new();
+
   // --- Absorbed triage state (was TriageWindow) ---
   private List<PricingItem> _triageItems = [];
   private List<TriageFlag> _heldFlags = [];
@@ -497,6 +500,7 @@ internal sealed class LedgerWindow : Window
     {
       DrawHeader(triageRows);
       ImGui.Separator();
+      DrawDeck(triageRows);
       DrawFreshYields();
       DrawListedPile();
       return;
@@ -504,6 +508,7 @@ internal sealed class LedgerWindow : Window
 
     DrawHeader(triageRows);
     ImGui.Separator();
+    DrawDeck(triageRows);
 
     DrawReviewPile(triageRows);
     DrawListPile();
@@ -515,6 +520,179 @@ internal sealed class LedgerWindow : Window
     DrawWatchPile(triageRows);
     DrawListedPile();
   }
+
+  // ==========================================================================
+  // The sweep deck (v2.18): the whole errand behind one button
+  // ==========================================================================
+
+  /// <summary>
+  /// The command deck: the full sweep - pinch, bell run, reprice, desynth,
+  /// turn in - as one button pressed at each stop (Sam's endgame sentence,
+  /// 2026-07-19: "easily kick off a full sweep... and be smart about what
+  /// fires when"). v0 is deliberately dumb: it fires exactly the bulk actions
+  /// the pile buttons fire, in workflow order, and tells you where to walk
+  /// next. The smartness arrives as receipts ripen (4.0) - stages learn to
+  /// skip themselves; this seam does not move.
+  /// </summary>
+  private void DrawDeck(List<InboxRow> triageRows)
+  {
+    // Work sets - recomputed per frame from the same sources as the pile
+    // buttons, so the deck can never disagree with the piles it mirrors.
+    var listRows = _items.Where(i => i.ActivePile == LedgerPile.List).ToList();
+    var vendorRows = _items.Where(i => i.ActivePile == LedgerPile.PullAndVendor).ToList();
+    var listSet = LedgerConfidence.BulkSet(listRows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+    var vendSet = LedgerConfidence.BulkSet(vendorRows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+    var repriceEligible = triageRows
+      .Where(r => EffectiveTriagePile(r.Item) == LedgerPile.Reprice)
+      .Where(r => LedgerConfidence.IsBulkEligible(ScoreTriage(r.Item, LedgerPiles.ForTriage(r.Item.Result))))
+      .ToList();
+    var meltCount = _items.Count(i => i.ActivePile == LedgerPile.Melt);
+    var churnRows = _items.Where(i => i.ActivePile == LedgerPile.Churn).ToList();
+    var churnSet = LedgerConfidence.BulkSet(churnRows.Select(r => (r, r.Confidence, r.PlayerResolved)));
+
+    int CountOf(SweepStage s) => s switch
+    {
+      SweepStage.BellRun => listSet.Count + vendSet.Count,
+      SweepStage.Reprice => repriceEligible.Count,
+      SweepStage.Desynth => meltCount,
+      SweepStage.TurnIn => churnSet.Count,
+      _ => 0,
+    };
+    // The pinch always has work: the board read is what makes the rest honest.
+    bool HasWork(SweepStage s) => s == SweepStage.Pinch || CountOf(s) > 0;
+
+    ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
+    var open = ImGui.CollapsingHeader("Sweep - the whole errand, one button###deckSweep",
+      ImGuiTreeNodeFlags.DefaultOpen);
+    ImGui.PopStyleColor();
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("Pinch, bell run, reprice, melt, turn in - in order, one press per stop. The button tells you where to walk. Every stage still confirms; it gets quieter as the receipts teach it what to skip.");
+    if (!open) return;
+
+    if (!_sweep.Active)
+    {
+      if (ImGui.Button("Start sweep###sweepStart"))
+        _sweep.Start();
+      ImGui.SameLine();
+      ImGui.TextDisabled(
+        $"pinch -> {listSet.Count + vendSet.Count} bell -> {repriceEligible.Count} reprice -> {meltCount} melt -> {churnSet.Count} turn in");
+      return;
+    }
+
+    var next = _sweep.Next(HasWork);
+
+    // The cursor readout: one line per stage.
+    foreach (var s in SweepPlan.Order)
+    {
+      var isNext = next is SweepStage n && n == s;
+      var (glyph, color) = _sweep.IsDone(s) ? ("x", ScroogeColors.Earned)
+        : isNext ? (">", ScroogeColors.Amber)
+        : HasWork(s) ? (".", ScroogeColors.Muted)
+        : ("-", ScroogeColors.Muted);
+      ImGui.PushStyleColor(ImGuiCol.Text, color);
+      ImGui.Text($" {glyph} {StageLabel(s, CountOf(s))}{(HasWork(s) || _sweep.IsDone(s) ? "" : "  (nothing to do)")}");
+      ImGui.PopStyleColor();
+    }
+
+    if (next is null)
+    {
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
+      ImGui.Text("Sweep complete - the board is worked.");
+      ImGui.PopStyleColor();
+      ImGui.SameLine();
+      if (ImGui.SmallButton("done###sweepDone")) _sweep.Cancel();
+      return;
+    }
+
+    var stage = next.Value;
+    var anyBusy = Plugin.AutoPinch.PinchBusy || Plugin.AutoPinch.HawkRunning
+      || Plugin.TriageOrchestrator.IsRunning || Plugin.DesynthOrchestrator.IsRunning
+      || Plugin.GcTurnIn.IsRunning;
+    var here = stage switch
+    {
+      SweepStage.Pinch => AtBellRoster(),
+      SweepStage.Desynth => true,
+      SweepStage.TurnIn => GcTurnInOrchestrator.AtExpertDelivery(),
+      _ => AtRetainerBell(),
+    };
+
+    if (anyBusy)
+    {
+      ImGui.TextDisabled("run in progress - the sweep waits...");
+    }
+    else if (!here)
+    {
+      ImGui.BeginDisabled(true);
+      ImGui.Button($"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire");
+      ImGui.EndDisabled();
+      ImGui.SameLine();
+      ImGui.TextDisabled($"walk to {PlaceName(stage)}");
+    }
+    else if (ImGui.Button($"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire"))
+    {
+      FireSweepStage(stage, listSet, vendSet, repriceEligible, churnSet);
+    }
+    ImGui.SameLine();
+    if (ImGui.SmallButton("cancel###sweepCancel")) _sweep.Cancel();
+  }
+
+  private static string StageLabel(SweepStage s, int count) => s switch
+  {
+    SweepStage.Pinch => "pinch the board",
+    SweepStage.BellRun => $"bell run ({count})",
+    SweepStage.Reprice => $"reprice ({count})",
+    SweepStage.Desynth => $"open desynthesis ({count})",
+    SweepStage.TurnIn => $"turn in ({count})",
+    _ => "?",
+  };
+
+  private static string PlaceName(SweepStage s) => s switch
+  {
+    SweepStage.Pinch => "a retainer bell (roster view)",
+    SweepStage.TurnIn => "your GC's Expert Delivery",
+    _ => "a retainer bell",
+  };
+
+  /// <summary>
+  /// Fires one sweep stage - exactly what the pile's own bulk button fires,
+  /// nothing more. Marked done AT FIRE TIME: the busy gate keeps the next
+  /// press honest, and a mid-run abort leaves the player exactly where the
+  /// pile buttons would (nothing new can go wrong between stages, because
+  /// between stages is just walking).
+  /// </summary>
+  private void FireSweepStage(SweepStage stage, List<RoutedItem> listSet,
+    List<RoutedItem> vendSet, List<InboxRow> repriceEligible, List<RoutedItem> churnSet)
+  {
+    switch (stage)
+    {
+      case SweepStage.Pinch:
+        Plugin.AutoPinch.StartPinchAllRetainers();
+        break;
+      case SweepStage.BellRun:
+        FireBellRun(listSet, vendSet);
+        break;
+      case SweepStage.Reprice:
+        foreach (var r in repriceEligible)
+        {
+          _actions[r.Item] = TriageAction.Reprice;
+          RecordTriageSignal(r.Item, LedgerPiles.ForTriage(r.Item.Result), TriageAction.Reprice);
+        }
+        ExecuteTriageBatch();
+        break;
+      case SweepStage.Desynth:
+        Plugin.DesynthPreview.OpenSalvageWithPileSelected();
+        break;
+      case SweepStage.TurnIn:
+        foreach (var item in churnSet)
+          RecordRoutedSignal(item, item.Pile); // bulk confirm = mass agreement
+        ExecuteChurn(churnSet);
+        break;
+    }
+    _sweep.MarkDone(stage);
+  }
+
+  private static unsafe bool AtBellRoster()
+    => GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out _);
 
   // ---- Fresh yields (yields bridge, minimal): melt output -> Hawk run ----
 
@@ -996,12 +1174,7 @@ internal sealed class LedgerWindow : Window
 
     ImGui.BeginDisabled(!atBell || total == 0);
     if (ImGui.Button($"Confirm bell run ({listSet.Count} list + {vendSet.Count} vendor)##bellrun{idSuffix}"))
-    {
-      var all = listSet.Concat(vendSet).ToList();
-      foreach (var item in all)
-        RecordRoutedSignal(item, item.Pile); // a bulk confirm is mass agreement
-      RunHawkForRouted(all);
-    }
+      FireBellRun(listSet, vendSet);
     ImGui.EndDisabled();
     if (!atBell && total > 0 && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
       ImGui.SetTooltip("Summon your retainers (any bell) to run these.");
@@ -1012,6 +1185,15 @@ internal sealed class LedgerWindow : Window
       ImGui.SameLine();
       ImGui.TextDisabled($"{pending} need a row click");
     }
+  }
+
+  /// <summary>The bell run's shared trigger: pile button and sweep deck fire the same set.</summary>
+  private void FireBellRun(List<RoutedItem> listSet, List<RoutedItem> vendSet)
+  {
+    var all = listSet.Concat(vendSet).ToList();
+    foreach (var item in all)
+      RecordRoutedSignal(item, item.Pile); // a bulk confirm is mass agreement
+    RunHawkForRouted(all);
   }
 
   private void BulkConfirmTriage(List<InboxRow> rows, TriageAction action, string verb)
