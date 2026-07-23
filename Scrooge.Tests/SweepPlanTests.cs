@@ -73,6 +73,33 @@ public class SweepPlanTests
   }
 
   [Fact]
+  public void Unmark_HandsAnAbortedStageBackToTheCursor()
+  {
+    // The 07-22 sweep lap: melt fired (marked done at fire time), the run died
+    // over an open bell, and the deck kept claiming the melt was done. Unmark
+    // reverts the fire-time promise so the cursor offers the stage again.
+    var plan = new SweepPlan();
+    plan.Start();
+    plan.MarkDone(SweepStage.Pinch);
+    plan.MarkDone(SweepStage.Desynth);
+    Assert.Equal(SweepStage.TurnIn,
+      plan.Next(s => s is SweepStage.Desynth or SweepStage.TurnIn));
+    plan.Unmark(SweepStage.Desynth);
+    Assert.Equal(SweepStage.Desynth,
+      plan.Next(s => s is SweepStage.Desynth or SweepStage.TurnIn));
+  }
+
+  [Fact]
+  public void Unmark_OfAnUnmarkedStage_IsANoOp()
+  {
+    var plan = new SweepPlan();
+    plan.Start();
+    plan.Unmark(SweepStage.Desynth);
+    Assert.False(plan.IsDone(SweepStage.Desynth));
+    Assert.Equal(SweepStage.Pinch, plan.Next(All));
+  }
+
+  [Fact]
   public void Next_NullWhenEverythingLeftIsDoneOrEmpty()
   {
     var plan = new SweepPlan();

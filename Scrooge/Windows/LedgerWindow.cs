@@ -101,6 +101,10 @@ internal sealed class LedgerWindow : Window
   // The one-button sweep's cursor (v0, zero intelligence - see SweepPlan).
   private readonly SweepPlan _sweep = new();
 
+  /// <summary>Last DesynthOrchestrator.AbortEpoch the deck has reconciled - an
+  /// unseen bump means the fired melt run DIED and the stage must un-mark.</summary>
+  private int _seenDesynthAbortEpoch;
+
   // --- Absorbed triage state (was TriageWindow) ---
   private List<PricingItem> _triageItems = [];
   private List<TriageFlag> _heldFlags = [];
@@ -561,6 +565,14 @@ internal sealed class LedgerWindow : Window
     // The pinch always has work: the board read is what makes the rest honest.
     bool HasWork(SweepStage s) => s == SweepStage.Pinch || CountOf(s) > 0;
 
+    // A melt run that died (timeout, occupied refusal, abort) must hand its
+    // stage back to the cursor - fire-time MarkDone was a promise, not a fact.
+    if (Plugin.DesynthOrchestrator.AbortEpoch != _seenDesynthAbortEpoch)
+    {
+      _seenDesynthAbortEpoch = Plugin.DesynthOrchestrator.AbortEpoch;
+      _sweep.Unmark(SweepStage.Desynth);
+    }
+
     ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
     var open = ImGui.CollapsingHeader("Sweep - the whole errand, one button###deckSweep",
       ImGuiTreeNodeFlags.DefaultOpen);
@@ -611,7 +623,10 @@ internal sealed class LedgerWindow : Window
     var here = stage switch
     {
       SweepStage.Pinch => AtBellRoster(),
-      SweepStage.Desynth => true,
+      // "Anywhere" was a lie: the game refuses Desynthesize while occupied
+      // (open bell, NPC talk). The 07-22 sweep lap died firing melt over the
+      // still-open bell - gate the button the same way StartRun now does.
+      SweepStage.Desynth => !DesynthOrchestrator.PlayerOccupied(out _),
       SweepStage.TurnIn => GcTurnInOrchestrator.AtExpertDelivery(),
       _ => AtRetainerBell(),
     };
@@ -626,7 +641,9 @@ internal sealed class LedgerWindow : Window
       ImGui.Button($"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire");
       ImGui.EndDisabled();
       ImGui.SameLine();
-      ImGui.TextDisabled($"walk to {PlaceName(stage)}");
+      ImGui.TextDisabled(stage == SweepStage.Desynth
+        ? "close the retainer bell first - the game refuses desynth while occupied"
+        : $"walk to {PlaceName(stage)}");
     }
     else if (ImGui.Button($"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire"))
     {
