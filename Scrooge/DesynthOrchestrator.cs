@@ -1,3 +1,4 @@
+using Dalamud.Game.ClientState.Conditions;
 using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
@@ -68,6 +69,42 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// <summary>True while a desynth run is in progress.</summary>
   internal bool IsRunning { get; private set; }
 
+  /// <summary>
+  /// Incremented every time a run closes WITHOUT completing (user abort, addon
+  /// timeout, watchdog). The sweep deck polls this to un-mark its Desynth stage -
+  /// a stage marked done at fire time must not stay "done" over a run that died.
+  /// </summary>
+  internal int AbortEpoch { get; private set; }
+
+  /// <summary>
+  /// The game refuses the Desynthesize command outright while the player is in
+  /// any occupied state - the 07-22 sweep lap died exactly this way (desynth
+  /// fired over an open retainer bell; SalvageDialog force-opened fine, then
+  /// the server answered "Unable to execute command while occupied" and the run
+  /// timed out). Force-openable UI is not permission: check BEFORE starting.
+  /// </summary>
+  internal static bool PlayerOccupied(out string why)
+  {
+    if (Svc.Condition[ConditionFlag.OccupiedSummoningBell])
+    {
+      why = "the retainer bell is open";
+      return true;
+    }
+    if (Svc.Condition[ConditionFlag.OccupiedInEvent]
+        || Svc.Condition[ConditionFlag.OccupiedInQuestEvent]
+        || Svc.Condition[ConditionFlag.Occupied]
+        || Svc.Condition[ConditionFlag.Occupied30]
+        || Svc.Condition[ConditionFlag.Occupied33]
+        || Svc.Condition[ConditionFlag.Occupied38]
+        || Svc.Condition[ConditionFlag.Occupied39])
+    {
+      why = "you're occupied (an NPC or window has you)";
+      return true;
+    }
+    why = "";
+    return false;
+  }
+
   internal DesynthOrchestrator()
   {
     _taskManager = new TaskManager
@@ -93,12 +130,25 @@ internal sealed class DesynthOrchestrator : IDisposable
   public void Dispose()
   {
     _taskManager.Abort();
+    Svc.Framework.Update -= WatchdogTick;
   }
 
   /// <summary>Resets state on error/abort.</summary>
   internal void Abort()
   {
     _taskManager.Abort();
+    CloseRunAborted("user-initiated abort or addon closed mid-run");
+  }
+
+  /// <summary>
+  /// The ONE way a run dies: every abort path (user, addon timeout, watchdog)
+  /// funnels here so the run row is stamped aborted, the busy flag drops, and
+  /// the sweep deck learns the stage did not finish. The 07-22 leak was this
+  /// hygiene existing in Abort() but not in the timeout paths - the TaskManager's
+  /// own TimeLimitMS cleared the queue and left IsRunning true forever.
+  /// </summary>
+  private void CloseRunAborted(string reason)
+  {
     IsRunning = false;
     _queue = null;
     Plugin.PinchRunLog.CancelRun();
@@ -108,8 +158,7 @@ internal sealed class DesynthOrchestrator : IDisposable
       {
         try
         {
-          Plugin.DesynthYieldStore?.AbortRun(runId, DateTimeOffset.UtcNow,
-            "user-initiated abort or addon closed mid-run");
+          Plugin.DesynthYieldStore?.AbortRun(runId, DateTimeOffset.UtcNow, reason);
         }
         catch (Exception ex)
         {
@@ -118,6 +167,31 @@ internal sealed class DesynthOrchestrator : IDisposable
       }
       Plugin.CurrentRun = null;
     }
+    AbortEpoch++;
+  }
+
+  /// <summary>
+  /// Backstop for the backstop: if the ECommons TaskManager's TimeLimitMS ever
+  /// fires (it clears the queue WITHOUT telling us), the run would otherwise
+  /// stay "in progress" forever and wedge every busy-gate in the plugin. A live
+  /// run's queue is never empty (each task enqueues its successor), so
+  /// IsRunning && !IsBusy can only mean the queue died. Subscribed at run
+  /// start; unsubscribes itself when the run is over.
+  /// </summary>
+  private void WatchdogTick(Dalamud.Plugin.Services.IFramework _)
+  {
+    if (!IsRunning)
+    {
+      Svc.Framework.Update -= WatchdogTick;
+      return;
+    }
+    if (_taskManager.IsBusy) return;
+
+    Svc.Framework.Update -= WatchdogTick;
+    Svc.Chat.PrintError(
+      "[Scrooge] Desynth run stalled (task queue died without finishing) - run closed. " +
+      "The melt pile is untouched; run it again when you're clear.");
+    CloseRunAborted("watchdog: task queue died without run end");
   }
 
   /// <summary>
@@ -134,6 +208,16 @@ internal sealed class DesynthOrchestrator : IDisposable
     if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageItemSelector", out _))
     {
       Svc.Chat.PrintError("[Scrooge] SalvageItemSelector not open. Talk to Mutamix first.");
+      return;
+    }
+
+    // The game refuses Desynthesize while occupied (the desynth windows still
+    // force-open, which is the trap). Refuse loudly HERE instead of timing out
+    // ten silent seconds into the run.
+    if (PlayerOccupied(out var why))
+    {
+      Svc.Chat.PrintError(
+        $"[Scrooge] Can't desynth while {why} - the game refuses the command. Close it and press Run again.");
       return;
     }
 
@@ -180,6 +264,17 @@ internal sealed class DesynthOrchestrator : IDisposable
 
     Plugin.PinchRunLog.StartNewRun(isDesynthRun: true);
     Plugin.PinchRunLog.SetTotalItems(items.Count);
+
+    // The TaskManager's own timeout must never RACE a task's internal deadline:
+    // on 07-22 both sat at 10s, TimeLimitMS won by milliseconds, and its queue
+    // wipe bypassed WaitForAddon's cleanup entirely. Keep the manager's limit
+    // comfortably above the longest per-task ceiling so the graceful path
+    // always fires first; the watchdog below catches anything that slips.
+    _taskManager.TimeLimitMS =
+      Math.Max(15000, Plugin.Configuration.ServerRoundTripCeilingMs + 5000);
+
+    Svc.Framework.Update -= WatchdogTick; // defensive: never double-subscribe
+    Svc.Framework.Update += WatchdogTick;
 
     _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
   }
@@ -536,13 +631,10 @@ internal sealed class DesynthOrchestrator : IDisposable
       {
         Svc.Chat.PrintError($"[Scrooge] Timeout waiting for {addonName}. Aborting.");
         // Don't call _taskManager.Abort() from inside a task — corrupts the
-        // tick loop. Just clear our state; the remaining enqueued tasks will
-        // see IsRunning == false and bail at their guard.
-        IsRunning = false;
-        _queue = null;
-        Plugin.PinchRunLog.CancelRun();
-        if (Plugin.CurrentRun != null && Plugin.CurrentRun.Mode == RunMode.Desynth)
-          Plugin.CurrentRun = null;
+        // tick loop. CloseRunAborted only clears state (and stamps the run row
+        // aborted, which the old inline cleanup forgot); the remaining enqueued
+        // tasks see IsRunning == false and bail at their guard.
+        CloseRunAborted($"timeout waiting for {addonName}");
         return true;
       }
       return false; // keep polling

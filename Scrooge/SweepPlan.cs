@@ -75,6 +75,14 @@ internal sealed class SweepPlan
 
   internal void MarkDone(SweepStage stage) => _done.Add(stage);
 
+  /// <summary>
+  /// Reverts a fire-time MarkDone after the fired run ABORTS: "done at fire
+  /// time" is a promise the orchestrator finished the errand, and a run that
+  /// died (timeout, occupied refusal, user abort) must put the stage back on
+  /// the cursor instead of letting the deck lie about completed work.
+  /// </summary>
+  internal void Unmark(SweepStage stage) => _done.Remove(stage);
+
   internal bool IsDone(SweepStage stage) => _done.Contains(stage);
 
   /// <summary>
