@@ -221,7 +221,12 @@ internal sealed class HawkWindow : Window
       var selected = _inventory.Where(i => i.Selected).Take(_availableSlots).ToList();
       var alwaysVendor = _inventory.Where(i => i.IsAlwaysVendor).ToList();
       var combined = selected.Concat(alwaysVendor).ToList();
-      Plugin.AutoPinch.StartHawkRun(combined);
+      // The navigating entry, not the assuming one: Go works from the sell
+      // view AND from the bare roster (it summons a retainer itself). The
+      // Fresh Yields hop opens this window without navigating anywhere, so
+      // Go must manage its own transition (07-22: current state vs expected
+      // state - the advisor owns the gap).
+      Plugin.AutoPinch.NavigateAndStartHawkRun(combined);
       IsOpen = false;
     }
     ImGui.EndDisabled();
