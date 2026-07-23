@@ -23,7 +23,9 @@ public class LedgerTests
     int ageDays = 1,
     Accord community = Accord.Unknown,
     int minSamples = 3,
-    int staleDays = 14) => new(
+    int staleDays = 14,
+    long? verdictWorth = null,
+    long? marketBid = null) => new(
       Lean: lean,
       LaneSampleCount: laneN,
       LaneSpread: spread,
@@ -32,7 +34,9 @@ public class LedgerTests
       EvidenceAgeDays: ageDays,
       LocalCommunityAccord: community,
       MinSamples: minSamples,
-      StaleDays: staleDays);
+      StaleDays: staleDays,
+      VerdictWorth: verdictWorth,
+      MarketBid: marketBid);
 
   // ---- Tier assignment across the evidence axes ----
 
@@ -152,6 +156,57 @@ public class LedgerTests
     // 0.3/day * 14 = 4.2 >= 3 => strong market, contradicts an off-market verdict.
     Assert.Equal(Accord.Disagree,
       LedgerConfidence.SalesVerdictAccord(Ev(recentSales: 0, velocity: 0.3)));
+  }
+
+  // ---- The market must OUTBID a priced worth, not just exist (Sam's 07-22
+  // ruling: "I already priced a red skillup at 100k... what else would that
+  // number be for"). The Archeo Kingdom Codex case, verbatim. ----
+
+  [Fact]
+  public void ArcheoKingdomCodex_StrongMarketLosesToPricedWorth_Agrees()
+  {
+    // Melt verdict worth ~100k (priced red skillup); DC pays ~11,499 on 9 sales.
+    // The market's bid is already in the score and loses 9x - old news, not a
+    // contradiction. The verdict stands Unanimous.
+    var e = Ev(recentSales: 9, velocity: null, verdictWorth: 100_000, marketBid: 11_499);
+    Assert.Equal(Accord.Agree, LedgerConfidence.SalesVerdictAccord(e));
+    Assert.Equal(ConfidenceTier.Unanimous, LedgerConfidence.BaseTier(e));
+  }
+
+  [Fact]
+  public void StrongMarket_OutbidsPricedWorth_StillContradicts()
+  {
+    // The same skillup against a 150k market: a REAL Alexander - the market
+    // outbids the priced worth, so the contradiction fires loudly.
+    var e = Ev(recentSales: 9, velocity: null, verdictWorth: 100_000, marketBid: 150_000);
+    Assert.Equal(Accord.Disagree, LedgerConfidence.SalesVerdictAccord(e));
+    Assert.Equal(ConfidenceTier.Contradicted, LedgerConfidence.BaseTier(e));
+  }
+
+  [Fact]
+  public void StrongMarket_NoPricedWorth_ContradictsAsBefore()
+  {
+    // Alexander stays alive: a verdict with no scored worth on record (triage
+    // rows, pre-value exits) is still contradicted by existence alone.
+    var e = Ev(recentSales: 13, velocity: null, marketBid: 999);
+    Assert.Equal(Accord.Disagree, LedgerConfidence.SalesVerdictAccord(e));
+  }
+
+  [Fact]
+  public void StrongMarket_WorthKnownButNoBidNumber_Agrees()
+  {
+    // Sales volume with no price witness cannot outbid a known worth - the
+    // market has to bring a NUMBER to the argument, not just foot traffic.
+    var e = Ev(recentSales: 9, velocity: null, verdictWorth: 100_000);
+    Assert.Equal(Accord.Agree, LedgerConfidence.SalesVerdictAccord(e));
+  }
+
+  [Fact]
+  public void StrongMarket_BidEqualToWorth_DoesNotOutbid()
+  {
+    // A tie is not an outbid; the player's priced decision holds the lane.
+    var e = Ev(recentSales: 9, velocity: null, verdictWorth: 100_000, marketBid: 100_000);
+    Assert.Equal(Accord.Agree, LedgerConfidence.SalesVerdictAccord(e));
   }
 
   // ---- Override-count refinement shifts a tier ----

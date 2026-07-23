@@ -357,6 +357,21 @@ internal sealed class LedgerWindow : Window
     };
     var recentSales = inputs.CommunitySampleCount > 0 ? inputs.CommunitySampleCount
       : inputs.LastSale is not null ? 1 : 0;
+    // The market-must-outbid axis (Sam's 07-22 ruling): the verdict defends the
+    // worth the router actually scored it at; the market's bid is the List value
+    // as weighed (own sale or community median). Null worth (pre-value exits,
+    // Review) falls back to the existence rule.
+    var verdictWorth = verdict.Scores is { } sc
+      ? verdict.Exit switch
+      {
+        RoutingExit.Gc => sc.Gc,
+        RoutingExit.Desynth => sc.Melt,
+        RoutingExit.Vendor => sc.Vendor,
+        RoutingExit.List => sc.List,
+        _ => null,
+      }
+      : null;
+    var marketBid = verdict.Scores?.List ?? inputs.CommunityMedian;
     var evidence = new LedgerConfidence.Evidence(
       Lean: lean,
       LaneSampleCount: Math.Max(inputs.CommunitySampleCount, inputs.LastSale is not null ? 1 : 0),
@@ -366,7 +381,9 @@ internal sealed class LedgerWindow : Window
       EvidenceAgeDays: inputs.MarketLastSaleDays ?? 0,
       LocalCommunityAccord: Accord.Unknown,
       MinSamples: cfg.CommunityMinSamples,
-      StaleDays: 14);
+      StaleDays: 14,
+      VerdictWorth: verdictWorth,
+      MarketBid: marketBid);
     var overrides = _overrideCounts.GetValueOrDefault(verdict.Exit.ToString());
     return LedgerConfidence.Tier(evidence, overrides);
   }

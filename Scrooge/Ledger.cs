@@ -184,7 +184,9 @@ internal static class LedgerConfidence
     int EvidenceAgeDays,
     Accord LocalCommunityAccord,
     int MinSamples,
-    int StaleDays);
+    int StaleDays,
+    long? VerdictWorth = null,
+    long? MarketBid = null);
 
   /// <summary>
   /// Whether the recent-sales evidence is a STRONG market witness: enough settled
@@ -199,21 +201,37 @@ internal static class LedgerConfidence
   /// rule. The market evidence is ASYMMETRIC by verdict direction:
   ///
   /// - OFF-market (vendor/pull/melt/churn): a strong live market CONTRADICTS the
-  ///   verdict (Alexander). A weak or ABSENT market AGREES with it - "nobody buys
-  ///   this" is exactly why it should come off the board, so the vendor-trash pile
-  ///   is confident by construction (this is what makes the bulk quick-pick useful).
+  ///   verdict (Alexander) - but only by OUTBIDDING it (Sam's 07-22 ruling: a
+  ///   verdict whose scored worth the player already priced, e.g. a 100k red
+  ///   skillup, is not re-litigated by an 11k market that merely exists; the
+  ///   market gets a voice, not a veto). No scored worth on record = the old
+  ///   existence rule, so triage rows and pre-value exits keep the full
+  ///   Alexander guard. A weak or ABSENT market AGREES with the verdict -
+  ///   "nobody buys this" is exactly why it should come off the board, so the
+  ///   vendor-trash pile is confident by construction.
   /// - ON-market (list/reprice): a live market AGREES; a demonstrably DEAD market
   ///   (known ~0 velocity, no recent sales) CONTRADICTS - a listing just sits. No
   ///   market evidence at all is Unknown, because you cannot confidently list into a
   ///   market you have never measured.
   /// - Neutral (review/watch): makes no market claim - Unknown.
   /// </summary>
+  /// <summary>
+  /// Whether the market's bid actually BEATS the verdict's own scored worth.
+  /// With no worth on record the market wins by default (the pre-ruling
+  /// existence behavior). With a worth on record, the market must bring a
+  /// number and that number must exceed it - a tie or a missing price witness
+  /// is not an outbid, and the player's priced decision holds the lane.
+  /// </summary>
+  internal static bool MarketOutbidsWorth(in Evidence e)
+    => e.VerdictWorth is not long worth
+       || (e.MarketBid is long bid && bid > worth);
+
   internal static Accord SalesVerdictAccord(in Evidence e)
   {
     switch (e.Lean)
     {
       case VerdictLean.OffMarket:
-        return StrongMarket(e) ? Accord.Disagree : Accord.Agree;
+        return StrongMarket(e) && MarketOutbidsWorth(e) ? Accord.Disagree : Accord.Agree;
       case VerdictLean.OnMarket:
         if (e.VelocityPerDay is double v)
           return v <= DeadVelocityPerDay && e.RecentSalesCount == 0 ? Accord.Disagree : Accord.Agree;
