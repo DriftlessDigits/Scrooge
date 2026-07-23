@@ -236,22 +236,12 @@ internal sealed class HawkRunOrchestrator
   }
 
   /// <summary>
-  /// Entry point for hawk runs. Called by HawkWindow when user clicks Go.
-  /// Assumes we're already in the retainer's sell view (OpenHawkView navigated there).
-  /// Processes items one at a time, swapping retainers when full.
-  /// </summary>
-  internal unsafe void StartHawkRun(List<HawkWindow.HawkItem> items)
-  {
-    if (_taskManager.IsBusy || items.Count == 0)
-      return;
-
-    StartHawkRunCore(items);
-  }
-
-  /// <summary>
   /// The run start proper, minus the TaskManager busy guard - callable from the
   /// tail of the sell-view navigation queue (where the manager is by definition
   /// busy running the very task that arrived here). All fail-closed checks stay.
+  /// Every caller arrives via NavigateAndStartHawkRun - there is no entry that
+  /// ASSUMES the sell view anymore (07-22: the old assuming entry was the Fresh
+  /// Yields hop's silent trap).
   /// </summary>
   private unsafe void StartHawkRunCore(List<HawkWindow.HawkItem> items)
   {

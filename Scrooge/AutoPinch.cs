@@ -641,8 +641,6 @@ internal sealed class AutoPinch : Window, IDisposable
   /// </summary>
   internal void StartPinchAllRetainers() => PinchAllRetainers();
 
-  internal void StartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.StartHawkRun(items);
-
   internal void NavigateAndStartHawkRun(List<HawkWindow.HawkItem> items) => _hawkOrchestrator.NavigateAndStartHawkRun(items);
 
   /// <summary>Iterates all items in the current retainer's sell list and queues them for processing.</summary>
