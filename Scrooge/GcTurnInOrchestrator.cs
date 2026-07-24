@@ -48,6 +48,20 @@ internal sealed class GcTurnInOrchestrator
   private int _itemsUntilLongPause;
 
   /// <summary>
+  /// The turn-in's declared expected state (spine): the player must be at their
+  /// GC's Expert Delivery window. It refuses when they are not - the endgame
+  /// rung for this gap is Port-on-click ("port me as close as you can", spec
+  /// 2026-07-23), but the teleport is not built yet, so today it stays Refuse.
+  /// </summary>
+  internal static readonly ExpectedState TurnInExpected = new("turn in",
+    new SpineExpectation(Spine.Facet.Place, "to be at your GC's Expert Delivery", Spine.Rung.Refuse));
+
+  private static System.Collections.Generic.List<FacetReading> ReadTurnInState() => new()
+  {
+    SpineSensors.AtExpertDelivery(),
+  };
+
+  /// <summary>
   /// The shared run-host lifecycle: state, progress (done/total), value (seals),
   /// self-calibrating ETA, and the stall terminal. This orchestrator was the
   /// accidental prototype of the contract (the 0129f13 Progress tuple); it now
@@ -145,9 +159,10 @@ internal sealed class GcTurnInOrchestrator
     if (_taskManager.IsBusy || IsRunning || items.Count == 0)
       return;
 
-    if (!AtExpertDelivery())
+    var eval = SpineEvaluator.Evaluate(TurnInExpected, ReadTurnInState());
+    if (!eval.CanFire)
     {
-      Svc.Chat.PrintError("[Scrooge] Open your GC's Expert Delivery window first (personnel officer).");
+      Svc.Chat.PrintError($"[Scrooge] {eval.Message} (open it at the personnel officer)");
       return;
     }
 

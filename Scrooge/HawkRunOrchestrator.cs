@@ -34,6 +34,38 @@ internal sealed class HawkRunOrchestrator
   /// <summary>The shared run-host lifecycle (state, progress, value, stall terminal).</summary>
   private readonly RunLifecycle _run = new(TimeSpan.FromSeconds(45));
 
+  /// <summary>
+  /// The bell run's declared expected state (spine), in report order:
+  /// <list type="bullet">
+  ///   <item><b>View</b> - the retainer sell view. If it is closed but the
+  ///     player is at the bell roster, the advisor SELF-NAVIGATES (the Hawk
+  ///     Wares hop) - rung 1, the model the whole ladder is named after.</item>
+  ///   <item><b>Place</b> - a retainer bell, evidenced by EITHER the bell roster
+  ///     (RetainerList) OR an engaged retainer's sell view (RetainerSellList),
+  ///     since the game closes the roster once a retainer is summoned. If the
+  ///     player is not even at a bell there is nothing to navigate from, so this
+  ///     WalkThere gap wins over the self-navigable one and the run refuses,
+  ///     naming the walk.</item>
+  /// </list>
+  /// Truth table: sell view open -> Fire (View met, Place met via the sell view);
+  /// roster open but sell view closed -> SelfNavigate (View unmet, Place met via
+  /// the roster); neither -> WalkThere refusal naming the walk.
+  /// </summary>
+  internal static readonly ExpectedState ListExpected = new("list",
+    new SpineExpectation(Spine.Facet.View, "the retainer sell view open", Spine.Rung.SelfNavigate),
+    new SpineExpectation(Spine.Facet.Place, "to be at a retainer bell", Spine.Rung.WalkThere));
+
+  private static List<FacetReading> ReadListState() => new()
+  {
+    SpineSensors.AddonReady("RetainerSellList", "the sell view isn't open"),
+    // Place is evidenced by EITHER the bell roster (RetainerList, idle) OR a
+    // summoned retainer's sell view (RetainerSellList) - the game closes the
+    // roster once a retainer is engaged, so requiring RetainerList alone would
+    // read "not at a bell" from inside the very sell view the run fires from.
+    SpineSensors.AnyAddonReady(
+      new[] { "RetainerList", "RetainerSellList" }, "you're not at a retainer bell"),
+  };
+
   // M4 inventory-scope zombie sweep: the full tradeable-bag container observed at
   // run start, and the retainers this run attributed lane_held flags to. The sweep
   // fires ONLY at natural completion (full observation); every partial exit
@@ -174,14 +206,26 @@ internal sealed class HawkRunOrchestrator
       return;
     }
 
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out _))
+    // Walk the transition ladder through the one evaluator: already in the sell
+    // view -> fire; at the bell roster -> self-navigate the Hawk Wares hop;
+    // nowhere near a bell -> refuse loudly, naming the walk. This is the same
+    // two-branch behavior the method always had, now spoken in the spine's
+    // vocabulary instead of an ad-hoc addon probe.
+    var eval = SpineEvaluator.Evaluate(ListExpected, ReadListState());
+    switch (eval.Rung)
     {
-      StartHawkRunCore(items);
-      return;
+      case Spine.Rung.Fire:
+        StartHawkRunCore(items);
+        break;
+      case Spine.Rung.SelfNavigate:
+        // EnqueueNavigateToSellView still owns its own deeper refusals (all
+        // retainers 20/20, list not ready) - the spine got us to the roster.
+        EnqueueNavigateToSellView(_ => StartHawkRunCore(items));
+        break;
+      default:
+        Svc.Chat.PrintError($"[Scrooge] {eval.Message}");
+        break;
     }
-
-    if (!EnqueueNavigateToSellView(_ => StartHawkRunCore(items)))
-      return; // EnqueueNavigateToSellView already said why
   }
 
   /// <summary>
