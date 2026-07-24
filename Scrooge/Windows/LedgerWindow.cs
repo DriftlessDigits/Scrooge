@@ -102,8 +102,12 @@ internal sealed class LedgerWindow : Window
   private readonly SweepPlan _sweep = new();
 
   /// <summary>Last DesynthOrchestrator.AbortEpoch the deck has reconciled - an
-  /// unseen bump means the fired melt run DIED and the stage must un-mark.</summary>
+  /// unseen bump means the fired melt run DIED and the stage must HALT.</summary>
   private int _seenDesynthAbortEpoch;
+
+  /// <summary>The persisted sweep has been rehydrated (or retired) - done once,
+  /// lazily, on the first deck draw when every orchestrator is constructed.</summary>
+  private bool _sweepRestored;
 
   // --- Absorbed triage state (was TriageWindow) ---
   private List<PricingItem> _triageItems = [];
@@ -594,12 +598,29 @@ internal sealed class LedgerWindow : Window
     // The pinch always has work: the board read is what makes the rest honest.
     bool HasWork(SweepStage s) => s == SweepStage.Pinch || CountOf(s) > 0;
 
-    // A melt run that died (timeout, occupied refusal, abort) must hand its
-    // stage back to the cursor - fire-time MarkDone was a promise, not a fact.
+    // Rehydrate a persisted in-progress sweep once, here (not in the ctor):
+    // every orchestrator is constructed by first draw, so the abort-epoch
+    // baseline and the staleness chat notice are both safe.
+    if (!_sweepRestored)
+    {
+      _sweepRestored = true;
+      RestoreSweep();
+    }
+
+    // A melt run that died (timeout, occupied refusal, abort) HALTS the sweep -
+    // it holds its place over the corpse and names the gap, instead of quietly
+    // rolling the stage back onto the cursor. Only a sweep-fired melt (Desynth
+    // marked done at fire time) halts; a stray desynth abort is ignored.
     if (Plugin.DesynthOrchestrator.AbortEpoch != _seenDesynthAbortEpoch)
     {
       _seenDesynthAbortEpoch = Plugin.DesynthOrchestrator.AbortEpoch;
-      _sweep.Unmark(SweepStage.Desynth);
+      if (_sweep.Active && !_sweep.Halted && _sweep.IsDone(SweepStage.Desynth))
+      {
+        var reason = Plugin.DesynthOrchestrator.LastAbortReason ?? "the run stopped";
+        _sweep.Halt(SweepHalt.Plainly(SweepStage.Desynth, "Melt", reason,
+          "Clear it and Resume - the melt rescans the bags from where they are now."));
+        PersistSweep();
+      }
     }
 
     ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
@@ -613,7 +634,10 @@ internal sealed class LedgerWindow : Window
     if (!_sweep.Active)
     {
       if (ImGui.Button("Start sweep###sweepStart"))
+      {
         _sweep.Start();
+        PersistSweep();
+      }
       ImGui.SameLine();
       ImGui.TextDisabled(
         $"pinch -> {listSet.Count + vendSet.Count} bell -> {repriceEligible.Count} reprice -> {meltCount} melt -> {churnSet.Count} turn in");
@@ -626,7 +650,9 @@ internal sealed class LedgerWindow : Window
     foreach (var s in SweepPlan.Order)
     {
       var isNext = next is SweepStage n && n == s;
-      var (glyph, color) = _sweep.IsDone(s) ? ("x", ScroogeColors.Earned)
+      var isHalted = _sweep.HaltStage is SweepStage h && h == s;
+      var (glyph, color) = isHalted ? ("!", ScroogeColors.Spent)
+        : _sweep.IsDone(s) ? ("x", ScroogeColors.Earned)
         : isNext ? (">", ScroogeColors.Amber)
         : HasWork(s) ? (".", ScroogeColors.Muted)
         : ("-", ScroogeColors.Muted);
@@ -635,13 +661,38 @@ internal sealed class LedgerWindow : Window
       ImGui.PopStyleColor();
     }
 
+    // Halted: never offer the next stage past a corpse. Name the gap and offer
+    // Resume, which re-fires the dead stage from its own rescan.
+    if (_sweep.CurrentHalt is SweepHalt halt)
+    {
+      ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Spent);
+      ImGui.TextWrapped(halt.Message);
+      ImGui.PopStyleColor();
+      if (ImGui.Button("Resume###sweepResume"))
+      {
+        _sweep.Resume();
+        PersistSweep();
+      }
+      ImGui.SameLine();
+      if (ImGui.SmallButton("cancel###sweepCancelHalt"))
+      {
+        _sweep.Cancel();
+        PersistSweep();
+      }
+      return;
+    }
+
     if (next is null)
     {
       ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Earned);
       ImGui.Text("Sweep complete - the board is worked.");
       ImGui.PopStyleColor();
       ImGui.SameLine();
-      if (ImGui.SmallButton("done###sweepDone")) _sweep.Cancel();
+      if (ImGui.SmallButton("done###sweepDone"))
+      {
+        _sweep.Cancel();
+        PersistSweep();
+      }
       return;
     }
 
@@ -679,7 +730,52 @@ internal sealed class LedgerWindow : Window
       FireSweepStage(stage, listSet, vendSet, repriceEligible, churnSet);
     }
     ImGui.SameLine();
-    if (ImGui.SmallButton("cancel###sweepCancel")) _sweep.Cancel();
+    if (ImGui.SmallButton("cancel###sweepCancel"))
+    {
+      _sweep.Cancel();
+      PersistSweep();
+    }
+  }
+
+  /// <summary>
+  /// Writes the sweep's HELD PLACE to the durable config after a transition
+  /// (start, fire, halt, resume, cancel, complete). Called only on discrete
+  /// events - never per frame - so the 07-22 lost-cursor reload cannot recur.
+  /// </summary>
+  private void PersistSweep()
+  {
+    Plugin.Configuration.Sweep = _sweep.Export();
+    Plugin.Configuration.Save();
+  }
+
+  /// <summary>
+  /// Rehydrates a persisted in-progress sweep on first draw, unless it is too
+  /// old to trust: a sweep past the staleness ceiling is retired loudly (a
+  /// half-done sweep from hours ago is history, not a sweep), never restored
+  /// onto a stale world.
+  /// </summary>
+  private void RestoreSweep()
+  {
+    var saved = Plugin.Configuration.Sweep;
+    if (saved is null || !saved.Active) return;
+
+    var ceiling = TimeSpan.FromHours(Math.Max(1, Plugin.Configuration.SweepStalenessCeilingHours));
+    var startedAt = saved.StartedAtUnix > 0
+      ? DateTimeOffset.FromUnixTimeSeconds(saved.StartedAtUnix)
+      : (DateTimeOffset?)null;
+
+    if (startedAt is null || SweepPlan.IsStale(startedAt.Value, DateTimeOffset.UtcNow, ceiling))
+    {
+      Plugin.Configuration.Sweep = null;
+      Plugin.Configuration.Save();
+      Svc.Chat.PrintError(
+        "[Scrooge] A stale sweep from a previous session was retired - a half-done sweep " +
+        "from hours ago is history, not a sweep. Start a fresh one when you're ready.");
+      return;
+    }
+
+    _sweep.Restore(saved);
+    _seenDesynthAbortEpoch = Plugin.DesynthOrchestrator.AbortEpoch;
   }
 
   private static string StageLabel(SweepStage s, int count) => s switch
@@ -735,6 +831,7 @@ internal sealed class LedgerWindow : Window
         break;
     }
     _sweep.MarkDone(stage);
+    PersistSweep();
   }
 
   private static unsafe bool AtBellRoster()

@@ -421,6 +421,25 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public bool AutoVendorSellOnPriceCheckFail { get; set; } = false;
 
+  // --- Sweep run model (WALK unit 2) ---
+
+  /// <summary>
+  /// The in-progress sweep's HELD PLACE, persisted so a reload restores the same
+  /// stages done / current / halted (the 07-22 lost-cursor reload is the ancestor
+  /// bug). Null = no sweep underway. Written on every sweep transition, read once
+  /// on first draw; retired (nulled) rather than restored if past the staleness
+  /// ceiling below.
+  /// </summary>
+  public SweepState? Sweep { get; set; }
+
+  /// <summary>
+  /// How old a persisted sweep may be before restore RETIRES it instead of
+  /// trusting it - a half-done sweep from hours ago is history, not a sweep.
+  /// Seed a few hours; receipts never tune this (it is a sanity ceiling, not a
+  /// cadence knob). Floored at 1h on read.
+  /// </summary>
+  public int SweepStalenessCeilingHours { get; set; } = 4;
+
   public void Save()
   {
     Plugin.PluginInterface.SavePluginConfig(this);
