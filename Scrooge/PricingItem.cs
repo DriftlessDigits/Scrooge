@@ -118,6 +118,16 @@ internal class PricingItem
   /// <summary>The final price that was applied (if Result is Applied or Listed).</summary>
   public int? FinalPrice { get; set; }
 
+  /// <summary>
+  /// The candidate price a floor/minimum guard REJECTED (lane path) - kept so
+  /// the narration can render the number that actually lost the comparison.
+  /// FinalPrice is nulled on rejection, and MbPrice is the board read, which on
+  /// the lane path can sit far ABOVE the rejected lane candidate - rendering it
+  /// produced the Mossy Stone Daggers lie ("MB/ea at 121 gil &lt; 21 gil vendor").
+  /// Null on the board path, where MbPrice IS the compared operand.
+  /// </summary>
+  public int? RejectedPrice { get; set; }
+
   /// <summary>When true, cap and undercut price guards are skipped. Set by triage reprice. Also skips the lane decision — the human wins.</summary>
   public bool BypassPriceGuards { get; set; }
 
