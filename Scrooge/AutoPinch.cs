@@ -31,6 +31,21 @@ namespace Scrooge;
 /// </summary>
 internal sealed class AutoPinch : Window, IDisposable
 {
+  /// <summary>
+  /// The pinch's declared expected state (spine): the bell roster (RetainerList)
+  /// must be open. Unmet is a WalkThere gap - the sweep deck is what names the
+  /// walk. The bell-roster pinch keeps its historical SILENT no-op when it is
+  /// not at the roster (this routes the same check through the one evaluator and
+  /// gives the executor a declared contract; it does not add a chat line).
+  /// </summary>
+  internal static readonly ExpectedState PinchExpected = new("pinch",
+    new SpineExpectation(Spine.Facet.Place, "to be at a retainer bell", Spine.Rung.WalkThere));
+
+  private static unsafe List<FacetReading> ReadPinchState() => new()
+  {
+    SpineSensors.AddonReady("RetainerList", "you're not at a retainer bell"),
+  };
+
   private readonly TaskManager _taskManager;
   private readonly Random _random = new Random();
   internal ItemPricingPipeline Pricing => _pricing;
@@ -354,6 +369,12 @@ internal sealed class AutoPinch : Window, IDisposable
   private unsafe void PinchAllRetainers()
   {
     if (_taskManager.IsBusy)
+      return;
+
+    // Spine gate: the pinch expects the bell roster. Routed through the one
+    // evaluator so the contract is declared and honest; the body's addon fetch
+    // below is now just the pointer read (the same condition the spine checked).
+    if (!SpineEvaluator.Evaluate(PinchExpected, ReadPinchState()).CanFire)
       return;
 
     if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerList", out var addon) && GenericHelpers.IsAddonReady(addon))

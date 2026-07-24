@@ -28,6 +28,24 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// </summary>
   private const int MinFreeInventorySlots = 5;
 
+  /// <summary>
+  /// The melt's declared expected state (spine). Two facets, in report order:
+  /// the salvage window must be open, and the player must not be occupied - the
+  /// game refuses Desynthesize otherwise. Both are dead ends the advisor cannot
+  /// self-clear (it does not walk you to Mutamix, and it will not close your
+  /// bell for you), so both refuse loudly, naming the gap.
+  /// </summary>
+  internal static readonly ExpectedState MeltExpected = new("melt",
+    new SpineExpectation(Spine.Facet.View, "the desynthesis window open", Spine.Rung.Refuse),
+    new SpineExpectation(Spine.Facet.Occupancy, "to be un-occupied", Spine.Rung.Refuse));
+
+  /// <summary>Reads the melt's expected-state facets from live game sensors.</summary>
+  private static System.Collections.Generic.List<FacetReading> ReadMeltState() => new()
+  {
+    SpineSensors.AddonReady("SalvageItemSelector", "it isn't open (talk to Mutamix first)"),
+    SpineSensors.Unoccupied(),
+  };
+
   private readonly TaskManager _taskManager;
   private readonly Random _random = new();
 
@@ -205,19 +223,15 @@ internal sealed class DesynthOrchestrator : IDisposable
     if (IsRunning || _taskManager.IsBusy || items.Count == 0)
       return;
 
-    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageItemSelector", out _))
+    // The salvage window must be open and the player un-occupied (the game
+    // refuses Desynthesize otherwise - the desynth windows still force-open,
+    // which is the trap). Both flow through the one spine evaluation now, so
+    // the refusal names the gap in the same vocabulary every executor uses,
+    // instead of timing out ten silent seconds into the run.
+    var eval = SpineEvaluator.Evaluate(MeltExpected, ReadMeltState());
+    if (!eval.CanFire)
     {
-      Svc.Chat.PrintError("[Scrooge] SalvageItemSelector not open. Talk to Mutamix first.");
-      return;
-    }
-
-    // The game refuses Desynthesize while occupied (the desynth windows still
-    // force-open, which is the trap). Refuse loudly HERE instead of timing out
-    // ten silent seconds into the run.
-    if (PlayerOccupied(out var why))
-    {
-      Svc.Chat.PrintError(
-        $"[Scrooge] Can't desynth while {why} - the game refuses the command. Close it and press Run again.");
+      Svc.Chat.PrintError($"[Scrooge] {eval.Message}");
       return;
     }
 
