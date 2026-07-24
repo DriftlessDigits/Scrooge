@@ -95,6 +95,13 @@ internal sealed class DesynthOrchestrator : IDisposable
   internal int AbortEpoch { get; private set; }
 
   /// <summary>
+  /// The reason string from the most recent <see cref="CloseRunAborted"/> - the
+  /// sweep deck reads it when the epoch bumps to NAME the gap in the halt banner
+  /// ("Melt halted - {reason}"). Null until the first abort of the session.
+  /// </summary>
+  internal string? LastAbortReason { get; private set; }
+
+  /// <summary>
   /// The game refuses the Desynthesize command outright while the player is in
   /// any occupied state - the 07-22 sweep lap died exactly this way (desynth
   /// fired over an open retainer bell; SalvageDialog force-opened fine, then
@@ -169,6 +176,7 @@ internal sealed class DesynthOrchestrator : IDisposable
   {
     IsRunning = false;
     _queue = null;
+    LastAbortReason = reason;
     Plugin.PinchRunLog.CancelRun();
     if (Plugin.CurrentRun != null && Plugin.CurrentRun.Mode == RunMode.Desynth)
     {

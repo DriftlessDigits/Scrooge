@@ -1,3 +1,4 @@
+using System;
 using Scrooge;
 using Xunit;
 
@@ -121,5 +122,175 @@ public class SweepPlanTests
     plan.Start();
     // A fresh sweep forgets the last one's progress.
     Assert.Equal(SweepStage.Pinch, plan.Next(All));
+  }
+
+  // ---- HALT-NAME-RESUME (WALK unit 2) ----
+
+  [Fact]
+  public void Halt_HoldsThePlace_NeverOffersPastACorpse()
+  {
+    // The melt fires (marked done at fire time) and dies mid-run. Halt holds the
+    // place: the completed pinch stays done, but the deck must NOT offer the next
+    // stage past the corpse - Next returns null while halted.
+    var plan = new SweepPlan();
+    plan.Start();
+    plan.MarkDone(SweepStage.Pinch);
+    plan.MarkDone(SweepStage.Desynth);
+    plan.Halt(SweepHalt.Plainly(SweepStage.Desynth, "Melt", "the run stopped", "Resume."));
+
+    Assert.True(plan.Halted);
+    Assert.Equal(SweepStage.Desynth, plan.HaltStage);
+    Assert.True(plan.IsDone(SweepStage.Pinch)); // completion marks held
+    Assert.False(plan.IsDone(SweepStage.Desynth)); // the corpse is not "done"
+    Assert.Null(plan.Next(All)); // never past the corpse
+  }
+
+  [Fact]
+  public void Resume_ReOffersTheHaltedStageOnly_NeverFromTheTop()
+  {
+    // Resume re-fires the dead stage from its own rescan: the halted stage becomes
+    // current again, and the completed pinch is NEVER re-offered (a re-running
+    // pinch is the market-pressure shape the cadence gate exists to prevent).
+    var plan = new SweepPlan();
+    plan.Start();
+    plan.MarkDone(SweepStage.Pinch);
+    plan.MarkDone(SweepStage.BellRun);
+    plan.MarkDone(SweepStage.Reprice);
+    plan.MarkDone(SweepStage.Desynth);
+    plan.Halt(SweepHalt.Plainly(SweepStage.Desynth, "Melt", "the run stopped", "Resume."));
+
+    plan.Resume();
+    Assert.False(plan.Halted);
+    // Only the halted stage is re-offered; the done stages stay buried.
+    Assert.Equal(SweepStage.Desynth, plan.Next(All));
+    Assert.True(plan.IsDone(SweepStage.Pinch));
+    Assert.True(plan.IsDone(SweepStage.BellRun));
+  }
+
+  [Fact]
+  public void Resume_SkipsTheHaltedStageWhenItsRescanFindsNoWork()
+  {
+    // The melt's own rescan (fire-time work list) is now empty - Resume must not
+    // wedge on an empty stage; the cursor skips it forward like any empty stage.
+    var plan = new SweepPlan();
+    plan.Start();
+    plan.MarkDone(SweepStage.Pinch);
+    plan.MarkDone(SweepStage.Desynth);
+    plan.Halt(SweepHalt.Plainly(SweepStage.Desynth, "Melt", "the run stopped", "Resume."));
+    plan.Resume();
+
+    // Desynth has no work now, TurnIn does.
+    Assert.Equal(SweepStage.TurnIn, plan.Next(s => s == SweepStage.TurnIn));
+  }
+
+  [Fact]
+  public void HaltVsUnmark_QuietRevertVersusLoudStop()
+  {
+    // Unmark: quiet revert - stage straight back onto the cursor, no halt.
+    var quiet = new SweepPlan();
+    quiet.Start();
+    quiet.MarkDone(SweepStage.Pinch);
+    quiet.MarkDone(SweepStage.BellRun);
+    quiet.MarkDone(SweepStage.Reprice);
+    quiet.MarkDone(SweepStage.Desynth);
+    quiet.Unmark(SweepStage.Desynth);
+    Assert.False(quiet.Halted);
+    Assert.Equal(SweepStage.Desynth, quiet.Next(All)); // offered immediately
+
+    // Halt: loud stop - same un-mark of the stage, but Next is blocked until Resume.
+    var loud = new SweepPlan();
+    loud.Start();
+    loud.MarkDone(SweepStage.Pinch);
+    loud.MarkDone(SweepStage.BellRun);
+    loud.MarkDone(SweepStage.Reprice);
+    loud.MarkDone(SweepStage.Desynth);
+    loud.Halt(SweepHalt.Plainly(SweepStage.Desynth, "Melt", "the run stopped", "Resume."));
+    Assert.True(loud.Halted);
+    Assert.False(loud.IsDone(SweepStage.Desynth)); // both revert the stage mark
+    Assert.Null(loud.Next(All)); // but Halt blocks the cursor
+  }
+
+  [Fact]
+  public void Halt_NamesTheGap_PlainlyAndInSpineVocabulary()
+  {
+    // Plainly: a death that is not a spine facet (server timeout) - what died and
+    // what would clear it.
+    var plain = SweepHalt.Plainly(SweepStage.Desynth, "Melt",
+      "timeout waiting for SalvageResult", "Clear it and Resume.");
+    Assert.Equal(SweepStage.Desynth, plain.Stage);
+    Assert.Contains("Melt halted", plain.Message);
+    Assert.Contains("timeout waiting for SalvageResult", plain.Message);
+    Assert.Contains("Resume", plain.Message);
+
+    // FromSpine: a death whose reason maps to a declared expectation borrows the
+    // evaluation's "expected X, but Y" message verbatim.
+    var eval = SpineEvaluator.Evaluate(
+      new ExpectedState("melt",
+        new SpineExpectation(Spine.Facet.Occupancy, "an un-occupied player", Spine.Rung.Refuse)),
+      new[] { new FacetReading(false, "the retainer bell is open") });
+    var spun = SweepHalt.FromSpine(SweepStage.Desynth, eval);
+    Assert.Equal(eval.Message, spun.Message);
+    Assert.Equal(SweepStage.Desynth, spun.Stage);
+  }
+
+  // ---- Persistence: the held place survives a reload ----
+
+  [Fact]
+  public void ExportRestore_RoundTripsTheHeldPlace()
+  {
+    var started = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+    var plan = new SweepPlan();
+    plan.Start(started);
+    plan.MarkDone(SweepStage.Pinch);
+    plan.MarkDone(SweepStage.BellRun);
+    plan.MarkDone(SweepStage.Desynth);
+    plan.Halt(SweepHalt.Plainly(SweepStage.Desynth, "Melt", "the run stopped", "Resume."));
+
+    var state = plan.Export();
+
+    var restored = new SweepPlan();
+    restored.Restore(state);
+
+    Assert.True(restored.Active);
+    Assert.True(restored.IsDone(SweepStage.Pinch));
+    Assert.True(restored.IsDone(SweepStage.BellRun));
+    Assert.False(restored.IsDone(SweepStage.Desynth)); // halted, not done
+    Assert.True(restored.Halted);
+    Assert.Equal(SweepStage.Desynth, restored.HaltStage);
+    Assert.Equal(plan.CurrentHalt!.Message, restored.CurrentHalt!.Message);
+    Assert.Equal(started, restored.StartedAt);
+    // The deck shows the same stages done/current/halted as before the reload.
+    Assert.Null(restored.Next(All));
+  }
+
+  [Fact]
+  public void ExportRestore_FlowingSweepRoundTripsWithoutAHalt()
+  {
+    var plan = new SweepPlan();
+    plan.Start(DateTimeOffset.FromUnixTimeSeconds(1_700_000_000));
+    plan.MarkDone(SweepStage.Pinch);
+
+    var restored = new SweepPlan();
+    restored.Restore(plan.Export());
+
+    Assert.False(restored.Halted);
+    Assert.Null(restored.CurrentHalt);
+    Assert.Equal(SweepStage.BellRun, restored.Next(All));
+  }
+
+  // ---- Staleness: a sweep too old to trust is history, not a sweep ----
+
+  [Fact]
+  public void IsStale_RetiresASweepPastTheCeiling()
+  {
+    var started = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+    var ceiling = TimeSpan.FromHours(4);
+
+    // Within the ceiling: still a sweep.
+    Assert.False(SweepPlan.IsStale(started, started.AddHours(3), ceiling));
+    Assert.False(SweepPlan.IsStale(started, started.AddHours(4), ceiling)); // exactly the ceiling holds
+    // Past the ceiling: history.
+    Assert.True(SweepPlan.IsStale(started, started.AddHours(4).AddSeconds(1), ceiling));
+    Assert.True(SweepPlan.IsStale(started, started.AddDays(1), ceiling));
   }
 }
