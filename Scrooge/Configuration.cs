@@ -421,6 +421,15 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public bool AutoVendorSellOnPriceCheckFail { get; set; } = false;
 
+  /// <summary>
+  /// The vendor rider (WALK unit 3): when true, unanimous Pull &amp; Vendor rows
+  /// for a retainer are pulled and vendored inside THAT retainer's pinch visit,
+  /// rather than waiting to be clicked as a separate errand. One honest escape
+  /// hatch - flip it off if the rider ever misbehaves in the wild; mixed/demoted
+  /// rows always stay in the pile for the player's judgment regardless.
+  /// </summary>
+  public bool PinchVendorRider { get; set; } = true;
+
   // --- Sweep run model (WALK unit 2) ---
 
   /// <summary>

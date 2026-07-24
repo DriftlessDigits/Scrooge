@@ -1556,6 +1556,27 @@ internal sealed class LedgerWindow : Window
   // Triage row lifecycle (called by the orchestrator + the run log)
   // ==========================================================================
 
+  /// <summary>
+  /// The standing-listing Pull &amp; Vendor rows the pinch's vendor rider may drain
+  /// (WALK unit 3), each paired with its confidence tier so the rider keeps to the
+  /// unanimous ones (<see cref="LedgerConfidence.BulkSet{T}(System.Collections.Generic.IEnumerable{System.ValueTuple{T, ConfidenceTier}})"/>,
+  /// the same gate the manual Pull &amp; Vendor button obeys). Bag-gear Vendor rows
+  /// are deliberately NOT here - they have no listing to pull and ride the bell run.
+  /// The rider snapshots this at pinch start and only removes a row it actually
+  /// vendors (via <see cref="RemoveItem"/>); rows it never reaches stay in the pile,
+  /// so an aborted pinch leaves the pile exactly as it found it.
+  /// </summary>
+  internal List<(PricingItem Item, ConfidenceTier Tier)> PullVendorRiderCandidates()
+  {
+    var rows = new List<(PricingItem, ConfidenceTier)>();
+    foreach (var row in BuildTriageRows())
+    {
+      if (EffectiveTriagePile(row.Item) != LedgerPile.PullAndVendor) continue;
+      rows.Add((row.Item, ScoreTriage(row.Item, LedgerPiles.ForTriage(row.Item.Result))));
+    }
+    return rows;
+  }
+
   /// <summary>Stores this run's triage items so they survive after CurrentRun clears. Called by the run log.</summary>
   internal void SetRun(RunData run)
   {
