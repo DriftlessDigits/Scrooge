@@ -19,6 +19,8 @@ public enum RunMode
   Desynth,
   /// <summary>GC Expert Delivery turn-in. Renders in the one run window (ruling 9); seals value/ETA stay on the orchestrator's own RunLifecycle for the inline Ledger glance.</summary>
   Gc,
+  /// <summary>Venture Coffer rider: opens coffers at the front of the sweep's disposition and narrates each unlocked item. No pricing/lane semantics - a bag-unlock pass.</summary>
+  Coffer,
 }
 
 /// <summary>

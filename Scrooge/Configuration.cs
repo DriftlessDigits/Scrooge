@@ -430,6 +430,16 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public bool PinchVendorRider { get; set; } = true;
 
+  /// <summary>
+  /// The Venture Coffer rider (Sam, 2026-07-23: "if there is a Venture Coffer in the
+  /// inventory, it needs to be used to unlock an item"). When true, the sweep opens
+  /// ALL Venture Coffers at the FRONT of disposition (before the melt) so the unlocked
+  /// items join the routable pool for the next Refresh; each open is narrated in the
+  /// run log. One honest escape hatch - flip it off if coffer-opening ever misbehaves
+  /// in the wild. Sweep-context only; the manual desynth button never opens coffers.
+  /// </summary>
+  public bool OpenVentureCoffers { get; set; } = true;
+
   // --- Sweep run model (WALK unit 2) ---
 
   /// <summary>

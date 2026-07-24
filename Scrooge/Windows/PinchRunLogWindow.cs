@@ -18,6 +18,7 @@ namespace Scrooge.Windows
     TurnedIn,     // green — GC Expert Delivery turn-in, paid in seals not gil
     Banned,       // blue — on ban list, observed but not changed
     Desynthed,    // grey — item destroyed via desynthesis, no price math (Task 13 wires render branch)
+    Unlocked,     // green — item unlocked from a Venture Coffer by the coffer rider
     SlowMover,    // info blue — slow-mover pressure deepened the cut (price WAS applied)
     // Lane pricing outcomes — each named with its evidence, never a generic costume
     WallIgnored,  // info — anchored in-lane past above-ceiling walls
@@ -66,7 +67,7 @@ namespace Scrooge.Windows
     /// <summary>
     /// Clears the log and opens the window. Called at the start of each pinch run.
     /// </summary>
-    public void StartNewRun(bool isHawkRun = false, bool isDesynthRun = false, bool isGcRun = false)
+    public void StartNewRun(bool isHawkRun = false, bool isDesynthRun = false, bool isGcRun = false, bool isCofferRun = false)
     {
       if (!Plugin.Configuration.EnablePinchRunLog)
         return;
@@ -78,7 +79,12 @@ namespace Scrooge.Windows
       run.RunStopwatch.Restart();
 
       string label;
-      if (isGcRun)
+      if (isCofferRun)
+      {
+        label = "Coffer Rider";
+        WindowName = "Scrooge - Coffer Rider Log";
+      }
+      else if (isGcRun)
       {
         label = "GC Turn-In Run";
         WindowName = "Scrooge - GC Turn-In Log";
@@ -204,29 +210,34 @@ namespace Scrooge.Windows
       var isHawkRun = run.Mode == RunMode.Hawk;
       var isDesynthRun = run.Mode == RunMode.Desynth;
       var isGcRun = run.Mode == RunMode.Gc;
-      var label = isGcRun ? "GC Turn-In Run"
+      var isCofferRun = run.Mode == RunMode.Coffer;
+      var label = isCofferRun ? "Coffer Rider"
+                : isGcRun ? "GC Turn-In Run"
                 : isDesynthRun ? "Desynth Run"
                 : isHawkRun ? "Hawk Run"
                 : "Run";
 
       run.AddRunEntry(RunEvent.End, $"{label} Complete — {DateTime.Now:h:mm tt}");
-      run.AddRunEntry(RunEvent.Summary, isGcRun
-        ? $"{run.ItemsProcessed} turned in"
-        : isDesynthRun
-          ? $"{run.ItemsProcessed} desynthed"
-          : isHawkRun
-            ? $"{run.ItemsAdjusted} listed"
-            : $"{run.ItemsAdjusted} adjusted");
+      run.AddRunEntry(RunEvent.Summary, isCofferRun
+        ? $"{run.ItemsProcessed} coffer{(run.ItemsProcessed == 1 ? "" : "s")} opened"
+        : isGcRun
+          ? $"{run.ItemsProcessed} turned in"
+          : isDesynthRun
+            ? $"{run.ItemsProcessed} desynthed"
+            : isHawkRun
+              ? $"{run.ItemsAdjusted} listed"
+              : $"{run.ItemsAdjusted} adjusted");
 
       // Desynth headline = what the materials are worth, not vendor forfeit —
       // vendor prices for gear are jokingly cheap, so "net vs vendor" always wins.
       if (isDesynthRun && run.MaterialsValueGil > 0)
         run.AddRunEntry(RunEvent.Summary, $"~{run.MaterialsValueGil:N0} gil in materials (cached prices)");
 
-      // Desynth and GC runs don't carry vendor / listing / lane semantics — skip
-      // those summary lines for them (GC's seals summary is added by the
-      // orchestrator, which owns the seal-value RunLifecycle).
-      if (!isDesynthRun && !isGcRun)
+      // Desynth, GC, and coffer runs don't carry vendor / listing / lane semantics —
+      // skip those summary lines for them (GC's seals summary is added by the
+      // orchestrator, which owns the seal-value RunLifecycle; the coffer rider's own
+      // "N coffers → N items" summary is added by CofferOrchestrator before EndRun).
+      if (!isDesynthRun && !isGcRun && !isCofferRun)
       {
         if (run.SkippedCount > 0)
           run.AddRunEntry(RunEvent.Summary, $"{run.SkippedCount} skipped");
@@ -259,10 +270,10 @@ namespace Scrooge.Windows
       run.MarkComplete();
       run.RunStopwatch.Stop();
 
-      // Update the rolling per-item average. GC turn-in cadence differs from a
-      // pinch/hawk pass and must not pollute the pinch ETA seed (existing desynth
-      // behavior is left unchanged).
-      if (run.ItemsProcessed > 0 && !isGcRun)
+      // Update the rolling per-item average. GC turn-in and coffer-rider cadence
+      // differ from a pinch/hawk pass and must not pollute the pinch ETA seed
+      // (existing desynth behavior is left unchanged).
+      if (run.ItemsProcessed > 0 && !isGcRun && !isCofferRun)
       {
         var currentAvg = (float)run.RunStopwatch.ElapsedMilliseconds / run.ItemsProcessed;
         var stored = Plugin.Configuration.AvgMsPerItem;
@@ -406,6 +417,7 @@ namespace Scrooge.Windows
               ItemOutcome.TurnedIn => ScroogeColors.Earned,
               ItemOutcome.Banned => ScroogeColors.Banned,
               ItemOutcome.Desynthed => ScroogeColors.Muted,
+              ItemOutcome.Unlocked => ScroogeColors.Earned,
               ItemOutcome.SlowMover => ScroogeColors.Info,
               ItemOutcome.WallIgnored => ScroogeColors.Info,
               ItemOutcome.BaitIgnored => ScroogeColors.Info,
@@ -566,6 +578,7 @@ namespace Scrooge.Windows
                 ItemOutcome.TurnedIn => "Turned in",
                 ItemOutcome.Banned => "Banned",
                 ItemOutcome.Desynthed => "Desynthed",
+                ItemOutcome.Unlocked => "Unlocked",
                 _ => "Entry"
               };
               sb.Append("  ").AppendLine($"{prefix}: {entry.ItemName} — {entry.Message}");
