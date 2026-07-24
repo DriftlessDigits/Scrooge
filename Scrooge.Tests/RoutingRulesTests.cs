@@ -463,18 +463,100 @@ public class EvidenceOnlyTests
   {
     // Era review red 3 regression: the dungeon-clear tail must one-confirm,
     // not re-ask every run (Universalis can never settle an untradable).
+    // Vendor is a viable exit (PriceLow > 0), so NOT excluded.
     var v = RoutingRules.Evaluate(T.Gear(marketable: false, vendor: 120), T.Batch());
+    Assert.False(v.IsExcluded);
     Assert.Equal(RoutingExit.Vendor, v.Exit);
     Assert.False(v.IsReview);
     Assert.Contains("Untradable", v.Reason);
   }
+}
+
+public class NoViableExitTests
+{
+  // Sam's 07-23 ruling: gear with zero viable exits (untradable, not
+  // desynthable, no seals, no vendor value — the Vana'dielian raid pair) is not
+  // a decision, so it is excluded from the Ledger entirely. The exclusion is a
+  // live derivation over the four existing exit signals, never a persisted flag.
 
   [Fact]
-  public void UntradableUnvendorable_HonestShrug()
+  public void ZeroExitGear_IsExcluded()
   {
-    var v = RoutingRules.Evaluate(T.Gear(marketable: false, vendor: 0), T.Batch());
+    // Untradable, not desynthable, no seals, no vendor value: nothing to weigh.
+    var item = T.Gear(marketable: false, desynthable: false, vendor: 0);
+    Assert.True(RoutingRules.HasNoViableExit(item));
+
+    var v = RoutingRules.Evaluate(item, T.Batch());
+    Assert.True(v.IsExcluded);
+  }
+
+  [Fact]
+  public void UntradableWithVendorPrice_NotExcluded_KeepsVendorVerdict()
+  {
+    // Regression guard: a vendor price is an exit — must keep the Vendor verdict.
+    var item = T.Gear(marketable: false, desynthable: false, vendor: 120);
+    Assert.False(RoutingRules.HasNoViableExit(item));
+
+    var v = RoutingRules.Evaluate(item, T.Batch());
+    Assert.False(v.IsExcluded);
     Assert.Equal(RoutingExit.Vendor, v.Exit);
+    Assert.False(v.IsReview);
+  }
+
+  [Fact]
+  public void UntradableWithMeltEvidence_NotExcluded_MeltsForGil()
+  {
+    // Melt evidence is an exit — the item routes to Desynth as before.
+    var item = T.Gear(marketable: false, vendor: 0, melt: 3_000);
+    Assert.False(RoutingRules.HasNoViableExit(item));
+
+    var v = RoutingRules.Evaluate(item, T.Batch());
+    Assert.False(v.IsExcluded);
+    Assert.Equal(RoutingExit.Desynth, v.Exit);
+  }
+
+  [Fact]
+  public void UntradableWithSeals_NotExcluded()
+  {
+    var item = T.Gear(marketable: false, desynthable: false, vendor: 0, seals: 400);
+    Assert.False(RoutingRules.HasNoViableExit(item));
+    Assert.False(RoutingRules.Evaluate(item, T.Batch()).IsExcluded);
+  }
+
+  [Fact]
+  public void DesynthableButNoEvidence_NotExcluded_SurvivesAsReview()
+  {
+    // Desynthable gear with no yield history still HAS an exit (melt it to
+    // learn). Not excluded; lands in Review pointing at the desynth exit —
+    // this is the case the old "No gil exit at all" row over-claimed.
+    var item = T.Gear(marketable: false, desynthable: true, vendor: 0);
+    Assert.False(RoutingRules.HasNoViableExit(item));
+
+    var v = RoutingRules.Evaluate(item, T.Batch());
+    Assert.False(v.IsExcluded);
     Assert.True(v.IsReview);
+    Assert.Contains("desynth", v.Reason, System.StringComparison.OrdinalIgnoreCase);
+  }
+
+  [Fact]
+  public void MarketableWithNoEvidence_NotExcluded()
+  {
+    // Marketable gear always has the List exit open, even with no local
+    // evidence — the honest-shrug Review row, unchanged.
+    var item = T.Gear(marketable: true, desynthable: false, vendor: 0);
+    Assert.False(RoutingRules.HasNoViableExit(item));
+    Assert.False(RoutingRules.Evaluate(item, T.Batch()).IsExcluded);
+  }
+
+  [Fact]
+  public void ExcludedVerdict_FailsSafeToHoldNotAction()
+  {
+    // Defense in depth: if an excluded verdict ever leaked past the Ledger
+    // filter, its exit must map to the observed-only Watch pile, never a
+    // phantom Vendor/Melt/List action.
+    var v = RoutingRules.Evaluate(T.Gear(marketable: false, desynthable: false, vendor: 0), T.Batch());
+    Assert.True(v.IsExcluded);
+    Assert.Equal(RoutingExit.Hold, v.Exit);
   }
 }
 

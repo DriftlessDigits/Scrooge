@@ -272,6 +272,18 @@ internal sealed class LedgerWindow : Window
             continue;
 
           var verdict = RoutingRules.Evaluate(inputs, batch);
+
+          // Zero-exit gear is not a decision (Sam, 07-23): no pile, no Review,
+          // no bulk/sweep count, no receipt. THE single exclusion filter — the
+          // determination lives in the pure core (RoutingRules.HasNoViableExit
+          // via IsExcluded); this is the one place that acts on it. Skipping
+          // before the receipt/add/persisted-ruling steps means a stale ruling
+          // on the item (the Vana'dielian Melt squatter) is loaded but never
+          // looked up — inert, not a phantom. The check is live every scan, so
+          // the item re-enters automatically the moment SE grants it a sale
+          // value; nothing is persisted here to unset.
+          if (verdict.IsExcluded) continue;
+
           var item = new RoutedItem
           {
             ItemId = itemId,
