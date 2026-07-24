@@ -61,6 +61,8 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static DesynthOrchestrator DesynthOrchestrator { get; private set; } = null!;
 
+  internal static CofferOrchestrator CofferOrchestrator { get; private set; } = null!;
+
   internal static DesynthLauncher DesynthLauncher { get; private set; } = null!;
 
   private VentureReturnTracker? _ventureReturnTracker;
@@ -206,6 +208,8 @@ public sealed class Plugin : IDalamudPlugin
 
     DesynthOrchestrator = new DesynthOrchestrator();
 
+    CofferOrchestrator = new CofferOrchestrator();
+
     try
     {
       DesynthYieldTracker = new DesynthYieldTracker();
@@ -234,6 +238,7 @@ public sealed class Plugin : IDalamudPlugin
     TriageOrchestrator.Dispose();
     DesynthYieldTracker?.Dispose();
     DesynthOrchestrator.Dispose();
+    CofferOrchestrator.Dispose();
     WindowSystem.RemoveAllWindows();
     AutoPinch.Dispose();
     CommandManager.RemoveHandler("/scrooge");

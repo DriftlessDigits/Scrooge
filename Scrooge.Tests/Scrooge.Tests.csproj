@@ -49,6 +49,7 @@
     <Compile Include="..\Scrooge\SweepPlan.cs" Link="Linked\SweepPlan.cs" />
     <Compile Include="..\Scrooge\Spine.cs" Link="Linked\Spine.cs" />
     <Compile Include="..\Scrooge\VendorRider.cs" Link="Linked\VendorRider.cs" />
+    <Compile Include="..\Scrooge\CofferLogic.cs" Link="Linked\CofferLogic.cs" />
   </ItemGroup>
 
 </Project>

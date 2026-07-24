@@ -1499,6 +1499,19 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.Save();
     }
 
+    var openCoffers = Plugin.Configuration.OpenVentureCoffers;
+    if (ImGui.Checkbox("Open Venture Coffers at the front of a sweep (rider)", ref openCoffers))
+    {
+      Plugin.Configuration.OpenVentureCoffers = openCoffers;
+      Plugin.Configuration.Save();
+    }
+    ImGui.SameLine();
+    ImGui.TextDisabled("(?)");
+    if (ImGui.IsItemHovered())
+      ImGui.SetTooltip("When a sweep reaches the melt, any Venture Coffers in your bags are opened first "
+        + "(one at a time, politely) so their contents join the routable pool. Each unlocked item is "
+        + "narrated in the run log. Sweep-only - the manual desynth button never opens coffers.");
+
     var baseMs = Plugin.Configuration.DesynthPerActionBaseMs;
     if (ImGui.SliderInt("Base inter-item delay (ms)", ref baseMs, 800, 4000))
     {

@@ -822,7 +822,14 @@ internal sealed class LedgerWindow : Window
         ExecuteTriageBatch();
         break;
       case SweepStage.Desynth:
-        Plugin.DesynthPreview.OpenSalvageWithPileSelected();
+        // Coffer rider (Sam, 2026-07-23): open ALL Venture Coffers at the FRONT of
+        // disposition so their contents join the routable pool BEFORE the melt
+        // window scans - itself no exit, its contents all of them. The rider hands
+        // off to the melt on completion (or immediately, when the config is off /
+        // there are no coffers), so the melt always proceeds after the coffers.
+        // Sweep-context only: the manual "Open desynthesis" button below stays plain.
+        Plugin.CofferOrchestrator.OpenAllForSweep(
+          () => Plugin.DesynthPreview.OpenSalvageWithPileSelected());
         break;
       case SweepStage.TurnIn:
         foreach (var item in churnSet)
