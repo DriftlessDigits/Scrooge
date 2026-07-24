@@ -39,6 +39,13 @@ internal readonly record struct RoutingScores(long? List, long? Gc, long? Melt, 
 /// the router prefers a small honest Review pile over a confident wrong routing.
 /// Scores rides along for the receipt; null on the pre-value early exits
 /// (ban / protected / always-vendor / venture panic), where no comparison ran.
+///
+/// IsExcluded is the "no exits" outcome (Sam, 07-23): gear with zero viable
+/// exits is not a decision, so the Ledger drops it entirely rather than routing
+/// it. The Exit field is inert on an excluded verdict (nothing reads it — the
+/// materializer filters on the flag first); it is set to Hold so a leak past the
+/// filter fails safe into the observed-not-routed Watch pile, never a phantom
+/// action.
 /// </summary>
 internal readonly record struct RoutingVerdict(
   RoutingExit Exit,
@@ -46,7 +53,8 @@ internal readonly record struct RoutingVerdict(
   bool IsReview = false,
   RoutingExit? RunnerUp = null,
   string RunnerUpReason = "",
-  RoutingScores? Scores = null);
+  RoutingScores? Scores = null,
+  bool IsExcluded = false);
 
 /// <summary>
 /// The routing brain's decision core. Deterministic rules over pre-gathered
@@ -68,6 +76,33 @@ internal static class RoutingRules
   /// </summary>
   private const double MeltOverVendorFactor = 1.5;
 
+  /// <summary>
+  /// The zero-exit determination: an item every router exit is closed for. All
+  /// four exits, expressed as the existing evidence signals — never new
+  /// eligibility logic:
+  ///   List   — <see cref="RoutingItemInputs.IsMarketable"/> (has a market category)
+  ///   Melt   — <see cref="RoutingItemInputs.IsDesynthable"/> (sheet Desynth != 0),
+  ///            or any melt evidence / skillup eligibility (which only exist for a
+  ///            desynthable item, OR'd in so a melt-carrying item is never a dead end)
+  ///   Gc     — <see cref="RoutingItemInputs.SealValue"/> (GcSeals.For, which itself
+  ///            returns null when PriceLow == 0 — the "too new" gate)
+  ///   Vendor — <see cref="RoutingItemInputs.VendorPrice"/> &gt; 0 (PriceLow)
+  /// When every one is closed there is no gil/seal/list destination the item can
+  /// reach, so it is no decision at all. Pure — same inputs, same answer; it is
+  /// recomputed from the sheet on every scan, so re-inclusion is automatic once
+  /// SE flips any signal.
+  /// </summary>
+  internal static bool HasNoViableExit(RoutingItemInputs item)
+  {
+    var meltExit = item.IsDesynthable
+      || item.MeltValuePerAttempt is not null
+      || item.DesynthSkillupEligible;
+    return !item.IsMarketable
+      && !meltExit
+      && item.SealValue is null
+      && item.VendorPrice <= 0;
+  }
+
   internal static RoutingVerdict Evaluate(RoutingItemInputs item, RoutingBatch batch)
   {
     // --- Flag rules: the player already decided these ---
@@ -82,6 +117,21 @@ internal static class RoutingRules
 
     if (item.IsAlwaysVendor)
       return new(RoutingExit.Vendor, "Always-vendor flag.");
+
+    // --- No viable exit: not a decision, so not in the Ledger at all ---
+    // Sam's 07-23 ruling: gear that can't be listed, melted, turned in, OR
+    // vendored has no exit to weigh — the router must not manufacture a verdict
+    // or a Review row for it. The materializer filters on IsExcluded (one place)
+    // so it never joins a pile, a bulk/sweep count, or a receipt. Runs after the
+    // player-flag rules (an explicit ban / protection / always-vendor is a state
+    // the player chose to see) but before every inferred rule below. The
+    // determination is LIVE — recomputed from the sheet each scan — so when SE
+    // later grants the item a sale value (or lifts the desynth/trade lock) the
+    // next scan simply stops excluding it. Nothing is persisted to unset.
+    if (HasNoViableExit(item))
+      return new(RoutingExit.Hold,
+        "No viable exit (untradable, not desynthable, no seals, no vendor value) — nothing to decide. Ignored until the game gives it a sale value.",
+        IsExcluded: true);
 
     // --- Venture panic: sub-500 stock churns everything GC-eligible ---
     // Tilt only acts on a POSITIVE token read; null (read failed) and 0
@@ -253,8 +303,11 @@ internal static class RoutingRules
         if (vendorScore is long uv)
           return Scored(new(RoutingExit.Vendor,
             $"Untradable, no desynth or seal evidence — vendor is the only exit: {uv:N0} gil."));
-        return Scored(new(RoutingExit.Vendor,
-          "No gil exit at all (untradable, no desynth, no seals) — current-tier gear is usually for wearing, not selling.",
+        // True zero-exit gear was already excluded up top (HasNoViableExit).
+        // Reaching here means the item IS desynthable — that is the surviving
+        // exit — we just have no yield history for it yet.
+        return Scored(new(RoutingExit.Desynth,
+          "Untradable, no seal or vendor value — desynth is the only exit, but you've no yield history yet. Melt one to learn what it gives, or hold it.",
           IsReview: true));
       }
 

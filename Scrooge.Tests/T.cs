@@ -33,6 +33,7 @@ internal static class T
     int communityCount = 0,
     bool equipment = true,
     bool marketable = true,
+    bool? desynthable = null,
     bool skillup = false,
     bool redSkillup = false,
     bool banned = false,
@@ -46,6 +47,10 @@ internal static class T
     Ilvl = 100,
     IsEquipment = equipment,
     IsMarketable = marketable,
+    // Desynth eligibility mirrors production: melt evidence or a skillup color
+    // can only exist for a desynthable item, so default it true whenever those
+    // are present unless a test states otherwise.
+    IsDesynthable = desynthable ?? (melt is not null || skillup || redSkillup),
     VendorPrice = vendor,
     LastSale = sale,
     MeltValuePerAttempt = melt,

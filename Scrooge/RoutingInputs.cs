@@ -109,8 +109,9 @@ internal static class RoutingInputService
     // patch data - when SE lifts the restriction the next scan just
     // starts routing these to desynth again, no code change.
     DesynthSkillupColor? color = null;
+    var isDesynthable = item.Desynth != 0;
     var repairClass = (byte)item.ClassJobRepair.RowId;
-    if (isEquipment && repairClass != 0 && item.Desynth != 0)
+    if (isEquipment && repairClass != 0 && isDesynthable)
       color = DesynthSkillup.Classify(
         GameSafe.GetDesynthLevel(repairClass),
         (int)item.LevelItem.RowId);
@@ -153,6 +154,7 @@ internal static class RoutingInputService
       Ilvl = (int)item.LevelItem.RowId,
       IsEquipment = isEquipment,
       IsMarketable = isMarketable,
+      IsDesynthable = isDesynthable,
       VendorPrice = (int)item.PriceLow,
       LastSale = batch.LastSales.TryGetValue((itemId, isHq), out var sale) ? sale : null,
       MeltValuePerAttempt = batch.MeltValues.TryGetValue((itemId, isHq), out var melt) ? melt : null,

@@ -100,6 +100,14 @@ internal sealed record RoutingItemInputs
   public bool IsEquipment { get; init; }
   /// <summary>Has a market search category — can be listed at all. Untradable gear's only exits are melt/GC/vendor.</summary>
   public bool IsMarketable { get; init; }
+  /// <summary>
+  /// The sheet's Desynth flag is non-zero — the item can be melted at all
+  /// (finding #18: current-tier raid gear carries a repair class but Desynth=0,
+  /// so it CANNOT desynth). The faithful melt-eligibility signal, independent of
+  /// whether any yield history exists yet. Closes the desynth exit for the
+  /// zero-exit test when false.
+  /// </summary>
+  public bool IsDesynthable { get; init; }
   public int VendorPrice { get; init; }
 
   // Evidence
