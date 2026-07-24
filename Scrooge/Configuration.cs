@@ -459,6 +459,16 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int SweepStalenessCeilingHours { get; set; } = 4;
 
+  /// <summary>
+  /// The re-pinch floor for the fit check at the sweep's press (spec "Cadence
+  /// gate", Sam 2026-07-22: "if the last pinch was less than 4 hours ago, don't
+  /// suggest a pinch in a sweep run"). A board read younger than this means the
+  /// sweep skips the pinch and opens past it. A config SEED, not a measured
+  /// quantity - receipts tune the ripeness gate later (the SealToGilRate arc);
+  /// today it is Sam's 4h. Floored at 1h on read.
+  /// </summary>
+  public int RepinchFloorHours { get; set; } = 4;
+
   public void Save()
   {
     Plugin.PluginInterface.SavePluginConfig(this);

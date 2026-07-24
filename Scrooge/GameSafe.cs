@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using ECommons;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -42,6 +43,43 @@ internal static unsafe class GameSafe
     if (retainer == null) return null;
     var name = retainer->NameString;
     return string.IsNullOrEmpty(name) ? null : name;
+  }
+
+  /// <summary>
+  /// Seconds until the SOONEST venture completes across the player's retainers -
+  /// the return clock the fit check races the pinch estimate against
+  /// (<see cref="FitCheck"/>). Null when no venture clock is readable (manager
+  /// unavailable, or no retainer has a venture out); 0 when a venture is already
+  /// complete (the haul is waiting).
+  ///
+  /// Source is ClientStructs RetainerManager (<c>VentureComplete</c>, a unix
+  /// timestamp), NOT the RetainerList addon's "Complete in Xm" string. The addon
+  /// text is the only pre-existing venture read documented for the roster, but it
+  /// is a localized string that must be regex-parsed and is only present while the
+  /// roster addon is open; the struct carries the raw timestamp on every retainer
+  /// whether or not any window is open. The struct read is the honest clock.
+  /// </summary>
+  internal static long? SoonestVentureReturnSeconds()
+  {
+    var rm = RetainerManager.Instance();
+    if (rm == null) return null;
+
+    long? soonest = null;
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    for (uint i = 0; i < rm->GetRetainerCount(); i++)
+    {
+      var retainer = rm->GetRetainerBySortedIndex(i);
+      if (retainer == null || !retainer->Available) continue;
+      if (retainer->VentureId == 0) continue; // no venture assigned - nothing to wait on
+
+      var complete = (long)retainer->VentureComplete; // unix seconds
+      if (complete <= 0) continue;
+
+      var remaining = complete - now;
+      var secs = remaining > 0 ? remaining : 0; // already done reads as "waiting" (0)
+      if (soonest is null || secs < soonest) soonest = secs;
+    }
+    return soonest;
   }
 
   /// <summary>Per-retainer (name, gil) balances; empty when the manager is unavailable.</summary>

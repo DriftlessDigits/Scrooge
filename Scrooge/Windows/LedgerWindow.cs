@@ -595,8 +595,33 @@ internal sealed class LedgerWindow : Window
       SweepStage.TurnIn => churnSet.Count,
       _ => 0,
     };
-    // The pinch always has work: the board read is what makes the rest honest.
-    bool HasWork(SweepStage s) => s == SweepStage.Pinch || CountOf(s) > 0;
+    // The fit check at press (WALK unit 8): two MEASURED clocks - the pinch ETA
+    // (persisted ms/item x current standing-listing count) vs the soonest venture
+    // return - plus the board-read age against the re-pinch floor. Advises, never
+    // gates: DOESN'T-FIT costs one deliberate click, BOARD-FRESH skips the pinch,
+    // NO-DATA fires without a check rather than lying about a clock it can't see.
+    var estPinchMs = Plugin.Configuration.AvgMsPerItem > 0f
+      ? (long)(Plugin.Configuration.AvgMsPerItem * _listed.Count)
+      : (long?)null;
+    var ventureSecs = GameSafe.SoonestVentureReturnSeconds();
+    var boardAge = _lastFullScanAt > 0
+      ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - _lastFullScanAt
+      : (long?)null;
+    var repinchFloor = TimeSpan.FromHours(Math.Max(1, Plugin.Configuration.RepinchFloorHours));
+    var fit = FitCheck.AtPress(estPinchMs, ventureSecs, boardAge, repinchFloor);
+
+    // The pinch has work unless the board is fresh - the honest seam where the
+    // cadence gate lands (the pinch's HasWork is otherwise always-true). A skipped
+    // pinch is not marked done: if the board goes stale mid-sweep the cursor picks
+    // it back up like any other stage that gained work.
+    bool HasWork(SweepStage s) => s == SweepStage.Pinch ? !fit.SkipPinch : CountOf(s) > 0;
+
+    Vector4 FitColor() => fit.Verdict switch
+    {
+      FitVerdict.DoesntFit => ScroogeColors.Amber,
+      FitVerdict.Fits => ScroogeColors.Earned,
+      _ => ScroogeColors.Muted,
+    };
 
     // Rehydrate a persisted in-progress sweep once, here (not in the ctor):
     // every orchestrator is constructed by first draw, so the abort-epoch
@@ -641,6 +666,10 @@ internal sealed class LedgerWindow : Window
       ImGui.SameLine();
       ImGui.TextDisabled(
         $"pinch -> {listSet.Count + vendSet.Count} bell -> {repriceEligible.Count} reprice -> {meltCount} melt -> {churnSet.Count} turn in");
+      // The fit check speaks before the press - the two clocks, or why one is blind.
+      ImGui.PushStyleColor(ImGuiCol.Text, FitColor());
+      ImGui.TextWrapped(fit.Message);
+      ImGui.PopStyleColor();
       return;
     }
 
@@ -658,6 +687,16 @@ internal sealed class LedgerWindow : Window
         : ("-", ScroogeColors.Muted);
       ImGui.PushStyleColor(ImGuiCol.Text, color);
       ImGui.Text($" {glyph} {StageLabel(s, CountOf(s))}{(HasWork(s) || _sweep.IsDone(s) ? "" : "  (nothing to do)")}");
+      ImGui.PopStyleColor();
+    }
+
+    // The fit check advice, while the pinch is still the concern (pending or
+    // skipped). Board-fresh shows the skip note; doesn't-fit shows the honest
+    // "wait for the haul" line the "Start anyway" button pairs with.
+    if (!_sweep.IsDone(SweepStage.Pinch) && !_sweep.Halted)
+    {
+      ImGui.PushStyleColor(ImGuiCol.Text, FitColor());
+      ImGui.TextWrapped(fit.Message);
       ImGui.PopStyleColor();
     }
 
@@ -711,6 +750,12 @@ internal sealed class LedgerWindow : Window
       _ => AtRetainerBell(),
     };
 
+    // A doesn't-fit pinch keeps the press - it just makes it deliberate: the
+    // button becomes "Start anyway" and names the two clocks. Sam owns the call.
+    var fireLabel = stage == SweepStage.Pinch && fit.RequiresConfirm
+      ? $"Start anyway - {FitCheck.ShortDur((estPinchMs ?? 0) / 1000)} sweep vs {FitCheck.ShortDur(ventureSecs ?? 0)} return###sweepFire"
+      : $"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire";
+
     if (anyBusy)
     {
       ImGui.TextDisabled("run in progress - the sweep waits...");
@@ -718,14 +763,14 @@ internal sealed class LedgerWindow : Window
     else if (!here)
     {
       ImGui.BeginDisabled(true);
-      ImGui.Button($"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire");
+      ImGui.Button(fireLabel);
       ImGui.EndDisabled();
       ImGui.SameLine();
       ImGui.TextDisabled(stage == SweepStage.Desynth
         ? "close the retainer bell first - the game refuses desynth while occupied"
         : $"walk to {PlaceName(stage)}");
     }
-    else if (ImGui.Button($"Sweep: {StageLabel(stage, CountOf(stage))}###sweepFire"))
+    else if (ImGui.Button(fireLabel))
     {
       FireSweepStage(stage, listSet, vendSet, repriceEligible, churnSet);
     }
