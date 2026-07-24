@@ -52,6 +52,15 @@ internal sealed class AutoPinch : Window, IDisposable
   private readonly ItemPricingPipeline _pricing;
   private readonly HawkRunOrchestrator _hawkOrchestrator;
 
+  // --- Vendor rider (WALK unit 3): the unanimous Pull & Vendor rows that ride
+  //     THIS pinch, grouped by the retainer whose visit drains them. Snapshotted
+  //     at pinch start and woven into each retainer's own task chain - never a
+  //     separate errand. Recomputed rows, not queued state: an abort just leaves
+  //     the un-drained ones in the pile (a row clears only on a completed vendor). ---
+  private Dictionary<string, List<PricingItem>> _riderByRetainer = new(StringComparer.Ordinal);
+  private IDisposable? _riderCatchall;
+  private bool _riderListenerActive;
+
   public AutoPinch()
     : base("Scrooge", ImGuiWindowFlags.NoDecoration | ImGuiWindowFlags.NoBackground | ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.AlwaysAutoResize, true)
   {
@@ -116,6 +125,7 @@ internal sealed class AutoPinch : Window, IDisposable
       Plugin.PinchRunLog.CancelRun();
       _hawkOrchestrator.Abort();
       RemoveTalkAddonListeners();
+      RiderCleanup();
     }
   }
 
@@ -300,6 +310,7 @@ internal sealed class AutoPinch : Window, IDisposable
       {
         _taskManager.Abort();
         RemoveTalkAddonListeners();
+        RiderCleanup();
         Plugin.PinchRunLog.CancelRun();
         Plugin.CurrentRun = null;
       }
@@ -404,6 +415,17 @@ internal sealed class AutoPinch : Window, IDisposable
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.StartRun();
 
+      // Vendor rider (WALK unit 3): snapshot the unanimous Pull & Vendor rows now,
+      // grouped by retainer, and drain each retainer's set inside its own visit
+      // below. The buyback-dismiss dialog only appears once we've actually
+      // vendored, so its listener is armed only when rows are riding.
+      SnapshotVendorRiders();
+      if (_riderByRetainer.Count > 0)
+      {
+        Svc.AddonLifecycle.RegisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
+        _riderListenerActive = true;
+      }
+
       // If no retainers are explicitly enabled, enable all by default
       bool allEnabled = Plugin.Configuration.EnabledRetainerNames.Count == 0;
 
@@ -431,10 +453,11 @@ internal sealed class AutoPinch : Window, IDisposable
           Svc.Log.Debug($"Skipping retainer '{retainerName}' (excluded by user configuration)");
           continue;
         }
-        EnqueueSingleRetainer(i);
+        EnqueueSingleRetainer(i, retainerName);
       }
 
       _taskManager.Enqueue(RemoveTalkAddonListeners);
+      _taskManager.Enqueue(() => { RiderCleanup(); return true; }, "RiderCleanup");
       if (Plugin.Configuration.TTSWhenAllDone)
         _taskManager.Enqueue(() => SpeakTTS(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
 
@@ -454,7 +477,8 @@ internal sealed class AutoPinch : Window, IDisposable
   /// process all items → close sell list → close retainer.
   /// </summary>
   /// <param name="index">Retainer index in the RetainerList addon (0-based).</param>
-  private void EnqueueSingleRetainer(int index)
+  /// <param name="retainerName">The retainer's name - the key its vendor riders were grouped under.</param>
+  private void EnqueueSingleRetainer(int index, string retainerName)
   {
     _taskManager.Enqueue(() => GameNavigation.ClickRetainer(index), $"ClickRetainer{index}");
     _taskManager.DelayNext(100);
@@ -479,6 +503,14 @@ internal sealed class AutoPinch : Window, IDisposable
 
     _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
     _taskManager.DelayNext(500);
+
+    // Vendor rider: with the sell list still open and the reprice pass done, pull
+    // and vendor this retainer's unanimous Pull & Vendor rows (WALK unit 3). Same
+    // window, same retainer - no separate errand. Dispatched (not pre-built)
+    // because the reprice pass inserts its steps at runtime; the dispatch inserts
+    // the rider's steps ahead of the close below, so they run while the list is up.
+    _taskManager.Enqueue(() => { RiderDispatch(retainerName); return true; }, $"RiderDispatch{index}");
+
     _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, $"CloseRetainerSellList{index}");
     _taskManager.DelayNext(100);
 
@@ -493,6 +525,198 @@ internal sealed class AutoPinch : Window, IDisposable
 
     _taskManager.Enqueue(GameNavigation.CloseRetainer, $"CloseRetainer{index}");
     _taskManager.DelayNext(100);
+  }
+
+  // ==========================================================================
+  // Vendor rider (WALK unit 3): Pull & Vendor unanimous rows drained inside the
+  // pinch's own retainer visit. The selection (which rows ride, per-retainer) is
+  // the pure VendorRider core; this is the execution - the same pull-then-vendor
+  // steps the manual Pull & Vendor executor runs, now woven into the pinch chain,
+  // reporting into the pinch run log and stamping the routing receipt exactly as
+  // the Hawk vendor path does (so assent-clears-dissent registers the act).
+  // ==========================================================================
+
+  /// <summary>
+  /// Snapshots the unanimous Pull &amp; Vendor rows the rider will drain this pinch,
+  /// grouped by retainer. Silent (empty map) when the rider is disabled or nothing
+  /// qualifies. Marks each riding row's queued action so the per-item steps below
+  /// have the Skipped() contract they share with the manual triage executor.
+  /// </summary>
+  private void SnapshotVendorRiders()
+  {
+    _riderByRetainer.Clear();
+    if (!Plugin.Configuration.PinchVendorRider) return;
+
+    var candidates = Plugin.Ledger.PullVendorRiderCandidates();
+    foreach (var item in VendorRider.Riders(candidates))
+      item.QueuedAction = TriageAction.Vendor;
+    _riderByRetainer = VendorRider.ByRetainer(candidates, i => i.RetainerName);
+  }
+
+  /// <summary>
+  /// Inserts this retainer's rider steps ahead of the queued sell-list close, so
+  /// they run while the list is still open (Insert prepends - build back-to-front:
+  /// last item first, each item's steps reversed, so execution is forward order).
+  /// A no-op when nothing rides here.
+  /// </summary>
+  private void RiderDispatch(string retainerName)
+  {
+    if (!Plugin.Configuration.PinchVendorRider) return;
+    if (!_riderByRetainer.TryGetValue(retainerName, out var riders) || riders.Count == 0) return;
+
+    for (int r = riders.Count - 1; r >= 0; r--)
+      InsertRiderItem(riders[r]);
+  }
+
+  /// <summary>
+  /// The per-item pull-then-vendor chain, inserted in reverse. Mirrors the manual
+  /// triage executor's vendor path: re-resolve the row by id at the open sell list
+  /// (a no-longer-listed row marks itself skipped and the chain no-ops), pull it to
+  /// inventory, wait for it to land, then vendor it. Bookkeeping is pinch-flavored:
+  /// the run log, not a triage summary, and the routing-receipt stamp the pull path
+  /// otherwise omits.
+  /// </summary>
+  private void InsertRiderItem(PricingItem item)
+  {
+    _taskManager.Insert(() => { _riderCatchall?.Dispose(); _riderCatchall = null; return true; },
+      $"RiderUnblock_{item.ItemName}");
+    _taskManager.Insert(() => { if (!RiderSkipped(item)) RiderBookSale(item); return true; },
+      $"RiderTrack_{item.ItemName}");
+    _taskManager.InsertDelayNext(500);
+    _taskManager.Insert(() => RiderSkipped(item) ? true : RiderFailClosed(item, GameNavigation.ClickVendorSellItem()),
+      $"RiderVendor_{item.ItemName}");
+    _taskManager.Insert(() => { if (!RiderSkipped(item)) { _riderCatchall?.Dispose(); _riderCatchall = GilTrackingState.Block("pinch_vendor_rider"); } return true; },
+      $"RiderBlock_{item.ItemName}");
+    _taskManager.InsertDelayNext(500);
+
+    // Wait for the pulled item to reach the bags (server round-trip, variable
+    // latency); a hard deadline marks the ITEM skipped so one slow arrival costs
+    // one item, never the whole pinch. The item stays in the bags either way.
+    var arrivalDeadline = DateTime.MinValue;
+    _taskManager.Insert(() =>
+    {
+      if (RiderSkipped(item)) return true;
+      if (arrivalDeadline == DateTime.MinValue)
+        arrivalDeadline = DateTime.UtcNow.AddMilliseconds(5000);
+      if (GameNavigation.TryClickInventoryItemById(item.ItemId, item.IsHq))
+        return true;
+      if (DateTime.UtcNow < arrivalDeadline)
+        return false; // not in bags yet - retry
+      Svc.Chat.Print($"[Scrooge] {item.ItemName} never arrived in bags — left unvendored (check inventory).");
+      item.QueuedAction = TriageAction.None;
+      return true;
+    }, $"RiderClickInv_{item.ItemName}");
+    _taskManager.InsertDelayNext(1000);
+    _taskManager.Insert(() => RiderSkipped(item) ? true : RiderFailClosed(item, GameNavigation.ClickReturnToInventory()),
+      $"RiderReturn_{item.ItemName}");
+    _taskManager.InsertDelayNext(500);
+    _taskManager.Insert(() => RiderOpenRow(item), $"RiderOpenRow_{item.ItemName}");
+  }
+
+  /// <summary>An item skipped mid-chain (no longer listed, or a missing menu entry) - later steps no-op.</summary>
+  private static bool RiderSkipped(PricingItem item)
+    => TriageMemory.ItemSkipped(item.QueuedAction, item.Result);
+
+  /// <summary>
+  /// Translates a context-menu clicker's tri-state for the TaskManager: a null
+  /// (entry missing - fail closed) becomes a per-item skip, not a queue abort.
+  /// One bad menu costs one item, never the pinch.
+  /// </summary>
+  private static bool? RiderFailClosed(PricingItem item, bool? clickResult)
+  {
+    if (clickResult != null) return clickResult;
+    Svc.Chat.Print($"[Scrooge] {item.ItemName} — expected menu entry missing; item skipped (see /xllog).");
+    item.QueuedAction = TriageAction.None;
+    return true;
+  }
+
+  /// <summary>
+  /// Opens the sell-list context menu for the rider's row, re-resolving it by
+  /// (item id, HQ) against the DISPLAYED rows - recorded slot indexes go stale the
+  /// moment anything sells. A row that is no longer listed marks itself skipped and
+  /// closes its ledger row; the chain moves on.
+  /// </summary>
+  private unsafe bool? RiderOpenRow(PricingItem item)
+  {
+    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerSellList", out var addon)
+        || !GenericHelpers.IsAddonReady(addon))
+      return false; // sell list not ready yet - retry
+
+    if (GameSafe.SellListRow(item.ItemId, item.IsHq) is not { } row)
+    {
+      Svc.Chat.Print($"[Scrooge] {item.ItemName} is no longer listed on {item.RetainerName} — skipped (likely sold).");
+      item.QueuedAction = TriageAction.None;
+      Plugin.Ledger.RemoveItem(item); // row is moot - close its flags
+      return true;
+    }
+
+    item.Quantity = row.Quantity; // live stack size (flag rows start unknown)
+    return GameNavigation.OpenItemContextMenu(row.RowIndex);
+  }
+
+  /// <summary>
+  /// Books a completed rider vendor sale: the pinch run log (its end-of-run summary
+  /// then reports the vendored count and gil), the gil ledger, and the routing
+  /// receipt stamp the Hawk vendor path writes - assent-clears-dissent (v2.17) keys
+  /// off exactly this executed, unoverridden act. The pull evicted the listing
+  /// without a market sale, so its forecast receipts close never-cleared, same as
+  /// the manual pull path. Finally retires the ledger row.
+  /// </summary>
+  private void RiderBookSale(PricingItem item)
+  {
+    var vendorPrice = (int)Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(item.ItemId).PriceLow;
+    var qty = item.Quantity > 0 ? item.Quantity : 1;
+    var totalGil = vendorPrice * qty;
+
+    Plugin.PinchRunLog.AddVendorSale(totalGil);
+    Plugin.PinchRunLog.AddEntry(ItemOutcome.VendorSold, item.ItemName,
+      $"Pull & Vendor — {totalGil:N0} gil ({vendorPrice:N0} × {qty})");
+    Communicator.PrintVendorSold(item.ItemName, vendorPrice, qty);
+
+    if (Plugin.Configuration.EnableGilTracking)
+    {
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      GilStorage.InsertTransaction(now, "earned", "vendor_sale", totalGil,
+        item.ItemId, item.ItemName, GilTracker.GetItemCategory(item.ItemId),
+        qty, vendorPrice, item.IsHq, "", "NPC Vendor");
+    }
+
+    // Stamp the standing routing receipt - the item's Vendor exit executed (the
+    // same stamp the Hawk vendor path writes; not a fifth unstamped path).
+    try { GilStorage.MarkRoutingReceiptExecuted(item.ItemId, item.IsHq, "Vendored"); } catch { }
+    // Pull evicted the listing without an MB sale - its forecast never got tested.
+    if (Plugin.Configuration.EnableGilTracking && item.ItemId != 0)
+      try { GilStorage.CloseReceiptsNeverCleared(item.ItemId, item.IsHq); } catch { }
+
+    Plugin.Ledger.RemoveItem(item);
+  }
+
+  /// <summary>
+  /// Auto-confirms the "unable to process item buyback requests" dialog that
+  /// appears when dismissing a retainer after the rider vendor-sold items - the
+  /// same guard the manual triage executor arms. Ignores unexpected dialogs.
+  /// </summary>
+  private unsafe void AutoConfirmVendorDismiss(AddonEvent type, AddonArgs args)
+  {
+    var addon = new AddonMaster.SelectYesno(args.Addon);
+    if (addon.Text.Contains("unable to process item buyback requests"))
+    {
+      Svc.Log.Debug("[Rider] Auto-confirming vendor dismiss dialog");
+      addon.Yes();
+    }
+  }
+
+  /// <summary>Tears down the rider's per-run state: the buyback listener and any live catchall block.</summary>
+  private void RiderCleanup()
+  {
+    if (_riderListenerActive)
+    {
+      Svc.AddonLifecycle.UnregisterListener(AddonEvent.PostSetup, "SelectYesno", AutoConfirmVendorDismiss);
+      _riderListenerActive = false;
+    }
+    _riderCatchall?.Dispose();
+    _riderCatchall = null;
+    _riderByRetainer.Clear();
   }
 
   /// <summary>

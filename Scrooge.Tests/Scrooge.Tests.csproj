@@ -48,6 +48,7 @@
     <Compile Include="..\Scrooge\RipenessSensors.cs" Link="Linked\RipenessSensors.cs" />
     <Compile Include="..\Scrooge\SweepPlan.cs" Link="Linked\SweepPlan.cs" />
     <Compile Include="..\Scrooge\Spine.cs" Link="Linked\Spine.cs" />
+    <Compile Include="..\Scrooge\VendorRider.cs" Link="Linked\VendorRider.cs" />
   </ItemGroup>
 
 </Project>
