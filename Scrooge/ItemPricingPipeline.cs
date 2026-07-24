@@ -530,12 +530,14 @@ internal sealed class ItemPricingPipeline : IDisposable
           if (floorPrice > 0 && price < floorPrice)
           {
             currentItem.FinalPrice = null;
+            currentItem.RejectedPrice = price; // the operand that lost - narration renders THIS, not the board read
             currentItem.Result = PricingResult.BelowFloor;
           }
           else if (Plugin.Configuration.MinimumListingPrice > 0
                    && price < Plugin.Configuration.MinimumListingPrice)
           {
             currentItem.FinalPrice = null;
+            currentItem.RejectedPrice = price;
             currentItem.Result = PricingResult.BelowMinimum;
           }
           else

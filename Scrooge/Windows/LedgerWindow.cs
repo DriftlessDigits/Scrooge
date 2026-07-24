@@ -1503,10 +1503,16 @@ internal sealed class LedgerWindow : Window
   {
     return item.Result switch
     {
+      // RejectedPrice is the operand the guard actually compared (lane path) -
+      // MbPrice is the board read, which can sit far above the rejected lane
+      // candidate. Board path leaves RejectedPrice null; there MbPrice IS the
+      // compared operand. (The Mossy Stone Daggers fix, 07-23.)
       PricingResult.BelowMinimum =>
-        $"Below Minimum (MB/ea at {item.MbPrice:N0} gil < {Plugin.Configuration.MinimumListingPrice:N0} gil min)",
+        $"Below Minimum ({(item.RejectedPrice ?? item.MbPrice):N0} gil/ea < {Plugin.Configuration.MinimumListingPrice:N0} gil min)",
       PricingResult.BelowFloor =>
-        $"Below Floor (MB/ea at {item.MbPrice:N0} gil < {item.VendorPrice:N0} gil vendor)",
+        Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave
+          ? $"Below Floor ({(item.RejectedPrice ?? item.MbPrice):N0} gil/ea < {item.VendorPrice * 2:N0} gil enclave 2x)"
+          : $"Below Floor ({(item.RejectedPrice ?? item.MbPrice):N0} gil/ea < {item.VendorPrice:N0} gil vendor)",
       PricingResult.CapBlocked =>
         $"Cap ({item.CurrentListingPrice:N0} -> {item.MbPrice:N0}, {item.PriceChangePercent:F0}%)",
       PricingResult.UndercutTooDeep =>
