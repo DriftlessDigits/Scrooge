@@ -588,6 +588,13 @@ internal sealed class TriageOrchestrator : IDisposable
         item.ItemId, item.ItemName, GilTracker.GetItemCategory(item.ItemId),
         item.Quantity, vendorPrice, item.IsHq, "", "NPC Vendor");
     }
+
+    // Stamp the routing receipt: a manual pull-and-vendor is an executed,
+    // unoverridden Vendor act, and assent-clears-dissent (v2.17) keys off
+    // exactly this stamp. This path never wrote it (unit 3 find, 07-23) -
+    // the Hawk vendor path and the pinch's rider were the only stampers, so
+    // manual vendoring could never feed the pardon.
+    try { GilStorage.MarkRoutingReceiptExecuted(item.ItemId, item.IsHq, "Vendored"); } catch { }
   }
 
   /// <summary>Auto-clicks the retainer greeting dialog.</summary>
