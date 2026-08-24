@@ -93,7 +93,7 @@ public record MarketSnapshot
 /// A persistent triage flag (triage_flags table) - an item Scrooge held or
 /// warned about, kept open across sessions until acted on or dismissed.
 /// </summary>
-public record TriageFlag
+public record StandingFlag
 {
   public long Id { get; init; }
   public long CreatedAt { get; init; }               // Unix seconds

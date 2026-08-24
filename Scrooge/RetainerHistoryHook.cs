@@ -83,7 +83,7 @@ internal sealed class RetainerHistoryHook : IDisposable
 
       if (entries.Count > 0)
       {
-        // Use the retainer name set by AutoPinch before clicking Sale History
+        // Use the retainer name set by the pinch executor before clicking Sale History
         var retainerName = GilTracker.CurrentRetainerName;
         GilTracker.ProcessSaleHistory(entries, retainerName);
       }

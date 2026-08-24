@@ -33,20 +33,24 @@ public static class Communicator
     if (oldPrice == null || newPrice == null || oldPrice.Value == newPrice.Value)
       return;
 
-    var dec = oldPrice.Value > newPrice.Value ? "cut" : "increase";
+    // THE ARTICLE RIDES THE NOUN. "a increase of 12%" was a hardcoded "a" in front of a
+    // word chosen at runtime; carrying the article with the word it belongs to is the
+    // fix that cannot come apart again, whatever nouns get added later.
+    var dec = oldPrice.Value > newPrice.Value ? "a cut" : "an increase";
+    var move = MathF.Abs(MathF.Round(cutPercentage, 2));
     var itemPayload = RawItemNameToItemPayload(itemName);
 
     if (itemPayload != null)
     {
       var seString = new SeStringBuilder()
           .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-          .AddText($": Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0} gil, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%")
+          .AddText($": Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0} gil, {dec} of {move}%")
           .Build();
 
       Svc.Chat.Print(seString);
     }
     else
-      Svc.Chat.Print($"{itemName}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0}, a {dec} of {MathF.Abs(MathF.Round(cutPercentage, 2))}%");
+      Svc.Chat.Print($"{itemName}: Pinching from {oldPrice.Value:N0} to {newPrice.Value:N0}, {dec} of {move}%");
   }
 
   /// <summary>
@@ -130,29 +134,44 @@ public static class Communicator
     return null;
   }
 
-  public static void PrintAboveMaxCutError(string itemName)
-  {
-    var pct = Plugin.Configuration.MaxUndercutPercentage;
-    PrintItemError(itemName, $"Item ignored because it would cut the price by more than {pct}%");
-  }
+  /// <summary>
+  /// The crasher-guard's chat line. A WARNING since 2026-08-21, not a skip notice:
+  /// nothing was ignored, the write is waiting on the player. The operands are printed
+  /// here even though the run log speaks the same sentence - chat is where a player
+  /// watching the pinch scroll by sees it first.
+  /// </summary>
+  public static void PrintDeepCutWarning(string itemName, int cutPct, long oldPrice, long proposed)
+    => PrintItemError(itemName,
+      $"Cutting {cutPct}% under the anchor - {oldPrice:N0} down to {proposed:N0}. "
+      + "Competition or crasher? Confirm to follow the price.");
 
-  public static void PrintAboveMaxIncreaseError(string itemName, float increasePercentage)
+  /// <summary>
+  /// The one floor verdict in chat. Names the binding floor and both operands - the
+  /// honest ask that lost and the number it lost to - because "below the floor" with
+  /// no numbers sends the player looking through three settings for which one fired.
+  /// </summary>
+  /// <remarks>INTERNAL because <see cref="EffectiveFloor"/> is: the one floor law made
+  /// this line take the floor itself rather than re-deriving a label from config, and a
+  /// public method cannot accept an internal operand. Nothing outside the plugin calls
+  /// it.</remarks>
+  internal static void PrintBelowPriceFloorError(string itemName, EffectiveFloor floor, long honestAsk)
   {
-    var actual = MathF.Abs(MathF.Round(increasePercentage, 1));
-    var max = Plugin.Configuration.MaxPriceIncreasePercentage;
-    PrintItemError(itemName, $"Item ignored because the price would increase by {actual}% (max {max}%)");
-  }
-
-  public static void PrintBelowPriceFloorError(string itemName)
-  {
-    var floorLabel = Plugin.Configuration.PriceFloorMode == PriceFloorMode.Vendor ? "Vendor price" : "Max Doman Enclave price (2x vendor)";
-    PrintItemError(itemName, $"Item ignored because it would cut the price below {floorLabel}");
-  }
-
-  public static void PrintBelowMinimumListingPriceError(string itemName)
-  {
-    var minPrice = Plugin.Configuration.MinimumListingPrice.ToString("N0");
-    PrintItemError(itemName, $"Item ignored because it would cut the price below the minimum listing price of {minPrice} gil");
+    // EVERY BINDING SPEAKS ITS OWN WORDING (the mechanical pile, 3b). The catch-all
+    // used to be the vendor's, so a FloorBinding.None floor would have named a vendor
+    // counter that never bound anything. Unreachable today - the verdict only fires
+    // when EffectiveFloor.Refuses did, and that needs a floor above zero - which is
+    // exactly why it is cheap insurance now and expensive the day a fifth binding
+    // lands. The pin under it is what keeps it unfolded.
+    var clause = floor.Binding switch
+    {
+      FloorBinding.PlayerMinimum => $"your {floor.Floor:N0} gil minimum",
+      FloorBinding.DomanEnclave => $"the Doman Enclave's {floor.Floor:N0} gil (2x vendor)",
+      FloorBinding.Vendor => $"the vendor's {floor.Floor:N0} gil",
+      _ => "the floor",
+    };
+    PrintItemError(itemName,
+      $"No legal ask - honest price {honestAsk:N0} gil/ea sits under {clause}. "
+      + "List sits out; the other exits compete.");
   }
 
   /// <summary>Prints a chat message when an item is vendor-sold through the retainer.</summary>
@@ -172,31 +191,6 @@ public static class Communicator
       Svc.Chat.Print($"{itemName}: Vendor-sold for {total:N0} gil");
   }
 
-  /// <summary>Informs the user that an outlier listing was detected and skipped.</summary>
-  /// <param name="itemId">The item's row ID from the game data sheet.</param>
-  /// <param name="outlierPrice">The bait listing price that was skipped.</param>
-  /// <param name="nextPrice">The next valid price tier being used instead.</param>
-  public static void PrintOutlierDetected(uint itemId, int outlierPrice, int nextPrice)
-  {
-    if (!Plugin.Configuration.ShowOutlierDetectionMessages)
-      return;
-
-    var itemPayload = new ItemPayload(itemId, false);
-
-    var seString = new SeStringBuilder()
-        .AddItemLink(itemPayload.ItemId, false)
-        .AddText(": ")
-        .AddUiForeground("Outlier detected", 540)
-        .AddText(" — skipping ")
-        .AddUiForeground($"{outlierPrice:N0}", 17)
-        .AddText(" gil, using ")
-        .AddUiForeground($"{nextPrice:N0}", 45)
-        .AddText(" gil")
-        .Build();
-
-    Svc.Chat.Print(seString);
-  }
-
   /// <summary>Prints the retainer name header when starting to pinch a retainer's items.</summary>
   /// <param name="name">The retainer's display name.</param>
   public static void PrintRetainerName(string name)
@@ -211,9 +205,54 @@ public static class Communicator
     Svc.Chat.Print(seString);
   }
 
-  public static void PrintNoPriceToSetError(string itemName)
+  /// <summary>
+  /// THE NO-PRICE LINE, CARRYING ITS REASON (V22). It said only that nothing was
+  /// written - over a row whose reason was already composed, already in the run log and
+  /// already banked - so the player got the refusal in chat and had to go somewhere
+  /// else to learn why. <see cref="PrintLaneHeld"/> has printed the row's own reason
+  /// since Phase 3b (<see cref="PricingVoice.HeldReason"/>); this is that pattern at
+  /// the other door.
+  ///
+  /// <para>Printed here rather than through <see cref="PrintItemError"/> because the
+  /// sentence names the item INSIDE itself: that helper prefixes the link and would put
+  /// the name on the line twice. Same chat gate, same link, one copy of one fact.</para>
+  /// </summary>
+  /// <param name="itemName">Raw item name from the game addon.</param>
+  /// <param name="reason">
+  /// The row's own reason. Defaults to the sentence the only caller's run-log row
+  /// already speaks - the board came back with nothing - so chat and the transcript
+  /// cannot carry two wordings of one refusal. Empty prints the bare verdict.
+  /// </param>
+  public static void PrintNoPriceToSetError(string itemName, string? reason = null)
   {
-    PrintItemError(itemName, "No price to set, please set price manually");
+    if (!Plugin.Configuration.ShowErrorsInChat)
+      return;
+
+    var why = reason ?? RunLogVoice.Reasons.NoBoardData;
+    var clause = string.IsNullOrWhiteSpace(why) ? "." : $" - {Closed(why)}";
+    const string tail = " Set it manually if you want it up.";
+
+    var itemPayload = RawItemNameToItemPayload(itemName);
+    if (itemPayload != null)
+    {
+      var seString = new SeStringBuilder()
+        .AddText("No price to set for ")
+        .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
+        .AddText($"{clause}{tail}")
+        .Build();
+      Svc.Chat.PrintError(seString);
+    }
+    else
+      Svc.Chat.PrintError(
+        $"No price to set for {CleanItemName(itemName, out _)}{clause}{tail}");
+  }
+
+  /// <summary>One trailing period, never two. The reason sentences arrive from several
+  /// composers and most of them already end in one.</summary>
+  private static string Closed(string text)
+  {
+    var trimmed = text.Trim();
+    return trimmed.Length == 0 || trimmed[^1] is '.' or '!' or '?' ? trimmed : trimmed + ".";
   }
 
   /// <summary>Error: user tried to auto-pinch but all retainers are disabled in config.</summary>
@@ -248,7 +287,7 @@ public static class Communicator
   }
 
   /// <summary>Chat summary after a triage run completes.</summary>
-  public static void PrintTriageSummary(int vendorCount, long totalGil, int pulledCount = 0)
+  public static void PrintStandingSummary(int vendorCount, long totalGil, int pulledCount = 0)
   {
     var parts = new List<string>();
     if (vendorCount > 0)
@@ -258,11 +297,11 @@ public static class Communicator
 
     if (parts.Count == 0)
     {
-      Svc.Chat.Print("[Scrooge] Triage complete — no items processed.");
+      Svc.Chat.Print("[Scrooge] Standing listings complete — no items processed.");
       return;
     }
 
-    Svc.Chat.Print($"[Scrooge] Triage complete — {string.Join(", ", parts)}.");
+    Svc.Chat.Print($"[Scrooge] Standing listings complete — {string.Join(", ", parts)}.");
   }
 
   /// <summary>
@@ -289,7 +328,7 @@ public static class Communicator
     if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
       return;
 
-    var ageLabel = daysAgo <= 0 ? "today" : $"{daysAgo}d ago";
+    var ageLabel = OnMarket.DayAge(daysAgo);
     var itemPayload = RawItemNameToItemPayload(itemName);
     if (itemPayload != null)
     {
@@ -303,8 +342,20 @@ public static class Communicator
       Svc.Chat.Print($"{itemName}: Market is silent — using your own sale history ({price:N0} gil, sold {ageLabel})");
   }
 
-  /// <summary>Chat message when sale history is used instead of outlier listing.</summary>
-  public static void PrintHistoryFallback(string itemName, int price, int saleCount)
+  /// <summary>
+  /// Chat message when the lane holds an item for the player's call.
+  ///
+  /// <para><b>IT SPEAKS THE ROW'S OWN REASON</b> (V12, ruled B7). The prefix used to be
+  /// the hardcoded "(not enough sales)" - printed over an item whose evidence might say
+  /// the board never answered at all, which is a different silence and sends the player
+  /// looking at the wrong thing. <see cref="PricingVoice.HeldReason"/> already answered
+  /// this per row and nothing was calling it. The long-form evidence is not repeated
+  /// here: the two are documented as two LENGTHS of one fact, never two versions, and
+  /// printing both in one line would say the same thing twice. The numbers behind it
+  /// ride the run-log row's hover, where every other evidence layer lives.</para>
+  /// </summary>
+  /// <param name="reason">The row's own held reason, from <see cref="PricingVoice.HeldReason"/>.</param>
+  public static void PrintLaneHeld(string itemName, string reason)
   {
     if (!Plugin.Configuration.ShowPriceAdjustmentsMessages)
       return;
@@ -314,11 +365,11 @@ public static class Communicator
     {
       var seString = new SeStringBuilder()
         .AddItemLink(itemPayload.ItemId, itemPayload.IsHQ)
-        .AddText($": Using sale history (median {price:N0} gil from {saleCount} sales)")
+        .AddText($": Held - {reason}")
         .Build();
       Svc.Chat.Print(seString);
     }
     else
-      Svc.Chat.Print($"{itemName}: Using sale history (median {price:N0} gil from {saleCount} sales)");
+      Svc.Chat.Print($"{itemName}: Held - {reason}");
   }
 }

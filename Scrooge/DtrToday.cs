@@ -8,7 +8,10 @@ namespace Scrooge;
 
 /// <summary>
 /// The one glanceable number, in the server info bar: today's total-gil
-/// delta ("$ Today: +214k"). One DTR slot, ever - the glanceability rule
+/// delta ("$ Today: +214,000"). The abbreviated "+214k" this example used to
+/// show has not been the format since the entry moved onto
+/// <see cref="Windows.Format.SignedGil"/> - separators always, no k/M
+/// shortening. One DTR slot, ever - the glanceability rule
 /// from the UI pass; goals and ventures stay out of the bar. Click opens
 /// the dashboard. Refreshes on a 30s gate off the same rollup the money
 /// line uses.

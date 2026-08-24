@@ -27,7 +27,7 @@ internal static class GameNavigation
     {
       var retainerName = new AddonMaster.RetainerList(addon).Retainers[index].Name;
 
-      Plugin.PinchRunLog?.SetCurrentRetainer(retainerName);
+      Plugin.Ledger?.SetCurrentRetainer(retainerName);
       Communicator.PrintRetainerName(retainerName);
       if (Plugin.Configuration.EnableGilTracking)
         GilTracker.SetRetainer(retainerName);
@@ -95,15 +95,28 @@ internal static class GameNavigation
     return false;
   }
 
-  /// <summary>Close the RetainerHistory (Sale History) addon.</summary>
+  /// <summary>
+  /// Close the RetainerHistory (Sale History) addon.
+  /// Tri-state on presence: present + ready = close; present but NOT ready =
+  /// retry (the server is still filling it — closing now no-ops and the
+  /// window blocks SelectString once it loads); absent = skip, don't block
+  /// (ClickSaleHistory's skip path never opened it). Conflating the middle
+  /// case with absence killed the 2026-07-19 01:14 pinch one step from the
+  /// finish. TaskManager's task timeout is the loud backstop if the addon
+  /// wedges in not-ready forever.
+  /// </summary>
   internal static unsafe bool? CloseSaleHistory()
   {
-    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerHistory", out var addon) && GenericHelpers.IsAddonReady(addon))
+    if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("RetainerHistory", out var addon))
     {
-      addon->Close(true);
-      return true;
+      if (GenericHelpers.IsAddonReady(addon))
+      {
+        addon->Close(true);
+        return true;
+      }
+      return false; // present but still loading — retry until ready, then close
     }
-    return true; // might not be open yet — don't block
+    return true; // never opened — skip path, don't block
   }
 
   /// <param name="itemIndex">Item index in the RetainerSellList addon.</param>
@@ -161,12 +174,12 @@ internal static class GameNavigation
         continue;
       if (entry.Select())
         return true;
-      Svc.Log.Warning($"[Triage] '{entryText}' found but not selectable (native={entry.IsNativeEntry}, enabled={entry.Enabled})");
+      Svc.Log.Warning($"[Standing] '{entryText}' found but not selectable (native={entry.IsNativeEntry}, enabled={entry.Enabled})");
       addon->Close(true);
       return null;
     }
 
-    Svc.Log.Warning($"[Triage] '{entryText}' not in context menu — entries: {string.Join(" | ", menu.Entries.Select(e => e.Text))}");
+    Svc.Log.Warning($"[Standing] '{entryText}' not in context menu — entries: {string.Join(" | ", menu.Entries.Select(e => e.Text))}");
     addon->Close(true);
     return null;
   }
@@ -218,7 +231,7 @@ internal static class GameNavigation
           var inventoryAgent = AgentInventory.Instance();
           if (agent == null || inventoryAgent == null)
           {
-            Svc.Log.Warning("[Triage] Inventory agent unavailable — can't open context menu");
+            Svc.Log.Warning("[Standing] Inventory agent unavailable — can't open context menu");
             return false;
           }
           agent->OpenForItemSlot(containerType, i, 0, inventoryAgent->OpenAddonId);

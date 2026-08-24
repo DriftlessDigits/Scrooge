@@ -25,7 +25,7 @@ internal static class GilTracker
   private static int _finalItemCount;
   private static long _finalListingValue;
 
-  /// <summary>Current retainer name — set by AutoPinch, read by the hook.</summary>
+  /// <summary>Current retainer name — set by the pinch executor, read by the hook.</summary>
   public static string CurrentRetainerName { get; set; } = String.Empty;
 
   // --- Lumina Helpers ---
@@ -60,7 +60,7 @@ internal static class GilTracker
 
   /// <summary>
   /// Records the final (post-adjustment) price for an item and updates the listing in the DB.
-  /// Called from AutoPinch.SetNewPrice for every item after pricing.
+  /// Called from ItemPricingPipeline.SetNewPrice for every item after pricing.
   /// </summary>
   public static void RecordFinalPrice(uint itemId, int unitPrice, int quantity)
   {
@@ -98,6 +98,8 @@ internal static class GilTracker
     // Step 1: Read existing first_seen values before we delete
     // (so we can preserve them for items that are still listed)
     var existingFirstSeen = new Dictionary<string, long>();
+    var seenItemIds = new HashSet<uint>(); // for the zombie lane_held round below
+    var seenLanes = new HashSet<(uint ItemId, bool IsHq)>(); // for the receipt reconciler below
     for (int i = 0; i < itemCount; i++)
     {
       var baseIdx = 10 + (i * 13);
@@ -106,10 +108,25 @@ internal static class GilTracker
       var payload = Communicator.RawItemNameToItemPayload(itemName);
       var itemID = payload?.ItemId ?? 0u;
       if (itemID == 0) continue;
+      seenItemIds.Add(itemID);
 
       var fs = GilStorage.GetFirstSeen(CurrentRetainerName, slotIndex, itemID);
       if (fs.HasValue)
         existingFirstSeen[$"{slotIndex}|{itemID}"] = fs.Value;
+    }
+
+    // Zombie lane_held heal (M4): this pinch just observed the FULL sell-listings
+    // container for this retainer. Any open board-scope lane_held flag whose item is
+    // NOT among the listings has left the board - close it as item_gone. StandingMemory
+    // makes the pick; an inventory-scope flag (Molybdenum-in-inventory) or an unknown
+    // legacy flag is left open - a pinch only proves board absence, never inventory.
+    try
+    {
+      GilStorage.ZombieRoundLaneHeldFlags(CurrentRetainerName, StandingMemory.FlagScope.Board, seenItemIds);
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning($"[Standing] Zombie lane_held round failed: {ex.Message}");
     }
 
     // Step 2+3: Delete and re-insert in a transaction.
@@ -142,6 +159,8 @@ internal static class GilTracker
       var key = $"{slotIndex}|{itemID}";
       var firstSeen = existingFirstSeen.TryGetValue(key, out var fs) ? fs : now;
 
+      seenLanes.Add((itemID, isHQ));
+
       // Write to DB
       GilStorage.UpsertListing(CurrentRetainerName, slotIndex, itemID,
           cleanName, GetItemCategory(itemID), pricePerUnit, quantity,
@@ -171,6 +190,21 @@ internal static class GilTracker
     // stash for sale reconciliation (sold_after_days). Keyed per retainer;
     // replaced wholesale each snapshot so stale entries never accumulate.
     _recentDelistings[CurrentRetainerName] = previousAges;
+
+    // The pinch reconciler: this snapshot read the WHOLE sell list, so absence is
+    // evidence. Open decision receipts whose lane is not among the listings closed
+    // off the board unobserved. Provisional - the sale reconciliation that follows
+    // upgrades a gone-unobserved close to 'cleared' when the tape names the sale.
+    try
+    {
+      var gone = GilStorage.CloseReceiptsGoneUnobserved(CurrentRetainerName, seenLanes);
+      if (gone > 0)
+        Svc.Log.Debug($"[GilTrack] {gone} receipt(s) closed gone-unobserved for {CurrentRetainerName}");
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning($"[GilTrack] Receipt reconciliation failed: {ex.Message}");
+    }
 
     Svc.Log.Debug($"[GilTrack] Snapshotted {itemCount} listings for {CurrentRetainerName}");
   }
@@ -309,6 +343,15 @@ internal static class GilTracker
         soldAfterDays = (int)(((long)entry.UnixTimeSeconds - firstSeen) / 86400);
 
       GilStorage.UpsertLastSalePrice(entry.ItemID, entry.IsHQ, realUnitPrice, (long)entry.UnixTimeSeconds, soldAfterDays);
+
+      // Outcome join (M4): a confirmed sale fills time-to-clear on the item's open
+      // decision receipts and marks them cleared, and upgrades the item's own
+      // market-events disappearance from pulled/observed to sold/confirmed. Same
+      // certainty-tier discipline as the flag heal - a confirm is the only thing that
+      // says "sold"; foreign rows never move. Best-effort: a storage hiccup here must
+      // not drop the sale that already recorded above.
+      try { GilStorage.FillReceiptOutcomeOnSale(entry.ItemID, entry.IsHQ, (long)entry.UnixTimeSeconds, retainerName); }
+      catch (Exception ex) { Svc.Log.Warning($"[Receipt] Outcome join failed for {entry.ItemID}: {ex.Message}"); }
     }
 
     if (newCount > 0 || promotedCount > 0 || dedupedCount > 0)

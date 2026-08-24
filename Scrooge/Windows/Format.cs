@@ -15,13 +15,13 @@ internal static class Format
   internal const char HqChar = (char)SeIconChar.HighQuality;
 
   /// <summary>"1,234,567" — plain gil amount.</summary>
-  internal static string Gil(long amount) => $"{amount:N0}";
+  internal static string Gil(long amount) => MoneyText.Gil(amount);
 
   /// <summary>"1,234,567 [coin]" — amount with the gil glyph, for headline money.</summary>
-  internal static string GilIcon(long amount) => $"{amount:N0}{GilChar}";
+  internal static string GilIcon(long amount) => $"{MoneyText.Gil(amount)}{GilChar}";
 
   /// <summary>"+1,234" / "-1,234" / "+0" — explicit sign, separators kept.</summary>
-  internal static string SignedGil(long delta) => delta >= 0 ? $"+{delta:N0}" : $"{delta:N0}";
+  internal static string SignedGil(long delta) => MoneyText.SignedGil(delta);
 
   /// <summary>Appends the HQ glyph when the item is HQ.</summary>
   internal static string Hq(string name, bool isHq) => isHq ? $"{name} {HqChar}" : name;

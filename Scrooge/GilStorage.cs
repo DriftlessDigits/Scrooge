@@ -9,17 +9,35 @@ namespace Scrooge;
 /// <summary>
 /// SQLite-backed persistent storage for gil tracking data and quotes.
 /// Replaces the old JSON-based GilData approach. All database access
-/// goes through this class — no other file touches SQL.
+/// goes through this class — no other file touches SQL. The class is split
+/// across <c>GilStorage.*.cs</c> partials, one per table family; this file
+/// holds the connection itself and the lifecycle that opens, resets, prunes
+/// and closes it.
 /// </summary>
-internal static class GilStorage
+internal static partial class GilStorage
 {
   private static SqliteConnection? _connection;
+
   internal static string DbPath => Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "scrooge.db");
 
   /// <summary>The shared SQLite connection. Borrowers must not Dispose it.</summary>
   internal static SqliteConnection Connection =>
     _connection ?? throw new InvalidOperationException(
       "GilStorage is not initialized — Initialize() failed or Dispose() already ran");
+
+  /// <summary>
+  /// Whether storage is open and climbed. False before Initialize(), after a failed
+  /// Initialize(), and after Dispose() — the one thing a caller can ASK instead of
+  /// finding out by exception.
+  ///
+  /// <para>It exists because "gil tracking disabled" used to be a log line and
+  /// nothing else: a migration that threw left the connection assigned and every
+  /// caller happily querying a half-climbed database. Now a failure nulls the
+  /// connection, so <see cref="Connection"/> throws honestly everywhere and this
+  /// flag lets the startup path skip the dependents it knows about rather than
+  /// building them against a corpse.</para>
+  /// </summary>
+  internal static bool StorageAvailable => _connection != null;
 
   // =========================================================================
   // Lifecycle
@@ -28,21 +46,91 @@ internal static class GilStorage
   /// <summary>
   /// Opens the database, runs bootstrap (tables, migration, seeds), and prunes.
   /// Called once from Plugin constructor.
+  ///
+  /// <para>FAIL CLOSED: if the climb or the prune throws, the connection is disposed
+  /// and dropped before the exception leaves. A half-migrated database is not a
+  /// degraded database to read around — it is one whose shape no longer matches what
+  /// the queries believe, and every read off it is a wrong answer wearing numbers.</para>
   /// </summary>
   internal static void Initialize()
   {
     Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
     _connection = new SqliteConnection($"Data Source={DbPath}");
-    _connection.Open();
 
-    // WAL mode prevents SQLITE_BUSY when the hook writes on the game thread while the UI reads on the draw thread
-    using (var walCmd = new SqliteCommand("PRAGMA journal_mode=WAL;", _connection))
-      walCmd.ExecuteNonQuery();
+    try
+    {
+      _connection.Open();
 
-    // All first-time setup lives in the bootstrap file
-    GilStorageBootstrap.Run(_connection);
+      // WAL mode prevents SQLITE_BUSY when the hook writes on the game thread while the UI reads on the draw thread
+      using (var walCmd = new SqliteCommand("PRAGMA journal_mode=WAL;", _connection))
+        walCmd.ExecuteNonQuery();
 
-    Prune();
+      // All first-time setup lives in the bootstrap file. The ladder is
+      // Dalamud-free (linked-source tested); the real sinks are wired here,
+      // once, before the climb.
+      GilStorageBootstrap.LogInfo = m => Svc.Log.Info(m);
+      GilStorageBootstrap.LogDebug = m => Svc.Log.Debug(m);
+      GilStorageBootstrap.LogError = (m, ex) => Svc.Log.Error(ex, m);
+      GilStorageBootstrap.JsonDirProvider = () => Plugin.PluginInterface.GetPluginConfigDirectory();
+      GilStorageBootstrap.JsonImporter = ImportLegacyJson;
+      GilStorageBootstrap.Run(_connection);
+
+      Prune();
+    }
+    catch
+    {
+      try { _connection.Dispose(); } catch { /* the failure that matters is the one on its way out */ }
+      _connection = null;
+      throw;
+    }
+  }
+
+  /// <summary>
+  /// THE V1 LEGACY-JSON IMPORT (moved here from the bootstrap when the ladder went
+  /// Dalamud-free, 08-22): reads gil_data.json and writes it through this class's
+  /// own insert methods. The ladder calls it through the JsonImporter seam and owns
+  /// the transaction, the .bak rename, and the retry-on-failure semantics.
+  /// </summary>
+  private sealed class LegacyGilData
+  {
+    public System.Collections.Generic.List<SaleRecord> Sales { get; set; } = [];
+    public System.Collections.Generic.List<GilSnapshot> GilHistory { get; set; } = [];
+    public System.Collections.Generic.List<MarketSnapshot> MarketHistory { get; set; } = [];
+    public System.Collections.Generic.List<ListingRecord> CurrentListings { get; set; } = [];
+  }
+
+  private static bool ImportLegacyJson(string jsonPath)
+  {
+    var json = File.ReadAllText(jsonPath);
+    var data = System.Text.Json.JsonSerializer.Deserialize<LegacyGilData>(json);
+    if (data == null) return false; // Corrupt/empty — fail, retry next time
+
+    foreach (var sale in data.Sales)
+      InsertTransaction(sale.SaleTimestamp, "earned", "retainer_sale",
+          sale.TotalGil, sale.ItemId, sale.ItemName, sale.Category,
+          sale.Quantity, sale.UnitPrice, sale.IsHQ, sale.RetainerName,
+          sale.BuyerName);
+
+    foreach (var snap in data.GilHistory)
+    {
+      var snapshotId = InsertGilSnapshot(snap.Timestamp, snap.PlayerGil, "pinch_run");
+      foreach (var (name, gil) in snap.RetainerGil)
+        InsertRetainerSnapshot(snapshotId, name, gil);
+    }
+
+    foreach (var ms in data.MarketHistory)
+      InsertMarketSnapshot(ms.Timestamp, ms.ItemCount,
+          ms.TotalListingValue, ms.AverageListingAgeDays, "full");
+
+    foreach (var listing in data.CurrentListings)
+      UpsertListing(listing.RetainerName, listing.SlotIndex,
+          listing.ItemId, listing.ItemName, listing.Category,
+          listing.UnitPrice, listing.Quantity, listing.IsHQ,
+          listing.FirstSeenTimestamp, listing.LastUpdatedTimestamp);
+
+    Svc.Log.Info($"[GilTrack] Migrated {data.Sales.Count} sales, " +
+        $"{data.GilHistory.Count} snapshots from JSON to SQLite. Backup: gil_data.json.bak");
+    return true;
   }
 
   /// <summary>Begins a transaction. Caller must Commit() or Dispose() to rollback.</summary>
@@ -90,1197 +178,35 @@ internal static class GilStorage
     _connection = null;
   }
 
-
   // =========================================================================
-  // Gil Tracking — Writes (called from GilTracker)
+  // Sitrep - one-paste diagnostics
   // =========================================================================
 
   /// <summary>
-  /// Inserts a gil balance snapshot. Returns the new row ID so retainer
-  /// snapshots can be linked to it.
+  /// Every scalar the sitrep dump quotes, in one pass. The dump used to hold its
+  /// own SQL strings and hand them to an arbitrary-SQL escape hatch, which put ten
+  /// queries in a file that formats text - and made this class's "no other file
+  /// touches SQL" header a claim rather than a fact. The statements now sit beside
+  /// the tables they name; Sitrep formats the struct.
   /// </summary>
-  internal static long InsertGilSnapshot(long timestamp, long playerGil, string source,
-      SqliteTransaction? transaction = null, int? ventureTokens = null)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO gil_snapshots (timestamp, player_gil, source, venture_tokens)
-      VALUES (@ts, @gil, @src, @vt);
-      SELECT last_insert_rowid();",
-      _connection);
-    cmd.Transaction = transaction;
-    cmd.Parameters.AddWithValue("@ts", timestamp);
-    cmd.Parameters.AddWithValue("@gil", playerGil);
-    cmd.Parameters.AddWithValue("@src", source);
-    cmd.Parameters.AddWithValue("@vt", (object?)ventureTokens ?? DBNull.Value);
-    return (long)cmd.ExecuteScalar()!;
-  }
+  internal static SitrepCounts ReadSitrepCounts() => new(
+    Scalar("SELECT COUNT(*) FROM listings"),
+    Scalar("SELECT SUM(unit_price * MAX(quantity, 1)) FROM listings"),
+    Scalar("SELECT venture_tokens FROM gil_snapshots WHERE venture_tokens IS NOT NULL ORDER BY timestamp DESC LIMIT 1"),
+    Scalar("SELECT COUNT(*) FROM routing_receipts"),
+    Scalar("SELECT COUNT(*) FROM routing_receipts WHERE executed_action IS NOT NULL"),
+    Scalar("SELECT COUNT(*) FROM routing_receipts WHERE player_overrode = 1"),
+    Scalar("SELECT COUNT(*) FROM routing_overrides"),
+    Scalar("SELECT COUNT(*) FROM triage_flags WHERE status = 'open'"),
+    Scalar("SELECT COUNT(*) FROM desynth_runs"),
+    Scalar("SELECT COUNT(*) FROM market_events"));
 
-  /// <summary>Records one collected venture result (V15).</summary>
-  internal static void InsertVentureReturn(long capturedAt, string retainerName,
-      uint itemId, int quantity, bool isHq)
+  /// <summary>Returns 0 on NULL (empty table aggregate, or no row at all).</summary>
+  private static long Scalar(string sql)
   {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO venture_returns (captured_at, retainer_name, item_id, quantity, is_hq)
-      VALUES (@ts, @ret, @item, @qty, @hq)",
-      _connection);
-    cmd.Parameters.AddWithValue("@ts", capturedAt);
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.Parameters.AddWithValue("@item", itemId);
-    cmd.Parameters.AddWithValue("@qty", quantity);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>Venture returns captured in the last N days, newest first.</summary>
-  internal static List<(long CapturedAt, string Retainer, uint ItemId, int Quantity, bool IsHq)>
-      GetVentureReturns(int sinceDays)
-  {
-    var rows = new List<(long, string, uint, int, bool)>();
-    var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
-    using var cmd = new SqliteCommand(
-      @"SELECT captured_at, retainer_name, item_id, quantity, is_hq
-        FROM venture_returns WHERE captured_at >= @cutoff
-        ORDER BY captured_at DESC",
-      _connection);
-    cmd.Parameters.AddWithValue("@cutoff", cutoff);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-      rows.Add((reader.GetInt64(0), reader.GetString(1), (uint)reader.GetInt64(2),
-        reader.GetInt32(3), reader.GetInt32(4) != 0));
-    return rows;
-  }
-
-  /// <summary>
-  /// Oldest and newest venture-token stock readings in the last N days
-  /// (bell-snapshot piggyback), or null when fewer than two readings exist.
-  /// Burn/acquire rate = the delta over the window.
-  /// </summary>
-  internal static ((long Ts, int Tokens) First, (long Ts, int Tokens) Last)? GetVentureTokenSpan(int sinceDays)
-  {
-    var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
-    using var cmd = new SqliteCommand(
-      @"SELECT timestamp, venture_tokens FROM gil_snapshots
-        WHERE venture_tokens IS NOT NULL AND timestamp >= @cutoff
-        ORDER BY timestamp ASC",
-      _connection);
-    cmd.Parameters.AddWithValue("@cutoff", cutoff);
-    using var reader = cmd.ExecuteReader();
-    (long, int)? first = null, last = null;
-    while (reader.Read())
-    {
-      var row = (reader.GetInt64(0), reader.GetInt32(1));
-      first ??= row;
-      last = row;
-    }
-    return first is { } f && last is { } l && f.Item1 != l.Item1
-      ? ((f.Item1, f.Item2), (l.Item1, l.Item2))
-      : null;
-  }
-
-  /// <summary>
-  /// Upserts one Universalis fetch round for a world (V16). Framework thread
-  /// only — callers marshal here from the fetch worker.
-  /// </summary>
-  internal static void UpsertUniversalisStats(uint worldId, List<UniversalisStat> stats, long fetchedAt)
-  {
-    using var tx = Connection.BeginTransaction();
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO universalis_stats (item_id, world_id, nq_velocity, hq_velocity, last_sale_at, last_upload_at, fetched_at)
-      VALUES (@item, @world, @nq, @hq, @sale, @upload, @fetched)
-      ON CONFLICT (item_id, world_id) DO UPDATE SET
-        nq_velocity = @nq, hq_velocity = @hq, last_sale_at = @sale,
-        last_upload_at = @upload, fetched_at = @fetched",
-      _connection, tx);
-    var pItem = cmd.Parameters.Add("@item", Microsoft.Data.Sqlite.SqliteType.Integer);
-    var pWorld = cmd.Parameters.Add("@world", Microsoft.Data.Sqlite.SqliteType.Integer);
-    var pNq = cmd.Parameters.Add("@nq", Microsoft.Data.Sqlite.SqliteType.Real);
-    var pHq = cmd.Parameters.Add("@hq", Microsoft.Data.Sqlite.SqliteType.Real);
-    var pSale = cmd.Parameters.Add("@sale", Microsoft.Data.Sqlite.SqliteType.Integer);
-    var pUpload = cmd.Parameters.Add("@upload", Microsoft.Data.Sqlite.SqliteType.Integer);
-    var pFetched = cmd.Parameters.Add("@fetched", Microsoft.Data.Sqlite.SqliteType.Integer);
-
-    pWorld.Value = worldId;
-    pFetched.Value = fetchedAt;
-    foreach (var stat in stats)
-    {
-      pItem.Value = stat.ItemId;
-      pNq.Value = stat.NqVelocity;
-      pHq.Value = stat.HqVelocity;
-      pSale.Value = (object?)stat.LastSaleAt ?? DBNull.Value;
-      pUpload.Value = (object?)stat.LastUploadAt ?? DBNull.Value;
-      cmd.ExecuteNonQuery();
-    }
-    tx.Commit();
-  }
-
-  /// <summary>All cached Universalis rows for one world, keyed by item id.</summary>
-  internal static Dictionary<uint, (UniversalisStat Stat, long FetchedAt)> GetUniversalisStats(uint worldId)
-  {
-    var rows = new Dictionary<uint, (UniversalisStat, long)>();
-    using var cmd = new SqliteCommand(
-      @"SELECT item_id, nq_velocity, hq_velocity, last_sale_at, last_upload_at, fetched_at
-        FROM universalis_stats WHERE world_id = @world",
-      _connection);
-    cmd.Parameters.AddWithValue("@world", worldId);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      var itemId = (uint)reader.GetInt64(0);
-      rows[itemId] = (new UniversalisStat(
-        itemId,
-        reader.GetDouble(1),
-        reader.GetDouble(2),
-        reader.IsDBNull(3) ? null : reader.GetInt64(3),
-        reader.IsDBNull(4) ? null : reader.GetInt64(4)),
-        reader.GetInt64(5));
-    }
-    return rows;
-  }
-
-  /// <summary>Inserts a single retainer's gil balance, linked to a snapshot.</summary>
-  internal static void InsertRetainerSnapshot(long snapshotId, string retainerName, long gil,
-      SqliteTransaction? transaction = null)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO retainer_snapshots (snapshot_id, retainer_name, gil)
-      VALUES (@sid, @name, @gil)",
-      _connection);
-    cmd.Transaction = transaction;
-    cmd.Parameters.AddWithValue("@sid", snapshotId);
-    cmd.Parameters.AddWithValue("@name", retainerName);
-    cmd.Parameters.AddWithValue("@gil", gil);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>Inserts a gil transaction (sale, purchase, etc.).</summary>
-  internal static void InsertTransaction(long timestamp, string direction, string source,
-      long amount, uint itemId, string itemName, string category, int quantity,
-      int unitPrice, bool isHq, string retainerName, string counterparty,
-      SqliteTransaction? transaction = null, bool isPending = false)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO transactions (timestamp, direction, source, amount, item_id, item_name, category, quantity, unit_price, is_hq, retainer_name, counterparty, is_pending)
-      VALUES (@ts, @dir, @src, @amt, @iid, @iname, @cat, @qty, @up, @hq, @ret, @cpty, @pending)",
-      _connection);
-    cmd.Transaction = transaction;
-    cmd.Parameters.AddWithValue("@ts", timestamp);
-    cmd.Parameters.AddWithValue("@dir", direction);
-    cmd.Parameters.AddWithValue("@src", source);
-    cmd.Parameters.AddWithValue("@amt", amount);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@iname", itemName);
-    cmd.Parameters.AddWithValue("@cat", category);
-    cmd.Parameters.AddWithValue("@qty", quantity);
-    cmd.Parameters.AddWithValue("@up", unitPrice);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.Parameters.AddWithValue("@cpty", counterparty);
-    cmd.Parameters.AddWithValue("@pending", isPending ? 1 : 0);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>Checks if a transaction already exists (for deduplication).</summary>
-  internal static bool TransactionExists(uint itemId, long timestamp, string retainerName)
-  {
-    using var cmd = new SqliteCommand(
-      @"SELECT COUNT(*) FROM transactions
-      WHERE item_id = @iid AND timestamp = @ts AND retainer_name = @ret",
-      _connection);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@ts", timestamp);
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    return (long)cmd.ExecuteScalar()! > 0;
-  }
-
-  /// <summary>
-  /// Deletes one pending retainer_sale row that duplicates an already-finalized sale.
-  /// Called when a hook entry matches an existing finalized row — the oldest pending
-  /// row with the same (item_id, quantity, amount) is the chat-captured twin of that
-  /// finalized sale and should be dropped rather than left as an orphan.
-  /// FIFO to match TryPromotePendingSale's 1:1 semantics: one hook entry resolves
-  /// exactly one pending row, whether by promotion or deduplication. Returns true
-  /// if a row was removed.
-  /// </summary>
-  internal static bool DeleteDuplicatePendingSale(uint itemId, int quantity, long amount)
-  {
-    using var cmd = new SqliteCommand(
-      @"DELETE FROM transactions
-        WHERE id = (
-          SELECT id FROM transactions
-          WHERE is_pending = 1
-            AND direction  = 'earned'
-            AND source     = 'retainer_sale'
-            AND item_id    = @iid
-            AND quantity   = @qty
-            AND amount     = @amt
-          ORDER BY timestamp ASC
-          LIMIT 1
-        )",
-      _connection);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@qty", quantity);
-    cmd.Parameters.AddWithValue("@amt", amount);
-    return cmd.ExecuteNonQuery() > 0;
-  }
-
-  /// <summary>
-  /// Tries to promote a pending retainer_sale row (inserted by the chat parser)
-  /// to a finalized row using authoritative data from RetainerHistoryHook.
-  /// Match key: (item_id, quantity, amount). FIFO on collision — oldest pending
-  /// promotes first. Returns true if a pending row was promoted, false if none matched.
-  /// </summary>
-  internal static bool TryPromotePendingSale(
-    uint itemId, int quantity, long amount,
-    long serverTimestamp, string retainerName, string buyerName)
-  {
-    using var cmd = new SqliteCommand(
-      @"UPDATE transactions
-        SET timestamp     = @ts,
-            retainer_name = @ret,
-            counterparty  = @buyer,
-            is_pending    = 0
-        WHERE id = (
-          SELECT id FROM transactions
-          WHERE is_pending = 1
-            AND item_id  = @iid
-            AND quantity = @qty
-            AND amount   = @amt
-          ORDER BY timestamp ASC
-          LIMIT 1
-        )",
-      _connection);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@qty", quantity);
-    cmd.Parameters.AddWithValue("@amt", amount);
-    cmd.Parameters.AddWithValue("@ts", serverTimestamp);
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.Parameters.AddWithValue("@buyer", buyerName);
-    return cmd.ExecuteNonQuery() > 0;
-  }
-
-  /// <summary>
-  /// Looks up the first_seen timestamp for a listing. Returns null if not found.
-  /// Called from GilTracker.SnapshotListings() to preserve existing timestamps.
-  /// </summary>
-  internal static long? GetFirstSeen(string retainerName, int slotIndex, uint itemId)
-  {
-    using var cmd = new SqliteCommand(
-      @"SELECT first_seen FROM listings
-      WHERE retainer_name = @ret AND slot_index = @slot AND item_id = @iid",
-      _connection);
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.Parameters.AddWithValue("@slot", slotIndex);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
+    using var cmd = new SqliteCommand(sql, _connection);
     var result = cmd.ExecuteScalar();
-    return result != null ? (long)result : null;
-  }
-
-  /// <summary>
-  /// Inserts or replaces a listing. All columns must be specified —
-  /// INSERT OR REPLACE deletes the old row first, so missing columns
-  /// would get default values instead of the old data.
-  /// </summary>
-  internal static void UpsertListing(string retainerName, int slotIndex, uint itemId,
-      string itemName, string category, int unitPrice, int quantity, bool isHq,
-      long firstSeen, long lastUpdated, SqliteTransaction? transaction = null)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT OR REPLACE INTO listings
-      (retainer_name, slot_index, item_id, item_name, category, unit_price, quantity, is_hq, first_seen, last_updated)
-      VALUES (@ret, @slot, @iid, @iname, @cat, @up, @qty, @hq, @fs, @lu)",
-      _connection);
-    cmd.Transaction = transaction;
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.Parameters.AddWithValue("@slot", slotIndex);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@iname", itemName);
-    cmd.Parameters.AddWithValue("@cat", category);
-    cmd.Parameters.AddWithValue("@up", unitPrice);
-    cmd.Parameters.AddWithValue("@qty", quantity);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    cmd.Parameters.AddWithValue("@fs", firstSeen);
-    cmd.Parameters.AddWithValue("@lu", lastUpdated);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>Updates the unit_price for a listing after price adjustment.</summary>
-  internal static void UpdateListingPrice(string retainerName, uint itemId, int newPrice)
-  {
-    using var cmd = new SqliteCommand(
-      @"UPDATE listings SET unit_price = @price, last_updated = @now
-      WHERE retainer_name = @ret AND item_id = @iid",
-      _connection);
-    cmd.Parameters.AddWithValue("@price", newPrice);
-    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>
-  /// Deletes all listings for a retainer. Called BEFORE UpsertListing
-  /// calls in SnapshotListings — the upserts re-insert current items.
-  /// first_seen is preserved because SnapshotListings reads it via
-  /// GetFirstSeen() before this delete runs.
-  /// </summary>
-  internal static void DeleteRetainerListings(string retainerName, SqliteTransaction? transaction = null)
-  {
-    using var cmd = new SqliteCommand(
-      "DELETE FROM listings WHERE retainer_name = @ret", _connection);
-    cmd.Transaction = transaction;
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>Inserts aggregate market stats for a pinch run.</summary>
-  internal static void InsertMarketSnapshot(long timestamp, int itemCount,
-      long totalValue, double avgAge, string source, SqliteTransaction? transaction = null)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO market_snapshots (timestamp, item_count, total_listing_value, avg_listing_age_days, source)
-      VALUES (@ts, @cnt, @val, @avg, @src)",
-      _connection);
-    cmd.Transaction = transaction;
-    cmd.Parameters.AddWithValue("@ts", timestamp);
-    cmd.Parameters.AddWithValue("@cnt", itemCount);
-    cmd.Parameters.AddWithValue("@val", totalValue);
-    cmd.Parameters.AddWithValue("@avg", avgAge);
-    cmd.Parameters.AddWithValue("@src", source);
-    cmd.ExecuteNonQuery();
-  }
-
-  // =========================================================================
-  // Gil Tracking — Reads (called from GilWindow)
-  // =========================================================================
-
-  /// <summary>
-  /// Returns the latest snapshot for the Portfolio summary: latest known player gil
-  /// paired with the latest known retainer balances. Player gil comes from the most
-  /// recent gil_snapshots row (including zone_change captures). Retainer balances come
-  /// from the most recent snapshot that actually has retainer_snapshots rows — zone
-  /// changes only record player gil, so the latest snapshot and the latest retainer
-  /// snapshot are not always the same row.
-  /// </summary>
-  internal static GilSnapshot? GetLatestSnapshot()
-  {
-    // Latest snapshot (any source) — may be a zone_change row with no retainer data.
-    long timestamp, playerGil;
-    using (var snapCmd = new SqliteCommand(
-      "SELECT timestamp, player_gil FROM gil_snapshots ORDER BY timestamp DESC LIMIT 1",
-      _connection))
-    using (var snapReader = snapCmd.ExecuteReader())
-    {
-      if (!snapReader.Read()) return null;
-      timestamp = snapReader.GetInt64(0);
-      playerGil = snapReader.GetInt64(1);
-    } // snapReader disposed here before opening retReader
-
-    // Retainer balances from the most recent snapshot that has retainer rows.
-    var retainerGil = new Dictionary<string, long>();
-    using var retCmd = new SqliteCommand(
-      @"SELECT retainer_name, gil FROM retainer_snapshots
-        WHERE snapshot_id = (
-          SELECT s.id FROM gil_snapshots s
-          WHERE EXISTS (SELECT 1 FROM retainer_snapshots r WHERE r.snapshot_id = s.id)
-          ORDER BY s.timestamp DESC LIMIT 1
-        )",
-      _connection);
-    using var retReader = retCmd.ExecuteReader();
-    while (retReader.Read())
-    {
-      retainerGil[retReader.GetString(0)] = retReader.GetInt64(1);
-    }
-
-    return new GilSnapshot
-    {
-      Timestamp = timestamp,
-      PlayerGil = playerGil,
-      RetainerGil = retainerGil
-    };
-  }
-
-  /// <summary>Gets the most recent snapshot's timestamp and player gil for dedup checks.</summary>
-  internal static (long Timestamp, long Gil)? GetLatestPlayerGilAndTimestamp()
-  {
-    using var cmd = new SqliteCommand(
-      "SELECT timestamp, player_gil FROM gil_snapshots ORDER BY timestamp DESC LIMIT 1",
-      _connection);
-    using var reader = cmd.ExecuteReader();
-    if (!reader.Read()) return null;
-    return (reader.GetInt64(0), reader.GetInt64(1));
-  }
-
-  /// <summary>
-  /// Returns per-snapshot player gil and (optional) retainer gil sum, ordered by timestamp ascending.
-  /// RetainerGil is null when the snapshot has no retainer_snapshots rows (e.g. zone_change captures).
-  /// Caller decides how to handle gaps (carry-forward, filter, etc.).
-  /// </summary>
-  internal static IReadOnlyList<(long Timestamp, long PlayerGil, long? RetainerGil)> GetTotalGilHistory()
-  {
-    var rows = new List<(long, long, long?)>();
-    var sw = System.Diagnostics.Stopwatch.StartNew();
-    using var cmd = new SqliteCommand(
-      @"SELECT s.timestamp, s.player_gil, SUM(r.gil) AS retainer_gil
-        FROM gil_snapshots s
-        LEFT JOIN retainer_snapshots r ON r.snapshot_id = s.id
-        GROUP BY s.id
-        ORDER BY s.timestamp ASC",
-      _connection);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      long? retainer = reader.IsDBNull(2) ? null : reader.GetInt64(2);
-      rows.Add((reader.GetInt64(0), reader.GetInt64(1), retainer));
-    }
-    sw.Stop();
-    Svc.Log.Verbose($"[GilHistory] GetTotalGilHistory returned {rows.Count} rows in {sw.ElapsedMilliseconds}ms");
-    return rows;
-  }
-
-  /// <summary>Gets the N most recent retainer sales as SaleRecord objects.</summary>
-  internal static List<SaleRecord> GetRecentSales(int limit)
-  {
-    var sales = new List<SaleRecord>();
-    using var cmd = new SqliteCommand(
-      @"SELECT item_id, item_name, category, unit_price, quantity, is_hq,
-      retainer_name, counterparty, timestamp, is_pending
-      FROM transactions
-      WHERE direction = 'earned' AND source = 'retainer_sale'
-      ORDER BY timestamp DESC
-      LIMIT @limit",
-      _connection);
-    cmd.Parameters.AddWithValue("@limit", limit);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      sales.Add(new SaleRecord
-      {
-        ItemId = (uint)reader.GetInt64(0),
-        ItemName = reader.GetString(1),
-        Category = reader.GetString(2),
-        UnitPrice = reader.GetInt32(3),
-        Quantity = reader.GetInt32(4),
-        IsHQ = reader.GetInt32(5) != 0,
-        RetainerName = reader.GetString(6),
-        BuyerName = reader.GetString(7),
-        SaleTimestamp = reader.GetInt64(8),
-        IsPending = reader.GetInt32(9) != 0
-      });
-    }
-    return sales;
-  }
-
-  /// <summary>
-  /// Count of retainer_sale rows still marked pending (not yet reconciled).
-  /// Safe to call from draw loops: returns 0 if the connection isn't open yet
-  /// (plugin startup race) or has been closed (teardown).
-  /// </summary>
-  internal static int GetPendingSaleCount()
-  {
-    if (_connection is null || _connection.State != System.Data.ConnectionState.Open)
-      return 0;
-    using var cmd = new SqliteCommand(
-      @"SELECT COUNT(*) FROM transactions
-        WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 1",
-      _connection);
-    return Convert.ToInt32(cmd.ExecuteScalar());
-  }
-
-  /// <summary>
-  /// Returns all transactions with optional direction/source filters, most recent first.
-  /// </summary>
-  internal static List<TransactionRecord> GetTransactions(string? direction = null, string? source = null,
-      long? since = null, int limit = -1, int offset = 0)
-  {
-    var results = new List<TransactionRecord>();
-    var where = BuildTransactionWhere(direction, source, since);
-    var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-    var limitClause = limit > 0 ? $"LIMIT {limit} OFFSET {offset}" : "";
-
-    using var cmd = new SqliteCommand(
-      $@"SELECT timestamp, direction, source, amount, item_name, category, quantity, unit_price
-         FROM transactions {whereClause}
-         ORDER BY timestamp DESC
-         {limitClause}",
-      _connection);
-    AddTransactionParams(cmd, direction, source, since);
-
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      results.Add(new TransactionRecord
-      {
-        Timestamp = reader.GetInt64(0),
-        Direction = reader.GetString(1),
-        Source = reader.GetString(2),
-        Amount = reader.GetInt64(3),
-        ItemName = reader.GetString(4),
-        Category = reader.GetString(5),
-        Quantity = reader.GetInt32(6),
-        UnitPrice = reader.GetInt32(7),
-      });
-    }
-    return results;
-  }
-
-  /// <summary>Returns total count of transactions matching the given filters.</summary>
-  internal static int GetTransactionCount(string? direction = null, string? source = null, long? since = null)
-  {
-    var where = BuildTransactionWhere(direction, source, since);
-    var whereClause = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
-
-    using var cmd = new SqliteCommand(
-      $"SELECT COUNT(*) FROM transactions {whereClause}", _connection);
-    AddTransactionParams(cmd, direction, source, since);
-    return Convert.ToInt32(cmd.ExecuteScalar());
-  }
-
-  private static List<string> BuildTransactionWhere(string? direction, string? source, long? since)
-  {
-    var where = new List<string>();
-    if (direction != null) where.Add("direction = @dir");
-    if (source != null) where.Add("source = @src");
-    if (since != null) where.Add("timestamp >= @since");
-    return where;
-  }
-
-  private static void AddTransactionParams(SqliteCommand cmd, string? direction, string? source, long? since)
-  {
-    if (direction != null) cmd.Parameters.AddWithValue("@dir", direction);
-    if (source != null) cmd.Parameters.AddWithValue("@src", source);
-    if (since != null) cmd.Parameters.AddWithValue("@since", since.Value);
-  }
-
-  /// <summary>
-  /// Returns earned/spent totals grouped by source for a given time range.
-  /// </summary>
-  internal static List<(string Direction, string Source, long Total, int Count)>
-      GetEarnedVsSpent(long? since = null)
-  {
-    var results = new List<(string, string, long, int)>();
-    var whereClause = since.HasValue ? "WHERE timestamp >= @since" : "";
-
-    using var cmd = new SqliteCommand(
-      $@"SELECT direction, source, SUM(amount) AS total, COUNT(*) AS cnt
-         FROM transactions {whereClause}
-         GROUP BY direction, source
-         ORDER BY direction, total DESC",
-      _connection);
-    if (since.HasValue) cmd.Parameters.AddWithValue("@since", since.Value);
-
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-      results.Add((reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3)));
-    return results;
-  }
-
-  /// <summary>
-  /// Returns daily gil totals (player + retainers) from the last snapshot of each day.
-  /// Retainer balances carried forward from the most recent snapshot that has them.
-  /// </summary>
-  internal static List<(string Date, long TotalGil, long Delta)> GetDailyChanges()
-  {
-    var rows = GetTotalGilHistory();
-    var daily = new List<(string Date, long TotalGil, long Delta)>();
-    if (rows.Count == 0) return daily;
-
-    // Walk through snapshots, carry forward retainer balance, track last total per day
-    int firstWithRetainer = -1;
-    for (int i = 0; i < rows.Count; i++)
-      if (rows[i].RetainerGil.HasValue) { firstWithRetainer = i; break; }
-    if (firstWithRetainer < 0) return daily;
-
-    long lastRetainer = rows[firstWithRetainer].RetainerGil!.Value;
-    string? currentDay = null;
-    long dayTotal = 0;
-
-    for (int i = firstWithRetainer; i < rows.Count; i++)
-    {
-      var r = rows[i];
-      if (r.RetainerGil.HasValue) lastRetainer = r.RetainerGil.Value;
-      var total = r.PlayerGil + lastRetainer;
-      var day = DateTimeOffset.FromUnixTimeSeconds(r.Timestamp).LocalDateTime.ToString("yyyy-MM-dd");
-
-      if (day != currentDay)
-      {
-        if (currentDay != null)
-          daily.Add((currentDay, dayTotal, 0));
-        currentDay = day;
-      }
-      dayTotal = total;
-    }
-    if (currentDay != null)
-      daily.Add((currentDay, dayTotal, 0));
-
-    // Compute deltas
-    for (int i = daily.Count - 1; i > 0; i--)
-      daily[i] = (daily[i].Date, daily[i].TotalGil, daily[i].TotalGil - daily[i - 1].TotalGil);
-
-    return daily;
-  }
-
-  /// <summary>
-  /// Computes untracked gil changes over a time range. Compares total snapshot diffs
-  /// against sum of tracked transactions. The gap is what we can't account for.
-  /// Returns (earned untracked, spent untracked) — both positive values.
-  /// </summary>
-  internal static (long UntrackedEarned, long UntrackedSpent) GetUntrackedDeltas(long? since = null)
-  {
-    // Get first and last snapshots in the range (player_gil + retainer carry-forward)
-    var history = GetTotalGilHistory();
-    if (history.Count < 2) return (0, 0);
-
-    // Find range boundaries
-    int startIdx = 0;
-    if (since.HasValue)
-    {
-      for (int i = 0; i < history.Count; i++)
-        if (history[i].Timestamp >= since.Value) { startIdx = i; break; }
-    }
-
-    // Walk through with carry-forward to get first and last total
-    long lastRetainer = 0;
-    bool hasRetainer = false;
-    long firstTotal = 0, lastTotal = 0;
-    long firstTotalTs = 0;
-    bool firstSet = false;
-
-    for (int i = 0; i < history.Count; i++)
-    {
-      if (history[i].RetainerGil.HasValue)
-      {
-        lastRetainer = history[i].RetainerGil!.Value;
-        hasRetainer = true;
-      }
-      if (!hasRetainer) continue;
-
-      var total = history[i].PlayerGil + lastRetainer;
-      if (i >= startIdx && !firstSet)
-      {
-        firstTotal = total;
-        firstTotalTs = history[i].Timestamp;
-        firstSet = true;
-      }
-      lastTotal = total;
-    }
-
-    if (!firstSet) return (0, 0);
-    var snapshotDelta = lastTotal - firstTotal;
-
-    // Sum tracked transactions within the snapshot window only.
-    // Using the user's `since` would include transactions before the first snapshot,
-    // whose gil is already baked into firstTotal — causing phantom untracked spend.
-    using var cmd = new SqliteCommand(
-      @"SELECT
-           COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0),
-           COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
-         FROM transactions WHERE timestamp >= @since",
-      _connection);
-    cmd.Parameters.AddWithValue("@since", firstTotalTs);
-    using var reader = cmd.ExecuteReader();
-    reader.Read();
-    var trackedEarned = reader.GetInt64(0);
-    var trackedSpent = reader.GetInt64(1);
-
-    var trackedNet = trackedEarned - trackedSpent;
-    var untracked = snapshotDelta - trackedNet;
-
-    if (untracked > 0)
-      return (untracked, 0);
-    if (untracked < 0)
-      return (0, -untracked);
-    return (0, 0);
-  }
-
-  /// <summary>
-  /// Computes untracked delta between the two most recent snapshots.
-  /// Used for debug logging on zone change.
-  /// </summary>
-  internal static (long SnapshotDiff, long TrackedNet, long Untracked)? GetLatestSnapshotGap()
-  {
-    var history = GetTotalGilHistory();
-    if (history.Count < 2) return null;
-
-    // Find the last two snapshots with retainer data (carry-forward)
-    long lastRetainer = 0;
-    bool hasRetainer = false;
-    long prevTotal = 0, currentTotal = 0;
-    long prevTs = 0;
-
-    for (int i = 0; i < history.Count; i++)
-    {
-      if (history[i].RetainerGil.HasValue)
-      {
-        lastRetainer = history[i].RetainerGil!.Value;
-        hasRetainer = true;
-      }
-      if (!hasRetainer) continue;
-
-      prevTotal = currentTotal;
-      prevTs = i > 0 ? history[i - 1].Timestamp : history[i].Timestamp;
-      currentTotal = history[i].PlayerGil + lastRetainer;
-    }
-
-    if (prevTotal == 0) return null;
-    var snapshotDiff = currentTotal - prevTotal;
-    if (snapshotDiff == 0) return null;
-
-    // Sum tracked transactions between the two most recent snapshots
-    var lastTs = history[history.Count - 1].Timestamp;
-    var secondLastTs = history[history.Count - 2].Timestamp;
-
-    using var cmd = new SqliteCommand(
-      @"SELECT
-          COALESCE(SUM(CASE WHEN direction = 'earned' THEN amount ELSE 0 END), 0) -
-          COALESCE(SUM(CASE WHEN direction = 'spent' THEN amount ELSE 0 END), 0)
-        FROM transactions WHERE timestamp >= @from AND timestamp <= @to",
-      _connection);
-    cmd.Parameters.AddWithValue("@from", secondLastTs);
-    cmd.Parameters.AddWithValue("@to", lastTs);
-    using var reader = cmd.ExecuteReader();
-    reader.Read();
-    var trackedNet = reader.GetInt64(0);
-
-    return (snapshotDiff, trackedNet, snapshotDiff - trackedNet);
-  }
-
-  /// <summary>Returns the timestamp of the earliest transaction, or null if none exist.</summary>
-  internal static long? GetEarliestTransactionTimestamp()
-  {
-    using var cmd = new SqliteCommand(
-      "SELECT MIN(timestamp) FROM transactions", _connection);
-    var result = cmd.ExecuteScalar();
-    return result is DBNull or null ? null : (long)result;
-  }
-
-  /// <summary>Returns distinct source values from the transactions table.</summary>
-  internal static List<string> GetDistinctSources()
-  {
-    var sources = new List<string>();
-    using var cmd = new SqliteCommand("SELECT DISTINCT source FROM transactions ORDER BY source", _connection);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-      sources.Add(reader.GetString(0));
-    return sources;
-  }
-
-  /// <summary>
-  /// Gets sales grouped by macro_group, display_group, and raw ui_category
-  /// for the 3-level category tree in the Gil Dashboard.
-  /// </summary>
-  internal static List<(string MacroGroup, string MainGroup, string Category, int Count, long Gil)>
-      GetCategoryTree(long sinceTimestamp)
-  {
-    var results = new List<(string MacroGroup, string MainGroup, string Category, int Count, long Gil)>();
-    using var cmd = new SqliteCommand(
-      @"SELECT COALESCE(cg.macro_group, '') as macro,
-      COALESCE(cg.display_group, t.category) as main,
-      t.category as micro,
-      COUNT(*) as cnt, SUM(t.amount) as gil
-      FROM transactions t
-      LEFT JOIN category_groups cg ON t.category = cg.ui_category
-      WHERE t.direction = 'earned' AND t.source = 'retainer_sale' AND t.timestamp > @since
-      GROUP BY macro, main, micro
-      ORDER BY macro, gil DESC",
-      _connection);
-    cmd.Parameters.AddWithValue("@since", sinceTimestamp);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      results.Add((
-        reader.GetString(0),
-        reader.GetString(1),
-        reader.GetString(2),
-        reader.GetInt32(3),
-        reader.GetInt64(4)));
-    }
-    return results;
-  }
-
-  /// <summary>
-  /// Gets per-retainer summary: last sale, sale count, total gil, and average listing age.
-  /// Sources retainer names from both transactions and listings so retainers appear
-  /// regardless of which table has data.
-  /// </summary>
-  internal static List<RetainerSummary> GetRetainerSummary(long sinceTimestamp)
-  {
-    var results = new List<RetainerSummary>();
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-    // Pending rows (is_pending=1) have no retainer attribution yet — exclude them
-    // from the per-retainer summary so they don't show up under a blank row.
-    using var cmd = new SqliteCommand(
-      @"SELECT
-      r.retainer_name,
-      COALESCE(t.last_sale, 0) as last_sale,
-      COALESCE(t.sale_count, 0) as sale_count,
-      COALESCE(t.total_gil, 0) as total_gil,
-      COALESCE(la.avg_age, 0) as avg_age_days
-      FROM (
-        SELECT retainer_name FROM transactions
-          WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 0
-        UNION
-        SELECT retainer_name FROM listings
-      ) r
-      LEFT JOIN (
-        SELECT retainer_name,
-          MAX(timestamp) as last_sale,
-          COUNT(*) as sale_count,
-          SUM(amount) as total_gil
-        FROM transactions
-        WHERE direction = 'earned' AND source = 'retainer_sale' AND is_pending = 0 AND timestamp > @since
-        GROUP BY retainer_name
-      ) t ON r.retainer_name = t.retainer_name
-      LEFT JOIN (
-        SELECT retainer_name, AVG((@now - first_seen) / 86400.0) as avg_age
-        FROM listings
-        GROUP BY retainer_name
-      ) la ON r.retainer_name = la.retainer_name
-      ORDER BY COALESCE(t.total_gil, 0) DESC",
-      _connection);
-    cmd.Parameters.AddWithValue("@since", sinceTimestamp);
-    cmd.Parameters.AddWithValue("@now", now);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      results.Add(new RetainerSummary
-      {
-        RetainerName = reader.GetString(0),
-        LastSaleTimestamp = reader.GetInt64(1),
-        SaleCount = reader.GetInt32(2),
-        TotalGil = reader.GetInt64(3),
-        AvgListingAgeDays = reader.GetDouble(4),
-      });
-    }
-    return results;
-  }
-
-  /// <summary>Returns the set of all ui_category values that have a mapping in category_groups.</summary>
-  internal static HashSet<string> GetMappedCategories()
-  {
-    var categories = new HashSet<string>();
-    using var cmd = new SqliteCommand("SELECT ui_category FROM category_groups", _connection);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-      categories.Add(reader.GetString(0));
-    return categories;
-  }
-
-  private static Dictionary<string, (string Macro, string Display)>? _categoryGroupCache;
-
-  /// <summary>
-  /// Returns the (macro_group, display_group) pair for a given raw ui_category,
-  /// or null if the category has no mapping. Cached on first access; cleared only
-  /// on database reset.
-  /// </summary>
-  internal static (string Macro, string Display)? GetCategoryGroup(string uiCategory)
-  {
-    if (_categoryGroupCache == null)
-    {
-      var map = new Dictionary<string, (string Macro, string Display)>();
-      using var cmd = new SqliteCommand(
-        "SELECT ui_category, macro_group, display_group FROM category_groups",
-        _connection);
-      using var reader = cmd.ExecuteReader();
-      while (reader.Read())
-        map[reader.GetString(0)] = (reader.GetString(1), reader.GetString(2));
-      _categoryGroupCache = map;
-    }
-
-    return _categoryGroupCache.TryGetValue(uiCategory, out var group) ? group : null;
-  }
-
-  /// <summary>
-  /// Returns the count of distinct categories in transactions
-  /// that have no mapping in category_groups.
-  /// </summary>
-  internal static int GetUnmappedCategoryCount()
-  {
-    using var cmd = new SqliteCommand(
-      @"SELECT COUNT(DISTINCT t.category) FROM transactions t
-      LEFT JOIN category_groups cg ON t.category = cg.ui_category
-      WHERE cg.ui_category IS NULL AND t.category != ''",
-      _connection);
-    return Convert.ToInt32(cmd.ExecuteScalar());
-  }
-
-  /// <summary>
-  /// Gets the last sale for each (item, quality) ever sold via retainer.
-  /// Reads from the last_sale_prices table (survives transaction pruning).
-  /// SoldAfterDays is how long the listing sat before selling — null for
-  /// sales reconciled before V13 started capturing it.
-  /// </summary>
-  internal static Dictionary<(uint ItemId, bool IsHq), (int Price, long Timestamp, int? SoldAfterDays)> GetLastSalePrices()
-  {
-    var prices = new Dictionary<(uint, bool), (int, long, int?)>();
-    using var cmd = new SqliteCommand(
-      "SELECT item_id, is_hq, unit_price, timestamp, sold_after_days FROM last_sale_prices",
-      _connection);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-      prices[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0)] =
-        (reader.GetInt32(2), reader.GetInt64(3), reader.IsDBNull(4) ? null : reader.GetInt32(4));
-    return prices;
-  }
-
-  /// <summary>
-  /// Last sale price for one item at one quality, or null when that variant
-  /// has never sold via retainer. NQ and HQ are separate evidence — an NQ
-  /// sale says nothing about the HQ price.
-  /// </summary>
-  internal static int? GetLastSalePrice(uint itemId, bool isHq)
-  {
-    using var cmd = new SqliteCommand(
-      "SELECT unit_price FROM last_sale_prices WHERE item_id = @iid AND is_hq = @hq",
-      _connection);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    var result = cmd.ExecuteScalar();
-    return result == null || result == DBNull.Value ? null : Convert.ToInt32(result);
-  }
-
-  /// <summary>
-  /// Last sale price AND timestamp for one item at one quality - the own-sales
-  /// pricing fallback needs both (staleness gate + "sold Nd ago" label).
-  /// </summary>
-  internal static (int Price, long Timestamp)? GetLastSalePriceWithTime(uint itemId, bool isHq)
-  {
-    using var cmd = new SqliteCommand(
-      "SELECT unit_price, timestamp FROM last_sale_prices WHERE item_id = @iid AND is_hq = @hq",
-      _connection);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    using var reader = cmd.ExecuteReader();
-    if (!reader.Read()) return null;
-    return (reader.GetInt32(0), reader.GetInt64(1));
-  }
-
-  // =========================================================================
-  // Triage Flags (V12) - persistent until acted on or dismissed
-  // =========================================================================
-
-  /// <summary>
-  /// Inserts a triage flag, or refreshes the existing OPEN flag for the same
-  /// (item, hq, retainer, reason) - re-flagging updates detail/prices/created_at
-  /// instead of stacking duplicates.
-  /// </summary>
-  internal static void UpsertTriageFlag(uint itemId, bool isHq, string retainerName, int slotIndex,
-      string reason, string detail, int oldPrice, int flaggedPrice)
-  {
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-    using var update = new SqliteCommand(
-      @"UPDATE triage_flags
-        SET detail = @detail, old_price = @old, flagged_price = @flagged,
-            slot_index = @slot, created_at = @now
-        WHERE item_id = @iid AND is_hq = @hq AND retainer_name = @ret
-          AND reason = @reason AND status = 'open'",
-      _connection);
-    update.Parameters.AddWithValue("@detail", detail);
-    update.Parameters.AddWithValue("@old", oldPrice);
-    update.Parameters.AddWithValue("@flagged", flaggedPrice);
-    update.Parameters.AddWithValue("@slot", slotIndex);
-    update.Parameters.AddWithValue("@now", now);
-    update.Parameters.AddWithValue("@iid", (long)itemId);
-    update.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    update.Parameters.AddWithValue("@ret", retainerName);
-    update.Parameters.AddWithValue("@reason", reason);
-    if (update.ExecuteNonQuery() > 0) return;
-
-    using var insert = new SqliteCommand(
-      @"INSERT INTO triage_flags
-          (created_at, item_id, is_hq, retainer_name, slot_index, reason, detail, old_price, flagged_price)
-        VALUES (@now, @iid, @hq, @ret, @slot, @reason, @detail, @old, @flagged)",
-      _connection);
-    insert.Parameters.AddWithValue("@now", now);
-    insert.Parameters.AddWithValue("@iid", (long)itemId);
-    insert.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    insert.Parameters.AddWithValue("@ret", retainerName);
-    insert.Parameters.AddWithValue("@slot", slotIndex);
-    insert.Parameters.AddWithValue("@reason", reason);
-    insert.Parameters.AddWithValue("@detail", detail);
-    insert.Parameters.AddWithValue("@old", oldPrice);
-    insert.Parameters.AddWithValue("@flagged", flaggedPrice);
-    insert.ExecuteNonQuery();
-  }
-
-  /// <summary>Open triage flags, newest first. Loaded by the TriageWindow alongside the current run's items.</summary>
-  internal static List<TriageFlag> GetOpenTriageFlags()
-  {
-    var flags = new List<TriageFlag>();
-    using var cmd = new SqliteCommand(
-      @"SELECT id, created_at, item_id, is_hq, retainer_name, slot_index,
-               reason, detail, old_price, flagged_price, status
-        FROM triage_flags WHERE status = 'open'
-        ORDER BY created_at DESC",
-      _connection);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      flags.Add(new TriageFlag
-      {
-        Id = reader.GetInt64(0),
-        CreatedAt = reader.GetInt64(1),
-        ItemId = (uint)reader.GetInt64(2),
-        IsHq = reader.GetInt32(3) != 0,
-        RetainerName = reader.GetString(4),
-        SlotIndex = reader.GetInt32(5),
-        Reason = reader.GetString(6),
-        Detail = reader.GetString(7),
-        OldPrice = reader.GetInt32(8),
-        FlaggedPrice = reader.GetInt32(9),
-        Status = reader.GetString(10),
-      });
-    }
-    return flags;
-  }
-
-  /// <summary>Closes a flag: status = 'dismissed' or 'actioned', stamps acted_at.</summary>
-  internal static void SetTriageFlagStatus(long flagId, string status)
-  {
-    using var cmd = new SqliteCommand(
-      "UPDATE triage_flags SET status = @status, acted_at = @now WHERE id = @id",
-      _connection);
-    cmd.Parameters.AddWithValue("@status", status);
-    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-    cmd.Parameters.AddWithValue("@id", flagId);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>
-  /// Upserts the last sale price for an item variant. Called on every retainer
-  /// sale. soldAfterDays (listing sit time, when known) only overwrites when
-  /// provided — a sale without sit-time evidence keeps the previous value.
-  /// </summary>
-  internal static void UpsertLastSalePrice(uint itemId, bool isHq, int unitPrice, long timestamp, int? soldAfterDays = null)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO last_sale_prices (item_id, is_hq, unit_price, timestamp, sold_after_days)
-        VALUES (@iid, @hq, @price, @ts, @days)
-        ON CONFLICT(item_id, is_hq) DO UPDATE SET
-          unit_price = @price, timestamp = @ts,
-          sold_after_days = COALESCE(@days, sold_after_days)",
-      _connection);
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    cmd.Parameters.AddWithValue("@price", unitPrice);
-    cmd.Parameters.AddWithValue("@ts", timestamp);
-    cmd.Parameters.AddWithValue("@days", (object?)soldAfterDays ?? DBNull.Value);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>
-  /// first_seen per (item, quality) currently listed on a retainer — oldest
-  /// wins when the same variant is listed in multiple slots. Read by
-  /// GilTracker.SnapshotListings BEFORE the delete/re-insert so disappeared
-  /// (= likely sold) listings can carry their sit time to sale reconciliation.
-  /// </summary>
-  internal static Dictionary<(uint ItemId, bool IsHq), long> GetRetainerListingAges(string retainerName)
-  {
-    var ages = new Dictionary<(uint, bool), long>();
-    using var cmd = new SqliteCommand(
-      @"SELECT item_id, is_hq, MIN(first_seen) FROM listings
-        WHERE retainer_name = @ret GROUP BY item_id, is_hq",
-      _connection);
-    cmd.Parameters.AddWithValue("@ret", retainerName);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-      ages[((uint)reader.GetInt64(0), reader.GetInt32(1) != 0)] = reader.GetInt64(2);
-    return ages;
-  }
-
-  /// <summary>
-  /// Records a routing override: the router said one thing, the player did
-  /// another. Written by the Hawk window when a gated item is checked anyway.
-  /// </summary>
-  internal static void InsertRoutingOverride(uint itemId, bool isHq, int ilvl,
-      string routerVerdict, string routerReason, string playerVerdict)
-  {
-    using var cmd = new SqliteCommand(
-      @"INSERT INTO routing_overrides
-          (created_at, item_id, is_hq, ilvl, router_verdict, router_reason, player_verdict)
-        VALUES (@now, @iid, @hq, @ilvl, @rv, @reason, @pv)",
-      _connection);
-    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-    cmd.Parameters.AddWithValue("@iid", (long)itemId);
-    cmd.Parameters.AddWithValue("@hq", isHq ? 1 : 0);
-    cmd.Parameters.AddWithValue("@ilvl", ilvl);
-    cmd.Parameters.AddWithValue("@rv", routerVerdict);
-    cmd.Parameters.AddWithValue("@reason", routerReason);
-    cmd.Parameters.AddWithValue("@pv", playerVerdict);
-    cmd.ExecuteNonQuery();
-  }
-
-  /// <summary>Gets listings older than the cutoff timestamp (slow movers).</summary>
-  internal static List<ListingRecord> GetSlowMovers(long olderThan)
-  {
-    var listings = new List<ListingRecord>();
-    using var cmd = new SqliteCommand(
-      @"SELECT retainer_name, slot_index, item_id, item_name, category,
-      unit_price, quantity, is_hq, first_seen, last_updated
-      FROM listings
-      WHERE first_seen < @cutoff
-      ORDER BY first_seen ASC",
-      _connection);
-    cmd.Parameters.AddWithValue("@cutoff", olderThan);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      listings.Add(new ListingRecord
-      {
-        RetainerName = reader.GetString(0),
-        SlotIndex = reader.GetInt32(1),
-        ItemId = (uint)reader.GetInt64(2),
-        ItemName = reader.GetString(3),
-        Category = reader.GetString(4),
-        UnitPrice = reader.GetInt32(5),
-        Quantity = reader.GetInt32(6),
-        IsHQ = reader.GetInt32(7) != 0,
-        FirstSeenTimestamp = reader.GetInt64(8),
-        LastUpdatedTimestamp = reader.GetInt64(9)
-      });
-    }
-    return listings;
-  }
-
-  // =========================================================================
-  // Quotes
-  // =========================================================================
-
-  /// <summary>
-  /// Picks a random quote from the 10 least-recently-displayed,
-  /// updates its last_displayed timestamp, and returns it.
-  /// </summary>
-  internal static QuoteRecord? GetRandomQuote()
-  {
-    var candidates = new List<QuoteRecord>();
-    using var cmd = new SqliteCommand(
-      "SELECT id, text, author FROM quotes ORDER BY last_displayed ASC LIMIT 10",
-      _connection);
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-      candidates.Add(new QuoteRecord
-      {
-        Id = reader.GetInt32(0),
-        Text = reader.GetString(1),
-        Author = reader.GetString(2)
-      });
-    }
-
-    if (candidates.Count == 0) return null;
-
-    var pick = candidates[Random.Shared.Next(candidates.Count)];
-
-    // Update last_displayed so this quote moves to the back of the queue
-    using var updateCmd = new SqliteCommand(
-      "UPDATE quotes SET last_displayed = @now WHERE id = @id",
-      _connection);
-    updateCmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-    updateCmd.Parameters.AddWithValue("@id", pick.Id);
-    updateCmd.ExecuteNonQuery();
-
-    return pick;
+    return result is null or DBNull ? 0L : Convert.ToInt64(result);
   }
 
   // =========================================================================
@@ -1293,6 +219,8 @@ internal static class GilStorage
   /// - Gil snapshots older than 30 days: thinned to one per day
   /// - Market snapshots older than 30 days: thinned to one per day
   /// - Orphaned retainer snapshots: deleted
+  /// - Banked recon decisions older than 90 days: deleted
+  /// - Round headers (and any transcript still hanging off them) older than 90 days: deleted
   /// </summary>
   private static void Prune()
   {
@@ -1349,5 +277,15 @@ internal static class GilStorage
       cmd.Parameters.AddWithValue("@cutoff", thirtyDays);
       cmd.ExecuteNonQuery();
     }
+
+    // THE ROUNDS TABLES' SLOW BURN (the minors batch, 2026-08-12). Both were written
+    // with a bound on the wrong axis: the decision cache upserts per item so it cannot
+    // grow within a night but never sheds a variant, and the supersede bounds the
+    // transcript but leaves one header row per round standing forever. Neither is
+    // urgent and both are unbounded, which is precisely what this sweep is for.
+    var cacheDropped = DecisionCacheSchema.PruneStale(Connection, ninetyDays);
+    var runsDropped = RoundLogSchema.PruneOldRuns(Connection, ninetyDays);
+    if (cacheDropped > 0 || runsDropped > 0)
+      Svc.Log.Info($"[Prune] Dropped {cacheDropped} banked decisions and {runsDropped} round headers older than 90 days");
   }
 }

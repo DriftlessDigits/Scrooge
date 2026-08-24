@@ -85,7 +85,7 @@ internal sealed class DesynthYieldTracker : IDisposable
     }
     catch (Exception ex)
     {
-      Svc.Log.Error(ex, $"[Scrooge] Failed to insert desynth yield (run={runId}, seq={yield.AttemptSeq})");
+      Svc.Log.Error(ex, $"Failed to insert desynth yield (run={runId}, seq={yield.AttemptSeq})");
     }
   }
 }

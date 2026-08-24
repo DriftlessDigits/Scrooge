@@ -8,7 +8,7 @@ namespace Scrooge;
 
 /// <summary>
 /// Floating ImGui overlay that anchors a "Desynth Preview" button to the
-/// SalvageItemSelector addon. Mirrors AutoPinch's render-when-context-is-right
+/// SalvageItemSelector addon. Mirrors AutoPinchOverlayWindow's render-when-context-is-right
 /// pattern.
 /// </summary>
 internal sealed class DesynthLauncher : Window, IDisposable
@@ -35,7 +35,9 @@ internal sealed class DesynthLauncher : Window, IDisposable
 
   public override void Draw()
   {
-    if (!Plugin.Configuration.EnableDesynthPreview) return;
+    // ALWAYS ON (ruled 2026-08-23): every other overlay button in the plugin -
+    // Auto Pinch, Round, the sell-list button - draws unconditionally, and this
+    // was the lone opt-out. Its config gate is retired; the field dies in 3.1.
     if (Plugin.DesynthOrchestrator?.IsRunning == true) return; // hide while running
 
     unsafe

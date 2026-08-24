@@ -1,40 +1,13 @@
-﻿using Dalamud.Configuration;
+using Dalamud.Configuration;
 using Dalamud.Game.ClientState.Keys;
 using System;
 using System.Collections.Generic;
 
 namespace Scrooge;
 
-/// <summary>
-/// Determines how the undercut price is calculated relative to the lowest MB listing.
-/// </summary>
-public enum UndercutMode
-{
-  /// <summary>Subtract a fixed gil amount from the lowest listing.</summary>
-  FixedAmount,
-  /// <summary>Subtract a percentage of the lowest listing's price.</summary>
-  Percentage,
-  /// <summary>Match the lowest listing exactly — no undercut.</summary>
-  GentlemansMatch,
-  /// <summary>Undercut by rounding down to a clean number. Interval scales with price.</summary>
-  CleanNumbers,
-  /// <summary>Randomly picks Random Pinch, Gentleman's Match, or Clean Numbers per item.</summary>
-  Humanized
-}
-
-/// <summary>
-/// Determines the minimum price floor when listing items.
-/// Items priced below the floor are skipped during auto-pinch.
-/// </summary>
-public enum PriceFloorMode
-{
-  /// <summary>No price floor — list at any price.</summary>
-  None,
-  /// <summary>Skip if undercut price falls below vendor sell price (Item.PriceLow).</summary>
-  Vendor,
-  /// <summary>Skip if undercut price falls below 2x vendor sell price (Doman Enclave rate).</summary>
-  DomanEnclave
-}
+// PriceFloorMode moved to PriceFloor.cs (review pricing item 1, 2026-08-16) so the
+// floor's arithmetic and the mode that selects it live together and can be linked
+// into Scrooge.Tests. Same namespace, so the persisted type name is unchanged.
 
 /// <summary>
 /// Persisted plugin configuration. Serialized to JSON by Dalamud.
@@ -51,29 +24,65 @@ public sealed class Configuration : IPluginConfiguration
   /// <summary>Use HQ price when the listed item is HQ.</summary>
   public bool HQ { get; set; } = true;
 
-  public UndercutMode UndercutMode { get; set; } = UndercutMode.FixedAmount;
+  /// <summary>
+  /// The write style the hand uses inside the seat the lane picked. Folded on the
+  /// way in, so a retired or unknown stored value can never be honoured - see
+  /// <see cref="LegacyUndercutMode"/>. The setter is where the guard lives because
+  /// deserialization writes through it, which makes the migration a property of the
+  /// type rather than of some load path remembering to call it.
+  /// </summary>
+  public UndercutMode UndercutMode
+  {
+    get => _undercutMode;
+    set => _undercutMode = LegacyUndercutMode.Fold(value);
+  }
+
+  private UndercutMode _undercutMode = UndercutMode.FixedAmount;
 
   /// <summary>
-  /// Amount to undercut by. Interpreted as gil (FixedAmount) or percent (Percentage).
-  /// Ignored in GentlemansMatch mode.
+  /// Amount to undercut by, in gil. Ignored in every mode but FixedAmount - the
+  /// other write styles derive their own step from the price they are writing
+  /// against. (It was also a percent until Percentage was retired, 2026-08-15.)
   /// </summary>
   public int UndercutAmount { get; set; } = 1;
 
   /// <summary>
-  /// Safety cap: skip the item if the undercut would exceed this percentage.
-  /// Prevents catastrophic price drops from outlier listings.
+  /// THE CRASHER-GUARD (ruled 2026-08-21): how deep under the anchor a write may go
+  /// before Scrooge stops and asks "competition or crasher?"
+  ///
+  /// <para>A WARNING, not a clamp and not a skip. It guards the FINAL price, on every
+  /// path and in every mode - the number about to be written, whatever produced it.
+  /// When it trips, the write does not happen automatically: the row surfaces carrying
+  /// the proposed price, and the player's confirm posts THAT number verbatim.</para>
+  ///
+  /// <para>It used to skip the item silently, and it used to claim it only guarded the
+  /// first-pass anchor path. Both were wrong. If the lane's competition call is right,
+  /// follow the price - a config number second-guessing a correct read is the machine
+  /// overriding evidence. The guard's real job is the one thing the lane genuinely
+  /// cannot settle alone: whether the row in front is a competitor or a crasher, which
+  /// is a question for the person who can look at the board.</para>
   /// </summary>
   public float MaxUndercutPercentage { get; set; } = 100.0f;
 
   /// <summary>
-  /// When enabled, skips items where the new price would exceed the current
-  /// listing price by more than MaxPriceIncreasePercentage.
+  /// THE QUEUE-CONFIDENCE RAIL. An upward reprice is a move BACKWARD in the queue -
+  /// we are putting people in front of us on purpose - and the farther back one
+  /// decision puts us, the more confidence it has to be able to show. This clamp
+  /// bounds how far back a single step may move us on a single board read.
+  ///
+  /// <para>When enabled, an upward reprice may not exceed the current listing price
+  /// by more than MaxPriceIncreasePercentage in ONE step. Clamp-and-climb (ruled
+  /// 07-26): the price steps to the cap and keeps climbing on later pinches -
+  /// it never skips, because a skip fossilizes a crushed lane forever.</para>
   /// </summary>
   public bool EnableMaxPriceIncreaseCap { get; set; } = false;
 
   /// <summary>
-  /// Safety cap: skip the item if the new price would increase by more than this percentage.
-  /// Prevents overpricing when competition delists and the next listing is much higher.
+  /// How far back in the queue one board read is allowed to move us: the per-pinch
+  /// ceiling on an upward step, in percent of the current listing price. One read of
+  /// a thinned board is weak evidence, so it buys a bounded move; successive passes
+  /// that keep agreeing buy the rest, and the lane climbs the whole way over those
+  /// passes rather than in one jump when competition delists.
   /// </summary>
   public float MaxPriceIncreasePercentage { get; set; } = 50.0f;
 
@@ -84,58 +93,73 @@ public sealed class Configuration : IPluginConfiguration
   public bool UndercutSelf { get; set; } = false;
 
   /// <summary>
-  /// Determines the price floor check mode. None disables the check (default),
-  /// Vendor skips items below vendor sell price,
-  /// DomanEnclave skips items below 2x vendor sell price.
+  /// The mode half of the one floor law. None disables it (default), Vendor floors at
+  /// the counter price, DomanEnclave at twice it. Combined with
+  /// <see cref="MinimumListingPrice"/> by <c>PriceFloor.Effective</c> - see there for
+  /// the law itself.
   /// </summary>
   public PriceFloorMode PriceFloorMode { get; set; } = PriceFloorMode.None;
 
   /// <summary>
-  /// Minimum gil price for any listing. Items below this price are skipped.
-  /// Set to 0 to disable (default).
+  /// The player's own half of the one floor law, in gil. Set to 0 to disable (default).
+  ///
+  /// <para>THE FLOOR IS ONE NUMBER: <c>max(this, PriceFloor.For(mode, vendor))</c>. An
+  /// honest ask under it forfeits the List exit - it is never clamped up to reach the
+  /// floor, because a clamped ask is a price nobody decided.</para>
   /// </summary>
   public int MinimumListingPrice { get; set; } = 0;
 
-  // --- Outlier detection ---
+  // --- Lane pricing ---
+  // "Listings are what people want; sales are what people paid." The lane
+  // (recency-weighted clearing price from settled sales) is the pricing model;
+  // the board is positioning only. Replaced outlier/gap-geometry detection
+  // (deleted 2026-07-13 per the lane design - no dormant fallback).
 
   /// <summary>
-  /// When enabled, detects and skips abnormally low "bait" listings on the MB.
-  /// Uses largest gap detection across the top listings to find suspicious price drops.
-  /// </summary>
-  public bool OutlierDetection { get; set; } = true;
-
-  /// <summary>
-  /// Threshold for outlier detection. A price cliff is detected when the gap between
-  /// two adjacent listings exceeds this percentage.
-  /// Example: 50 means a listing at 40 gil is bait if the next is 100 gil (60% gap > 50%).
-  /// Higher = more tolerant. Lower = catches smaller gaps.
-  /// </summary>
-  public float OutlierThresholdPercent { get; set; } = 50f;
-
-  /// <summary>
-  /// How many additional listings past the first to check for a price cliff.
-  /// Range 1–9. A value of 3 means: compare the first listing against the next 3.
-  /// </summary>
-  public int OutlierSearchWindow { get; set; } = 3;
-
-  /// <summary>
-  /// When enabled, scales the outlier search window proportionally for batches
-  /// smaller than 10 listings. The slider value is used as-is for full batches.
-  /// </summary>
-  public bool RelativeOutlierWindow { get; set; } = false;
-
-  /// <summary>
-  /// When enabled, a pinch that would raise an existing listing's price past
-  /// own-sales sanity (UpwardRepriceMultiplier) is held: price kept, item
-  /// flagged to triage. A human priced that listing — never auto-multiply it.
-  /// </summary>
-  public bool FlagUpwardRepriceEnabled { get; set; } = true;
-
-  /// <summary>
-  /// Upward sanity multiplier. Hold the reprice when the new price exceeds
-  /// (own last sale x this), or (current listing x this) when no sale history.
+  /// Lane ceiling multiplier (promoted from the old upward-reprice sanity).
+  /// Since A10 this is purely a RAIL: no listing we write may exceed it, so a
+  /// board row above it cannot be cut in front of - that is the Highland Fence's
+  /// cure and its only remaining guard. It grades nobody. One idea system-wide:
+  /// 3x what it actually sells for = suspicious, in every direction.
   /// </summary>
   public float UpwardRepriceMultiplier { get; set; } = 3.0f;
+
+  // LaneFloorPct and LaneOwnedMultiplier are GONE (cleanup pass). They were the
+  // band-less stand-ins for the bottom and the top of demonstrated clearing, and
+  // the band model out-evolved both: a lane with a going rate always carries a
+  // band (n=1 band = the price), so neither line could ever fire.
+
+  /// <summary>
+  /// Minimum settled sales needed to build a lane. Below this the lane
+  /// abstains: hold-and-flag instead of pricing off an unvalidated board.
+  /// </summary>
+  public int LaneMinHistorySamples { get; set; } = 3;
+
+  /// <summary>
+  /// Recency half-life (days) for lane weighting. SEED value - resolver v0
+  /// returns this for every item; receipts derive per-item values later.
+  /// Seeded 30d from the 2026-07-13 sale-age query (median lane evidence ~42d
+  /// old; erring long fails toward holding).
+  /// </summary>
+  public float LaneHalfLifeDays { get; set; } = 30f;
+
+  /// <summary>
+  /// How much extra an HQ item asks over its NQ price when there are no HQ sales
+  /// to go on, as a percent (Phase 3b). Drift's number, not a seed: there is no
+  /// measured HQ/NQ ratio anywhere in Scrooge and there is deliberately not going
+  /// to be one, because measuring it needs the HQ sales this setting exists to
+  /// cover for. Clamped 0-100.
+  /// </summary>
+  public int HqPremiumPercent { get; set; } = 25;
+
+  /// <summary>
+  /// THE SEAT RAIL's budget (A12): the deepest seat a pricing walk may take on
+  /// its own authority, in foreign rows left ahead of us. "Use good judgement,
+  /// but don't be wrong" (Drift, 2026-08-05) - spots 1-4 are the judgment zone,
+  /// 6+ is wrong by definition; a walk that wants a deeper seat takes the front
+  /// of the line instead. A preference, not a law - hence a knob.
+  /// </summary>
+  public int SeatBudget { get; set; } = 4;
 
   // --- Timing ---
 
@@ -153,14 +177,11 @@ public sealed class Configuration : IPluginConfiguration
 
   // --- Desynth automation ---
 
-  /// <summary>Master toggle for the desynth preview launcher overlay.</summary>
+  /// <summary>DEAD - REMOVE IN 3.1 (ruled 2026-08-23). Gated only the launcher
+  /// button on the game's Desynthesis list (rounds and the wizard opened the
+  /// preview regardless), and no other overlay button offers an opt-out. The
+  /// gate is out of DesynthLauncher; this field is unread.</summary>
   public bool EnableDesynthPreview { get; set; } = true;
-
-  /// <summary>
-  /// Highlight items as yellow when the player's desynth level is above the item's
-  /// level but still within the +50 skillup range. Matches the SimpleTweaks default.
-  /// </summary>
-  public bool YellowForSkillGain { get; set; } = true;
 
   /// <summary>
   /// Inject randomized 3–8s pauses every 8–15 items during a desynth run.
@@ -169,10 +190,20 @@ public sealed class Configuration : IPluginConfiguration
   public bool DesynthHumanPauses { get; set; } = true;
 
   /// <summary>
-  /// Base delay between item selections in a desynth run, in ms. Jittered ±400ms.
-  /// 1500ms is the floor; raise if a run still feels too fast.
+  /// Base delay between item selections in a desynth run, in ms. Jittered ±400ms
+  /// (real floor is Pacing.Jitter's 1 ms; the slider offers 800-4000). 1500 is the
+  /// default and a comfortable human pace - there is no enforced floor.
   /// </summary>
   public int DesynthPerActionBaseMs { get; set; } = 1500;
+
+  /// <summary>
+  /// Ceiling for waits that span a server round trip (desynth Confirm ->
+  /// SalvageResult, and future sites of the same shape), in ms. One shared
+  /// knob, not per-site bumps: a laggy server slows every round trip the
+  /// same way. The 2026-07-19 02:38 abort was SalvageResult taking >4000ms
+  /// at a laggy hour; UI-local waits (SalvageDialog) keep their own ceiling.
+  /// </summary>
+  public int ServerRoundTripCeilingMs { get; set; } = 10_000;
 
   // --- Hotkeys ---
 
@@ -192,23 +223,47 @@ public sealed class Configuration : IPluginConfiguration
 
   public bool ShowPriceAdjustmentsMessages { get; set; } = true;
 
-  public bool ShowOutlierDetectionMessages { get; set; } = true;
-
   public bool ShowRetainerNames { get; set; } = true;
 
-  // --- Pinch Run Log ---
+  // --- The Ledger (the Round's transcript) ---
 
   /// <summary>
-  /// When enabled, opens a separate window during auto-pinch that collects
-  /// errors and warnings for review after the run.
+  /// When enabled, the Ledger opens with each run and collects its lines - the
+  /// Round's transcript while a Round is up, one run's log otherwise.
+  ///
+  /// <para>Was <c>EnablePinchRunLog</c> until the Rounds re-seating (unit 5). The old
+  /// key still lands somewhere - see <see cref="EnablePinchRunLog"/> - because a
+  /// player who deliberately turned the log OFF must not find it back on because we
+  /// re-worded ourselves.</para>
   /// </summary>
-  public bool EnablePinchRunLog { get; set; } = true;
+  public bool EnableLedger { get; set; } = true;
+
+  /// <summary>
+  /// Pre-Rounds spelling of <see cref="EnableLedger"/>, kept under its exact old key
+  /// so the file still lands somewhere (the <see cref="Sweep"/> pattern). NULLABLE for
+  /// the reason <see cref="SweepStalenessCeilingHours"/> is: absent and false are
+  /// different facts, and a non-nullable bool would read every fresh install's missing
+  /// key as a deliberate "off". Folded forward once and nulled; nothing writes it.
+  /// </summary>
+  public bool? EnablePinchRunLog { get; set; }
 
   /// <summary>
   /// Rolling average time per item in milliseconds, persisted across runs.
   /// Used for ETA calculation. Updated at the end of each completed run.
   /// </summary>
   public float AvgMsPerItem { get; set; } = 0f;
+
+  /// <summary>
+  /// Rolling per-item pace PER ROUND STAGE (keyed by <see cref="RoundStage"/> name),
+  /// measured the same way <see cref="AvgMsPerItem"/> is and blended the same way.
+  /// The round's stage rail quotes these so an ETA is the stage's OWN measured pace
+  /// rather than one blended number standing in for five different errands.
+  ///
+  /// <para>Empty until a stage has actually run once. A stage with no measurement
+  /// says "no timing yet" rather than borrowing a neighbour's number - a rate
+  /// nobody measured reads like a rule.</para>
+  /// </summary>
+  public Dictionary<string, float> AvgMsPerItemByStage { get; set; } = new();
 
   // --- Gil Tracking ---
 
@@ -224,32 +279,9 @@ public sealed class Configuration : IPluginConfiguration
   /// </summary>
   public int StalePriceDays { get; set; } = 30;
 
-  // --- Routing brain (advisor era; master toggle stays off until the era ships) ---
-
-  /// <summary>
-  /// Master toggle for routing-brain features. Increment 0 is the listing
-  /// gate: Hawk items whose better exit is desynth or GC turn-in get a
-  /// routing verdict, are excluded from Select All, and default unchecked.
-  /// </summary>
-  public bool EnableRoutingBrain { get; set; } = false;
-
-  /// <summary>
-  /// Equipment listing floor in gil. Gear whose own-sales evidence lands
-  /// below this is a gate candidate (when a better exit exists).
-  /// </summary>
-  public int ListingFloorGil { get; set; } = 15000;
-
-  /// <summary>
-  /// Equipment velocity floor in days. Gear that took longer than this to
-  /// sell last time is a gate candidate (when a better exit exists).
-  /// </summary>
-  public int ListingVelocityDays { get; set; } = 10;
-
-  /// <summary>
-  /// Non-gear listing floor in gil (simple, no velocity axis). Rules-engine
-  /// input; gear uses ListingFloorGil x ListingVelocityDays instead.
-  /// </summary>
-  public int ListingWorthGil { get; set; } = 5000;
+  // --- Routing brain (the advisor IS the product; the door gates retired
+  // with the master toggle - exits compete on score, nothing is routed by a
+  // worth floor) ---
 
   /// <summary>
   /// Placeholder seals-to-gil conversion rate for scoring the GC exit.
@@ -257,6 +289,17 @@ public sealed class Configuration : IPluginConfiguration
   /// tracking ships — until then this is an honest rough cut.
   /// </summary>
   public int SealToGilRate { get; set; } = 25;
+
+  // THE SEAL S-CURVE (Drift, 2026-08-05, replacing the 07-25 runway step).
+  // Seal value is a smooth S on venture token STOCK: full at/below FullBelow,
+  // nothing at/above ZeroAbove, smoothstep between - center at the midpoint
+  // (Drift's 2k pivot). Anchored on stock because that was always Drift's dial,
+  // and shaped so the stockpile self-centers: above the pivot seals cheapen
+  // and turn-in slows; below it the loop reverses. See SealRunway.cs.
+
+  public int SealCurveFullBelow { get; set; } = 1_000;
+
+  public int SealCurveZeroAbove { get; set; } = 3_000;
 
   /// <summary>
   /// Ambiguity band, percent. When the winning exit's gil score and the
@@ -267,53 +310,52 @@ public sealed class Configuration : IPluginConfiguration
 
   // Venture tilt bands (BP4 Q5) — configurable defaults, not product rules.
   // Above Full: GC competes on pure value. Below Full: borderline calls tilt
-  // to churn. Below Low: churn unless the item is worth
-  // ListingFloorGil x VenturePanicValueMultiplier. Below Panic: churn
-  // everything GC-eligible until stock recovers.
+  // to churn.
 
   public int VentureBandFull { get; set; } = 1250;
 
+  // DEAD - REMOVE IN 3.1 (ruled 2026-08-23, with their RoutingConfig snapshot
+  // twins). Paint-only since the S-curve took the decisions; the dashboard's
+  // color ramp now derives from the curve midpoint (orange under half, red
+  // under a quarter - GilWindow.Ventures), so nothing reads these.
   public int VentureBandLow { get; set; } = 750;
 
   public int VentureBandPanic { get; set; } = 500;
 
-  public float VenturePanicValueMultiplier { get; set; } = 3.0f;
+  // VentureBandCruise ("around 2k is cruisin") retired 2026-08-05 with the
+  // saturation tilt - the seal S-curve's center is the 2k now. Venture panic
+  // retired with it in the cleanup pass: the S-curve owns the whole stock
+  // range, so a panic stock needs no special pull - the full-value seals it
+  // scores with already win on their own.
 
-  // Slow-mover pressure - the routing brain pointed at already-listed
-  // inventory. Rides the pinch run; gated by EnableRoutingBrain too.
+  // What a skillup is worth in gil (Drift 07-18: price the skillup, don't gate
+  // it). The desynth candidate for a skillup-eligible item scores at least
+  // this and competes in the ordinary value comparison; red is rarer than
+  // yellow, so it is worth more. A sale comfortably above the worth wins the
+  // market; below it, the melter wins; near it, Review.
+  public int SkillupWorthYellow { get; set; } = 50_000;
+  public int SkillupWorthRed { get; set; } = 100_000;
 
-  /// <summary>
-  /// Master toggle for slow-mover pressure (deepen cuts / evict flags).
-  /// Default OFF: this is the one advisor-era feature that changes real
-  /// listing prices, so it never activates silently with the routing brain -
-  /// it gets its own explicit opt-in. (Renamed from EnableSlowMoverPressure
-  /// at the era review precisely to drop the old default-on stored value.)
-  /// </summary>
-  public bool SlowMoverPressureOptIn { get; set; } = false;
+  // Slow-mover pressure is GONE (cleanup pass). It was the one advisor-era
+  // feature that moved real listing prices on its own ladder, and "keep it
+  // simple" retired it whole - the eviction question is rethought at 3.1.
 
-  /// <summary>Days listed before pressure starts deepening the pinch cut.</summary>
-  public int PressureAfterDays { get; set; } = 7;
+  // VentureTokensPerVenture is GONE (V42, 08-15). It carried "believed 2" as a
+  // setting and fed the seals-to-gil conversion a guess. The RetainerTask sheet
+  // states each venture's token cost outright and the capture now stamps it on the
+  // row, so the number is measured per venture instead of assumed for all of them
+  // (Drift: we don't need a mod knob for a thing we can directly measure in game).
 
-  /// <summary>Extra undercut percent at PressureAfterDays (market alive).</summary>
-  public int PressureDeepenPct { get; set; } = 2;
-
-  /// <summary>Extra undercut percent at 14+ days listed (market alive).</summary>
-  public int PressureDeepenMaxPct { get; set; } = 5;
-
-  /// <summary>Days listed with a dead 14-day MB history before the item is flagged for eviction.</summary>
-  public int EvictAfterDays { get; set; } = 14;
-
-  /// <summary>
-  /// Venture tokens consumed per quick venture (VERIFY in-game; believed 2).
-  /// Feeds the empirical seals-to-gil conversion.
-  /// </summary>
-  public int VentureTokensPerVenture { get; set; } = 2;
-
-  // --- Universalis almanac (advisor data only - never sets a price) ---
+  // --- Universalis almanac (two scopes: home-world velocity is advisor data;
+  // DC settled sales CAN price, last in line - the community lane fires only
+  // when own-sale/tape/Look are all silent. Old "never sets a price" header
+  // was a fossil; ruled "code wins, fix words" 2026-08-23) ---
 
   /// <summary>
-  /// Use Universalis (community market data, home world) to fill the velocity
-  /// axis for items with no local history. Consumer only; offline = the
+  /// Use Universalis (community market data) for two things: home-world
+  /// velocity/recency to fill the pace axis for never-sold items, and DC-scope
+  /// settled sale history, the List witness ladder's last rung - it prices
+  /// only when local evidence is silent. Consumer only; offline = the
   /// plugin behaves exactly as if this were off.
   /// </summary>
   public bool EnableUniversalis { get; set; } = true;
@@ -401,6 +443,114 @@ public sealed class Configuration : IPluginConfiguration
   /// Only effective when PriceFloorMode is not DomanEnclave.
   /// </summary>
   public bool AutoVendorSellOnPriceCheckFail { get; set; } = false;
+
+  /// <summary>
+  /// The vendor rider (WALK unit 3): when true, unanimous Pull &amp; Vendor rows
+  /// for a retainer are pulled and vendored inside THAT retainer's pinch visit,
+  /// rather than waiting to be clicked as a separate errand. One honest escape
+  /// hatch - flip it off if the rider ever misbehaves in the wild; mixed/demoted
+  /// rows always stay in the pile for the player's judgment regardless.
+  /// </summary>
+  public bool PinchVendorRider { get; set; } = true;
+
+  /// <summary>
+  /// The Venture Coffer rider (Drift, 2026-07-23: "if there is a Venture Coffer in the
+  /// inventory, it needs to be used to unlock an item"). When true, the round opens
+  /// ALL Venture Coffers at the FRONT of the melt stage (which sits immediately
+  /// before the bell per the 07-25 ruling - near the round's END, not its front) so
+  /// the unlocked items join the routable pool for the next Refresh; each open is narrated in the
+  /// run log. One honest escape hatch - flip it off if coffer-opening ever misbehaves
+  /// in the wild. Round-context only; the manual desynth button never opens coffers.
+  /// </summary>
+  public bool OpenVentureCoffers { get; set; } = true;
+
+  // --- Round run model (WALK unit 2) ---
+
+  /// <summary>
+  /// The in-progress round's HELD PLACE, persisted so a reload restores the same
+  /// stages done / current / halted (the 07-22 lost-cursor reload is the ancestor
+  /// bug). Null = no round underway. Written on every round transition, read once
+  /// on first draw; retired (nulled) rather than restored if past the staleness
+  /// ceiling below.
+  /// </summary>
+  public RoundState? Round { get; set; }
+
+  /// <summary>
+  /// WHAT THE LAST ROUND DID (SF-P1, 2026-08-15) - the idle Rounds screen's tally
+  /// line, and the only thing about a finished errand that outlives it. Null until a
+  /// round has ended under this build; the line is absent until then.
+  ///
+  /// <para>It is here rather than derived because nothing else survives the idle
+  /// boundary: the report banner counts what is still WAITING and dies with the
+  /// dismissal, the rail's per-stage tallies are in-memory and cleared by the next
+  /// start, and <c>round_runs</c> banks timestamps and no counts. See
+  /// <see cref="LastRoundTally"/> for the whole audit. Adding a PROPERTY is safe where
+  /// renaming a persisted class is fatal (the <see cref="RoundState"/> receipts): a
+  /// config written without this key reads null, which is "no round has ended yet".</para>
+  /// </summary>
+  public LastRoundTally? LastRound { get; set; }
+
+  /// <summary>
+  /// How old a persisted round may be before restore RETIRES it instead of
+  /// trusting it - a half-done round from hours ago is history, not a round.
+  /// Seed a few hours; receipts never tune this (it is a sanity ceiling, not a
+  /// cadence knob). Floored at 1h on read.
+  /// </summary>
+  public int RoundStalenessCeilingHours { get; set; } = 4;
+
+  /// <summary>
+  /// HOW LONG A BANKED DECISION STAYS FRESH - the Rounds knob, ruled 2026-08-10
+  /// ("do it right the first time"), default 24 hours.
+  ///
+  /// <para>ONE knob at TWO doors, deliberately. Recon's work set derives from it
+  /// (an item whose decision_cache row is missing or older than this is stale, and
+  /// the stale set IS what recon walks - nothing procedural decides), and unit 3's
+  /// cached post gates on the same number (post from cache only while the row is
+  /// within it; an older row pays the classic ComparePrice chain). "Fresh enough
+  /// to skip re-reading" and "fresh enough to act on" are the same sentence, and
+  /// two knobs saying it would eventually disagree - re-reading an item we were
+  /// about to post from cache anyway, or posting from a row we had just called too
+  /// old to trust.</para>
+  ///
+  /// <para>A config SEED, not a measured quantity. The evidence that will tune it
+  /// is the veto's own disagreement receipts (was 24 right - measured, not
+  /// guessed). Clamped to at least 1h on read by
+  /// <see cref="ReconFreshness.Cutoff"/>, in the safe direction: a typo makes the
+  /// round slow, never blind.</para>
+  /// </summary>
+  public int ReconFreshHours { get; set; } = 24;
+
+  // --- The pre-Rounds keys (2026-08-10 naming sweep) ---
+  //
+  // READ ONCE, THEN NULLED. These two are the old spellings of the two properties
+  // above, kept so the rename costs the player nothing: LegacyRoundConfig.Fold
+  // moves their values forward on the first restore of the session and clears
+  // them. Nothing writes them. See SweepState for why the BLOB's old class had to
+  // survive as well - the $type in the file names it, and an unresolvable $type
+  // takes the whole config down, not just its own property.
+  //
+  // Deletable once no config in the wild still carries the old keys.
+
+  /// <summary>Pre-Rounds spelling of <see cref="Round"/>. Folded forward, then nulled.</summary>
+  public SweepState? Sweep { get; set; }
+
+  /// <summary>
+  /// Pre-Rounds spelling of <see cref="RoundStalenessCeilingHours"/>. NULLABLE on
+  /// purpose: a config that never carried the key must leave the new value alone,
+  /// and a non-nullable int would hand every fresh install a hard-coded 0.
+  /// </summary>
+  public int? SweepStalenessCeilingHours { get; set; }
+
+  /// <summary>
+  /// The re-pinch floor for the fit check at the round's press (spec "Cadence
+  /// gate", Drift 2026-07-22: "if the last pinch was less than 4 hours ago, don't
+  /// suggest a pinch in a round run"). A board read younger than this means the
+  /// round skips the pinch and opens past it. A config SEED, not a measured
+  /// quantity - receipts tune the ripeness gate later (the SealToGilRate arc);
+  /// re-ruled 2026-07-26 to Drift's 2h (was 4h) and exposed as a config-window
+  /// slider the same day - his knob by design. Floored at 1h on read.
+  /// </summary>
+  public int RepinchFloorHours { get; set; } = 2;
 
   public void Save()
   {

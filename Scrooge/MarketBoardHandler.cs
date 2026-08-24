@@ -13,7 +13,7 @@ namespace Scrooge;
 
 /// <summary>
 /// Listens for MB price data and calculates the undercut price.
-/// Fires <see cref="NewPriceReceived"/> with the result, which AutoPinch consumes.
+/// Fires <see cref="NewPriceReceived"/> with the result, which the pricing pipeline consumes.
 ///
 /// Sentinel values for NewPrice:
 ///   > 0  = valid price to set
@@ -40,7 +40,19 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
   // --- Sale history support (v2.4) ---
   private List<IMarketBoardHistoryListing>? _lastHistory;
-  internal bool OutlierDetected { get; private set; }
+
+  // --- Board capture (lane pricing) ---
+  // The board only exists inside the offerings event; the lane decision runs
+  // later in SetNewPrice where history + velocity are also in hand. Batches
+  // (10 listings each, ascending) accumulate here per item.
+  // Retainer + quantity ride alongside price so market memory (M4) can diff on
+  // soft identity (retainer, qty, HQ); lane pricing still reads price/own/hq only.
+  private readonly List<(long Price, bool IsOwn, bool IsHq, string Retainer, int Quantity)> _board = [];
+  private readonly HashSet<int> _boardRequestIds = [];
+  private readonly HashSet<ulong> _boardListingIds = [];
+
+  /// <summary>Item ID the captured board belongs to.</summary>
+  internal uint BoardItemId { get; private set; }
 
   /// <summary>Item ID from the last HistoryReceived event. Used to validate history is for the correct item.</summary>
   internal uint HistoryItemId { get; private set; }
@@ -49,7 +61,7 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   internal int LastCheckedPrice { get; private set; }
 
   /// <summary>
-  /// Setting NewPrice fires the event — this is the bridge to AutoPinch.
+  /// Setting NewPrice fires the event — this is the bridge to the pricing pipeline.
   /// </summary>
   private int NewPrice
   {
@@ -88,6 +100,37 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     HistoryItemId = history.ItemId;
     _lastHistory = history.HistoryListings.ToList();
     Svc.Log.Debug($"[SaleHistory] Received {_lastHistory.Count} history entries for item {history.ItemId}");
+    BankSaleHistory(history.ItemId, _lastHistory);
+  }
+
+  /// <summary>
+  /// Banks the history window into sale_history (V23, the tape) right here where
+  /// the packet is in hand — this event is the ONLY place the settled-sales data
+  /// exists before _lastHistory is replaced or nulled. Best-effort but never
+  /// silent: a storage failure must not break the pinch, so it downgrades to a
+  /// Warning — with the exception, because a tape that misses windows without
+  /// saying so is the standing book's 07-25 silent-flush lesson all over again.
+  /// </summary>
+  private void BankSaleHistory(uint itemId, List<IMarketBoardHistoryListing> listings)
+  {
+    if (listings.Count == 0)
+      return;
+
+    try
+    {
+      var seenAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      var rows = listings.Select(h => new SaleHistorySchema.SaleRow(
+        itemId, h.IsHq, (long)h.SalePrice, (int)h.Quantity, h.BuyerName ?? "",
+        ((DateTimeOffset)h.PurchaseTime.ToUniversalTime()).ToUnixTimeSeconds(), seenAt)).ToList();
+
+      var banked = GilStorage.BankSaleHistory(rows);
+      if (banked > 0)
+        Svc.Log.Debug($"[SaleHistory] Banked {banked} new of {rows.Count} window entries for item {itemId}");
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, $"[SaleHistory] Banking failed for item {itemId} — pinch unaffected, this window's tape is missed");
+    }
   }
 
   /// <summary>
@@ -97,10 +140,10 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
   /// <param name="currentOfferings">Batch of up to 10 MB listings for the queried item, sorted by price ascending.</param>
   private void MarketBoardOnOfferingsReceived(IMarketBoardCurrentOfferings currentOfferings)
   {
+    CaptureBoard(currentOfferings);
+
     if (!_newRequest)
       return;
-
-    OutlierDetected = false;
 
     // Empty batch (nothing listed for this item) — every ItemListings[0]
     // access below would throw. Treat as "no matching listing."
@@ -119,71 +162,9 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
       while (i < currentOfferings.ItemListings.Count && !currentOfferings.ItemListings[i].IsHq)
         i++;
     }
-    // NQ path: i stays at 0 (first listing). Empty batches fall through to the guard at line 138.
-
-    // --- Outlier detection: price-by-price gap comparison ---
-    // Only applies to NQ item pricing. HQ items skip outlier detection.
-    // Treats all listings (NQ and HQ) as equals for gap analysis.
-    if (Plugin.Configuration.OutlierDetection && !(_useHq && _itemHq))
-    {
-      var startIndex = i;
-      var itemCount = currentOfferings.ItemListings.Count;
-      var window = Plugin.Configuration.OutlierSearchWindow;
-
-      if (Plugin.Configuration.RelativeOutlierWindow && itemCount < 10)
-      {
-        // For small listing counts, dynamically adjust the search window to be a percentage of total listings
-        window = Math.Max(1, (int)Math.Round((float)window / 9f * itemCount)); // e.g. if window=2 and itemCount=5, then window becomes 1 (20% of 5)
-      }
-      var searchEnd = Math.Min(itemCount, (i + 1 + window));
-
-      for (var j = i; j + 1 < searchEnd; j++)
-      {
-        var currentPrice = currentOfferings.ItemListings[j].PricePerUnit;
-        var nextPrice = currentOfferings.ItemListings[j + 1].PricePerUnit;
-        var gapPercent = nextPrice > 0 ? (float)(nextPrice - currentPrice) / nextPrice * 100f : 0f;
-
-        // If the price gap exceeds the threshold, it's a cliff
-        if (gapPercent > Plugin.Configuration.OutlierThresholdPercent)
-        {
-          // Own listings are evidence, not bait - never skip past one. If a
-          // listing in the would-be-skipped range is ours, it anchors instead
-          // (the 900k bug: own 150k listing read as below-cliff bait, troll
-          // wall became the anchor, item repriced to ~899,900).
-          var ownIndex = -1;
-          for (var k = startIndex; k <= j; k++)
-          {
-            if (GameSafe.IsOwnRetainer(currentOfferings.ItemListings[k].RetainerId))
-            {
-              ownIndex = k;
-              break;
-            }
-          }
-          if (ownIndex >= 0)
-          {
-            i = ownIndex;
-            Svc.Log.Debug($"[Outlier] own listing at position {ownIndex} anchors past the cliff skip");
-            break;
-          }
-
-          var outlierItemName = _items.GetRow(currentOfferings.ItemListings[0].ItemId).Name.ToString();
-          Plugin.PinchRunLog?.AddOutlierEntry(outlierItemName, (int)currentPrice, (int)nextPrice);
-          Plugin.PinchRunLog?.IncrementOutliers();
-          Communicator.PrintOutlierDetected(currentOfferings.ItemListings[0].ItemId, (int)currentPrice, (int)nextPrice);
-          LogOutlierEvidence(currentOfferings.ItemListings[0].ItemId, outlierItemName, (int)currentPrice, (int)nextPrice);
-          i = j + 1; // skip everything below the cliff
-        }
-      }
-
-      OutlierDetected = (i != startIndex);
-
-      // Re-check bounds after skipping outliers
-      if (i >= currentOfferings.ItemListings.Count)
-      {
-        NewPrice = -1;
-        return;
-      }
-    }
+    // NQ path: i stays at 0 (first listing). Empty batches fall through to the guard below.
+    // Gap-geometry outlier detection deleted 2026-07-13: the lane decision in
+    // SetNewPrice classifies the captured board against settled sales instead.
 
     // Guard: no matching listing found, or we already processed this batch
     if (i >= currentOfferings.ItemListings.Count || currentOfferings.RequestId == _lastRequestId)
@@ -193,81 +174,327 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     }
     else
     {
-      int price;
       var listingPrice = (int)currentOfferings.ItemListings[i].PricePerUnit;
       var isOwnRetainer = !Plugin.Configuration.UndercutSelf && GameSafe.IsOwnRetainer(currentOfferings.ItemListings[i].RetainerId);
-      var effectiveMode = Plugin.Configuration.UndercutMode;
-
-      if (!isOwnRetainer && effectiveMode == UndercutMode.Humanized)
-      {
-        // 1/3 Random Pinch (stays Humanized), 1/3 Gentleman's Match, 1/3 Clean Numbers
-        var roll = _random.Next(3);
-        if (roll == 1)
-          effectiveMode = UndercutMode.GentlemansMatch;
-        else if (roll == 2)
-          effectiveMode = UndercutMode.CleanNumbers;
-        // roll == 0: stays Humanized → random pinch branch below
-      }
-
-      // Calculate price based on the selected undercut mode
-      if (isOwnRetainer)
-        price = listingPrice;  // own listing — keep as-is
-      else if (effectiveMode == UndercutMode.FixedAmount)
-        price = Math.Max(listingPrice - Plugin.Configuration.UndercutAmount, 1);
-      else if (effectiveMode == UndercutMode.Percentage)
-        price = Math.Max((100 - Plugin.Configuration.UndercutAmount) * listingPrice / 100, 1);
-      else if (effectiveMode == UndercutMode.CleanNumbers)
-      {
-        if (listingPrice <= 50)
-          price = Math.Max(listingPrice - 1, 1);
-        else
-        {
-          var p = listingPrice - 1;
-          if (p > 100000) p = p / 100 * 100;
-          else if (p > 10000) p = p / 50 * 50;
-          else if (p > 1000) p = p / 25 * 25;
-          else if (p > 500) p = p / 10 * 10;
-          else p = p / 5 * 5;
-          price = Math.Max(p, 1);
-        }
-      }
-      else if (effectiveMode == UndercutMode.Humanized)
-      {
-        var pinch = _random.Next(1, Plugin.Configuration.HumanizedMaxPinch + 1);
-        price = Math.Max(listingPrice -  pinch, 1);
-
-      }
-      else
-        price = listingPrice;  // GentlemansMatch — copy price exactly
+      var price = ApplyUndercutMode(listingPrice, isOwnRetainer);
 
       LastCheckedPrice = price; // capture before sentinel conversion
 
-      // Price floor checks
+      // THE ONE FLOOR LAW (ruled 2026-08-21). Two checks with two sentinels became
+      // one: the honest ask either clears max(minimum, mode floor) or no legal
+      // listing exists. Same calculation the lane guard, the cached-post re-check and
+      // the Ledger's relist preview run — see PriceFloor.Effective.
       var itemId = currentOfferings.ItemListings[0].ItemId;
+      var vendorPrice = (long)_items.GetRow(itemId).PriceLow;
+      var floor = PriceFloor.Effective(
+        Plugin.Configuration.PriceFloorMode, vendorPrice, Plugin.Configuration.MinimumListingPrice);
 
-      // Check 1: Mode-based floor (Vendor or Doman Enclave)
-      if (Plugin.Configuration.PriceFloorMode != PriceFloorMode.None)
-      {
-        var vendorPrice = (int)_items.GetRow(itemId).PriceLow;
-        var floorPrice = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave ? vendorPrice * 2 : vendorPrice;
-
-        if (floorPrice > 0 && price < floorPrice)
-        {
-          price = -2; // sentinel: below price floor
-        }
-      }
-
-      // Check 2: Minimum listing price
-      if (price > 0 && Plugin.Configuration.MinimumListingPrice > 0 && price < Plugin.Configuration.MinimumListingPrice)
-      {
-        price = -3; // sentinel: below minimum listing price
-      }
+      if (price > 0 && floor.Refuses(price))
+        price = -2; // sentinel: no legal ask - the honest price is under the floor
 
       NewPrice = price;
     }
 
     _lastRequestId = currentOfferings.RequestId;
     _newRequest = false;
+  }
+
+  /// <summary>
+  /// Applies the configured undercut mode to a board listing price. Shared by
+  /// the first-pass offerings path and the lane decision's anchor pricing.
+  /// Own listings are matched, never undercut.
+  /// </summary>
+  /// <param name="crossQuality">
+  /// True = the anchor is a row of the BETTER quality, handed over by the
+  /// cross-quality rail. Matching it is not a market position, it is a corpse, so
+  /// the answer is forced strictly under it however the mode landed. This method
+  /// still knows nothing about HQ - only that the anchor crossed qualities.
+  /// </param>
+  internal int ApplyUndercutMode(int listingPrice, bool isOwnListing, bool crossQuality = false)
+  {
+    var price = UndercutByMode(listingPrice, isOwnListing);
+    return crossQuality
+      ? (int)LanePricing.StrictlyUnder(price, listingPrice)
+      : price;
+  }
+
+  /// <summary>The mode arithmetic itself, quality-blind by design.</summary>
+  private int UndercutByMode(int listingPrice, bool isOwnListing)
+  {
+    var effectiveMode = Plugin.Configuration.UndercutMode;
+
+    if (!isOwnListing && effectiveMode == UndercutMode.Humanized)
+    {
+      // 1/3 Random Pinch (stays Humanized), 1/3 Gentleman's Match, 1/3 Clean Numbers
+      var roll = _random.Next(3);
+      if (roll == 1)
+        effectiveMode = UndercutMode.GentlemansMatch;
+      else if (roll == 2)
+        effectiveMode = UndercutMode.CleanNumbers;
+      // roll == 0: stays Humanized → random pinch branch below
+    }
+
+    if (isOwnListing)
+      return listingPrice;  // own listing — keep as-is
+    if (effectiveMode == UndercutMode.FixedAmount)
+      return Math.Max(listingPrice - Plugin.Configuration.UndercutAmount, 1);
+    if (effectiveMode == UndercutMode.CleanNumbers)
+    {
+      if (listingPrice <= 50)
+        return Math.Max(listingPrice - 1, 1);
+
+      var p = listingPrice - 1;
+      if (p > 100000) p = p / 100 * 100;
+      else if (p > 10000) p = p / 50 * 50;
+      else if (p > 1000) p = p / 25 * 25;
+      else if (p > 500) p = p / 10 * 10;
+      else p = p / 5 * 5;
+      return Math.Max(p, 1);
+    }
+    if (effectiveMode == UndercutMode.Humanized)
+    {
+      var pinch = _random.Next(1, Plugin.Configuration.HumanizedMaxPinch + 1);
+      return Math.Max(listingPrice - pinch, 1);
+    }
+
+    return listingPrice;  // GentlemansMatch — copy price exactly
+  }
+
+  /// <summary>
+  /// Accumulates board listings across offerings batches for the current item.
+  /// Runs on every offerings event (even after the first-pass price resolves)
+  /// so late batches still enrich the board the lane decision sees.
+  ///
+  /// <para>A board is BORN only by an armed query (_newRequest - the compare
+  /// window the run or the player just opened). The game serves offerings in
+  /// pages of 10 and continues from its last offset on a quick re-request, so a
+  /// batch that arrives AFTER the pricing door flushed this item is the queue's
+  /// TAIL wearing a fresh timestamp. Founding a board on one poisoned the banked
+  /// snapshot and minted ~280 phantom appear/disappear events in one afternoon -
+  /// the Stuffed Alpha's rows 11-20 read as "the whole board turned over"
+  /// (08-02). Orphan batches are dropped; enrichment of an in-flight board
+  /// (same item) stays unconditional, which is what late batches are for.</para>
+  /// </summary>
+  private void CaptureBoard(IMarketBoardCurrentOfferings offerings)
+  {
+    if (offerings.ItemListings.Count == 0)
+      return;
+
+    var itemId = offerings.ItemListings[0].ItemId;
+    if (itemId != BoardItemId)
+    {
+      if (!_newRequest)
+      {
+        Svc.Log.Debug($"[Board] Orphan offerings batch for item {itemId} dropped - no armed query, a late page of a flushed board");
+        return;
+      }
+      _board.Clear();
+      _boardRequestIds.Clear();
+      _boardListingIds.Clear();
+      BoardItemId = itemId;
+      BoardTotal = null; // the last item's total must never vouch for this board
+    }
+
+    if (!_boardRequestIds.Add(offerings.RequestId))
+      return; // batch already captured
+
+    // Row-level dedup: a genuine no-answer retry can cross a first request that
+    // finally answers - the game restarts the board under a fresh request ID,
+    // so page 1 arrives twice (live 08-02: "seen 20 of 12"). Request-id dedup
+    // can't see it; the listing's own identity can. Re-sent rows become no-ops
+    // and the count stays honest, so completeness only trips on the real tail.
+    foreach (var listing in offerings.ItemListings)
+    {
+      if (!_boardListingIds.Add(listing.ListingId))
+        continue;
+      _board.Add(((long)listing.PricePerUnit, GameSafe.IsOwnRetainer(listing.RetainerId),
+        listing.IsHq, listing.RetainerName ?? "", (int)listing.ItemQuantity));
+    }
+
+    // The board's TOTAL, from the game's own search proxy - the "y" the
+    // ItemSearchResult window displays, live during the retainer compare flow
+    // (proved by the x-of-y instrument, 08-02: "seen 10 of 42" while pages
+    // streamed). Re-read on every batch: the freshest claim wins, and a proxy
+    // hiccup on one batch never zeroes a total an earlier batch banked.
+    if (ProxyListingTotal() is int total && total > 0)
+      BoardTotal = total;
+    Svc.Log.Debug($"[Board] x-of-y: item {itemId} seen {_board.Count} of {BoardTotal?.ToString() ?? "?"} (proxy total)");
+  }
+
+  /// <summary>The proxy's total listing count for the captured board, or null when the proxy never said.</summary>
+  internal int? BoardTotal { get; private set; }
+
+  /// <summary>
+  /// Whether the captured board holds every row the game says exists (Drift,
+  /// 08-02: "I'd rather have all of the data before making a decision"). An
+  /// unknown total reads as complete - the pre-proxy behavior, never a stall.
+  /// Callers gate on a first-pass response first, which guarantees the
+  /// captured board is the item under pricing.
+  /// </summary>
+  internal bool CurrentBoardComplete
+    => BoardTotal is not int total || _board.Count >= total;
+
+  /// <summary>How many rows the captured board holds right now - the completeness gauge.</summary>
+  internal int CurrentBoardDepth => _board.Count;
+
+  /// <summary>
+  /// Completes the board from the game's OWN copy - zero requests sent (Drift,
+  /// 08-02: "I want a decision based on full data", and on request spam: "I'm
+  /// a bit horrified that we've been making nonsense page 1 requests").
+  ///
+  /// <para>The compare-price flow's offerings PACKET carries only page 1, and
+  /// every re-request we ever fired just ordered another page 1 - proved live
+  /// in all three configurations. But the proxy behind the ItemSearchResult
+  /// window holds a 100-slot listing array of its own, filled by the AddPage
+  /// packet path that Dalamud's offerings event does not relay. If the game
+  /// already holds rows 11+, they are HERE. This reads them - same item
+  /// verified, deduped by ListingId like every captured batch - and logs what
+  /// it found either way, because whether the proxy fills in this flow IS the
+  /// experiment.</para>
+  /// </summary>
+  internal unsafe void TryCompleteFromProxy(uint expectedItemId)
+  {
+    try
+    {
+      var module = FFXIVClientStructs.FFXIV.Client.UI.Info.InfoModule.Instance();
+      if (module == null) return;
+      var proxy = (FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyItemSearch*)
+        module->GetInfoProxyById(FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyId.ItemSearch);
+      if (proxy == null) return;
+      if (proxy->SearchItemId != expectedItemId)
+      {
+        Svc.Log.Debug($"[Board] proxy read: proxy holds item {proxy->SearchItemId}, pricing {expectedItemId} - not ours, skipped");
+        return;
+      }
+
+      // The offerings PACKET can go missing entirely while the proxy still got
+      // the data (live 08-02: item 22428 - proxy held its listings, no packet
+      // ever founded a board, and the old board-id guard refused to read them).
+      // Identity here is verified against the item UNDER PRICING - the
+      // pipeline's own expectation, not packet timing - so founding the board
+      // from the proxy is safe where founding from an orphan batch was not.
+      //
+      // Known imprecision, ruled acceptable (Drift, 08-02): with two listings of
+      // the SAME variant back to back, this cannot tell whether the proxy's
+      // rows came from this listing's query or the previous one's - at most a
+      // few seconds stale, own rows never compete anyway, and "the price is
+      // the price and the board is the board" for a given item. The
+      // alternative on this branch is deciding on no board at all.
+      if (BoardItemId != expectedItemId)
+      {
+        _board.Clear();
+        _boardRequestIds.Clear();
+        _boardListingIds.Clear();
+        BoardItemId = expectedItemId;
+        BoardTotal = null;
+      }
+
+      var held = (int)proxy->ListingCount;
+      var before = _board.Count;
+      var listings = proxy->Listings;
+      for (var i = 0; i < held && i < listings.Length; i++)
+      {
+        ref var l = ref listings[i];
+        if (l.ItemId != BoardItemId) continue;
+        if (!_boardListingIds.Add(l.ListingId)) continue;
+        _board.Add(((long)l.UnitPrice, GameSafe.IsOwnRetainer(l.RetainerId),
+          l.IsHqItem, l.CharacterName.ToString(), (int)l.Quantity));
+      }
+      // A proxy-founded board has no packet-banked total; the proxy's own count
+      // is the freshest claim there is (it reads the full total before pages
+      // finish streaming - proved by every "seen 10 of 20" line).
+      if (BoardTotal is null && held > 0)
+        BoardTotal = held;
+      Svc.Log.Debug($"[Board] proxy read: item {BoardItemId} - proxy holds {held}, " +
+        $"captured {before} -> {_board.Count} of {BoardTotal?.ToString() ?? "?"}");
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Debug($"[Board] proxy read failed: {ex.Message}");
+    }
+  }
+
+  /// <summary>
+  /// The total listing count the game's own search proxy holds for the current
+  /// query - the "y" behind the ItemSearchResult window's count, available (if
+  /// populated) before all pages have streamed. Null when the proxy is absent.
+  /// </summary>
+  private static unsafe int? ProxyListingTotal()
+  {
+    try
+    {
+      var module = FFXIVClientStructs.FFXIV.Client.UI.Info.InfoModule.Instance();
+      if (module == null) return null;
+      var proxy = (FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyItemSearch*)
+        module->GetInfoProxyById(FFXIVClientStructs.FFXIV.Client.UI.Info.InfoProxyId.ItemSearch);
+      return proxy == null ? null : (int)proxy->ListingCount;
+    }
+    catch
+    {
+      return null;
+    }
+  }
+
+  /// <summary>
+  /// The captured board for the lane decision. HQ pricing competes with HQ
+  /// listings only; NQ pricing walks the COMBINED physical queue with each
+  /// row's quality flagged (A12) - the walk classifies cross-quality rows
+  /// itself. Empty when the board belongs to a different item.
+  /// </summary>
+  internal List<LaneListing> GetBoard(uint itemId, bool hqOnly)
+  {
+    if (itemId != BoardItemId)
+      return [];
+
+    return _board
+      .Where(l => !hqOnly || l.IsHq)
+      .Select(l => new LaneListing(l.Price, l.IsOwn, l.IsHq))
+      .ToList();
+  }
+
+  /// <summary>
+  /// The full-identity captured board for market memory (M4): every listing (both
+  /// qualities - quality is part of the soft-identity key) with its retainer, stack
+  /// size, price and own-ness. Empty when the captured board belongs to another item.
+  /// Read at the pricing door to diff against the stored snapshot.
+  /// </summary>
+  internal List<MarketEvents.BoardListing> GetBoardSnapshot(uint itemId)
+  {
+    if (itemId != BoardItemId)
+      return [];
+
+    return _board
+      .Select(l => new MarketEvents.BoardListing(l.Retainer, l.Quantity, l.IsHq, l.Price, l.IsOwn))
+      .ToList();
+  }
+
+  /// <summary>
+  /// Settled sales for the lane, from the MB history packet (the last ~20
+  /// board sales, however old - the lane discounts by age, never discards).
+  /// Empty when history belongs to a different item or never arrived.
+  /// </summary>
+  internal List<LaneSale> GetLaneSales(uint itemId)
+  {
+    if (_lastHistory == null || HistoryItemId != itemId)
+      return [];
+
+    return _lastHistory
+      .Select(h => new LaneSale((long)h.SalePrice, ((DateTimeOffset)h.PurchaseTime.ToUniversalTime()).ToUnixTimeSeconds(), h.IsHq))
+      .ToList();
+  }
+
+  /// <summary>
+  /// Sales/day derived from the history packet span. Null when no history.
+  /// Feeds the race join/decline call in the lane decision.
+  /// </summary>
+  internal double? GetPacketVelocityPerDay(uint itemId)
+  {
+    if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != itemId)
+      return null;
+
+    var oldest = _lastHistory.Min(h => h.PurchaseTime.ToUniversalTime());
+    var spanDays = Math.Max(1.0, (DateTime.UtcNow - oldest).TotalDays);
+    return _lastHistory.Count / spanDays;
   }
 
   /// <summary>
@@ -291,103 +518,47 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
     _itemHq = addon->ItemName->NodeText.ToString().Contains(Windows.Format.HqChar);
   }
 
-  /// <summary>
-  /// Calculates a price from sale history when outlier detection fired.
-  /// Returns the median sale price, or null if no usable history or if
-  /// the median fails floor/min checks. No sentinels — null means
-  /// "fall back to first-pass price."
-  /// </summary>
-  internal int? GetHistoryPrice()
-  {
-    if (_lastHistory == null || _lastHistory.Count == 0)
-      return null;
-
-    var prices = _lastHistory
-      .Where(h => !_useHq || !_itemHq || h.IsHq)
-      .OrderBy(h => h.SalePrice)
-      .Select(h => (int)h.SalePrice)
-      .ToList();
-
-    if (prices.Count == 0)
-      return null;
-
-    // Median — resilient to outliers in history
-    var median = prices[prices.Count / 2];
-
-    // Floor/min checks — return null (not sentinels) so caller falls back cleanly
-    if (Plugin.Configuration.PriceFloorMode != PriceFloorMode.None)
-    {
-      var vendorPrice = (int)_items.GetRow(HistoryItemId).PriceLow;
-      var floorPrice = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave
-        ? vendorPrice * 2 : vendorPrice;
-      if (floorPrice > 0 && median < floorPrice)
-        return null;
-    }
-    if (Plugin.Configuration.MinimumListingPrice > 0 && median < Plugin.Configuration.MinimumListingPrice)
-      return null;
-
-    return median;
-  }
-
-  /// <summary>
-  /// Calibration evidence for the history-band design: every outlier skip
-  /// gets one log line pairing the decision (skip X, use Y) with the 14-day
-  /// sale history the band WOULD have consulted. The history packet is
-  /// transient - this line is the only durable record of what the market
-  /// actually clears at when the skip fired. Grep /xllog for OutlierEvidence.
-  /// </summary>
-  private void LogOutlierEvidence(uint itemId, string itemName, int skippedPrice, int usedPrice)
-  {
-    if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != itemId)
-    {
-      Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | no history in hand");
-      return;
-    }
-
-    var cutoff = DateTime.UtcNow.AddDays(-14);
-    var recent = _lastHistory
-      .Where(h => h.PurchaseTime >= cutoff)
-      .Where(h => !_useHq || !_itemHq || h.IsHq)
-      .Select(h => (int)h.SalePrice)
-      .OrderBy(p => p)
-      .ToList();
-
-    if (recent.Count == 0)
-    {
-      Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | 14d n=0 (all {_lastHistory.Count} entries older)");
-      return;
-    }
-
-    var median = recent[recent.Count / 2];
-    Svc.Log.Info($"[OutlierEvidence] {itemName}: skip {skippedPrice} use {usedPrice} | 14d n={recent.Count} median={median} " +
-      $"skip/median={(median > 0 ? (float)skippedPrice / median : 0):F2} use/median={(median > 0 ? (float)usedPrice / median : 0):F2}");
-  }
-
-  /// <summary>Clears stored history and outlier flag after use.</summary>
+  /// <summary>Clears stored history and captured board after use.</summary>
   internal void ClearHistory()
   {
     _lastHistory = null;
     HistoryItemId = 0;
-    OutlierDetected = false;
+    _board.Clear();
+    _boardRequestIds.Clear();
+    _boardListingIds.Clear();
+    BoardItemId = 0;
+    // A flushed board's total must never vouch for the next item: a stale
+    // total made genuinely EMPTY boards read "0 of 47", burn every await
+    // window, and log a false "deciding censored" (live 08-02, first round).
+    BoardTotal = null;
   }
-
-  /// <summary>Number of history listings available.</summary>
-  internal int HistoryListingCount => _lastHistory?.Count ?? 0;
 
   /// <summary>
   /// Populates 14-day sale history stats on the given PricingItem.
   /// Called for every item in SetNewPrice so triage has full context.
+  ///
+  /// <para>THE ACCUSER READS BY THE SCORER'S RULES (F6, ruled 08-22). These
+  /// counts feed the contradiction instrument ("settled sales contradict the
+  /// vendor verdict"), and a sale the floor would refuse to list at can never
+  /// change the action - so it cannot testify. The 39-gil Cotton Cloth sales
+  /// accusing a Vendor verdict on a 75-floor book were evidence about a listing
+  /// the player would never write; the existing minimum IS the de minimis
+  /// ruling, applied to the witness stand.</para>
   /// </summary>
   internal void PopulateHistoryStats(PricingItem item)
   {
     if (_lastHistory == null || _lastHistory.Count == 0 || HistoryItemId != item.ItemId)
       return;
 
+    var floor = PriceFloor.Effective(
+      Plugin.Configuration.PriceFloorMode, item.VendorPrice,
+      Plugin.Configuration.MinimumListingPrice);
     var cutoff = DateTime.UtcNow.AddDays(-14);
     var recent = _lastHistory
       .Where(h => h.PurchaseTime >= cutoff)
       .Where(h => !_useHq || !_itemHq || h.IsHq)
       .Select(h => (int)h.SalePrice)
+      .Where(p => !floor.Refuses(p))
       .ToList();
 
     item.HistorySaleCount = recent.Count;
@@ -396,6 +567,5 @@ internal unsafe sealed class MarketBoardHandler : IDisposable
 
     recent.Sort();
     item.HistoryMedianPrice = recent[recent.Count / 2];
-    item.HistoryAvgPrice = (int)recent.Average();
   }
 }

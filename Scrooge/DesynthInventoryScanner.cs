@@ -88,6 +88,12 @@ internal static class DesynthInventoryScanner
       uint gearsetKey = isHq ? nqId + 1_000_000u : nqId;
       bool isInGearset = gearsetIds.Contains(gearsetKey);
 
+      // THE BAN LIST HOLDS HERE TOO (ruled 2026-08-23). "Leave it alone" covered
+      // listing, repricing, and the GC, but the salvage scan had no filter - a
+      // banned item was selectable and meltable, and Select All would take it.
+      // Same id+HQ key convention as the ban list itself.
+      if (Plugin.Configuration.BannedItemIds.Contains(gearsetKey)) continue;
+
       byte classJob = (byte)luminaItem.ClassJobRepair.RowId;
       string abbrev = ClassJobAbbrev.TryGetValue(classJob, out var a) ? a : "ALL";
 

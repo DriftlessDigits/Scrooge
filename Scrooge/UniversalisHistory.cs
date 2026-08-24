@@ -1,0 +1,382 @@
+using ECommons.DalamudServices;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Scrooge;
+
+/// <summary>
+/// The community sale-history fallback: Universalis DC-scope settled sales,
+/// consulted only when the LOCAL lane is too thin to price. Mirrors the
+/// <see cref="UniversalisStats"/> lifecycle discipline — sync TryGet on the
+/// framework thread, a miss queues a debounced background fetch, one request
+/// in flight, results land on the framework thread, TTL + back-off + disposed
+/// guards — including its persistence: every landed round is banked to SQLite
+/// (V29, <see cref="CommunityHistorySchema"/>), and a cold cache warms itself
+/// from the table on first use.
+///
+/// The in-memory-only era ended on 07-26. "A within-session rescue doesn't need
+/// to survive restarts" held right up until a reload wiped the DC evidence
+/// mid-session and five ledger rows carrying "the DC pays 11-30k" re-routed to
+/// Melt at ~2k BY FORFEIT for ten minutes, until the lazy fetches trickled back.
+/// The freshness contract is untouched: fetched_at and last_upload_at are banked
+/// verbatim, so the TTL and the trust window judge a restored row against exactly
+/// the instants they judged it against before the reload.
+///
+/// Design guarantees: consumer only (never uploads), foreign LISTINGS never
+/// read (settled sales only), stale-by-trust-window = silent (TryGet returns
+/// null and the item falls through to hold). The lane math is untouched:
+/// BuildLane simply labels a lane built from these sales LaneSource.Community.
+/// </summary>
+internal static class UniversalisHistory
+{
+  private static readonly object Lock = new();
+  private static readonly Dictionary<uint, CommunityHistorySchema.Row> Cache = [];
+  private static readonly HashSet<uint> Queue = [];
+  private static readonly HashSet<uint> InFlight = [];
+
+  private static string? _scope;   // current data-center name
+  private static long _backoffUntil;
+  private static CancellationTokenSource? _cts;
+  private static Task? _worker;
+
+  /// <summary>
+  /// Bumped whenever a fetch round lands — UI rounds that evaluated on a cold
+  /// cache watch this to re-run when answers arrive (UniversalisStats mold).
+  /// Framework thread only.
+  /// </summary>
+  internal static int Version { get; private set; }
+
+  /// <summary>Seconds between fetch rounds — lets a pinch round accumulate one batch.</summary>
+  private const double DebounceSeconds = 1.5;
+  /// <summary>Back-off after a failed fetch — no hammering an unreachable API.</summary>
+  private const int BackoffSeconds = 300;
+
+  /// <summary>Items queued or in flight — the header's lookup count.</summary>
+  internal static int PendingCount
+  {
+    get { lock (Lock) return Queue.Count + InFlight.Count; }
+  }
+
+  /// <summary>Seconds until a failed round's back-off lifts. 0 when healthy.</summary>
+  internal static int BackoffRemainingSeconds
+  {
+    get
+    {
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      lock (Lock) return (int)Math.Max(0, _backoffUntil - now);
+    }
+  }
+
+  internal static void Initialize() => _cts = new CancellationTokenSource();
+
+  internal static void Dispose()
+  {
+    _cts?.Cancel();
+    _cts?.Dispose();
+    _cts = null;
+  }
+
+  /// <summary>
+  /// Community settled sales for one item, or null when there is no usable
+  /// answer (disabled, DC unknown, not cached yet, TTL expired, or the data is
+  /// older than the trust window — stale = unknown). A miss queues a fetch as a
+  /// side effect so the next pinch pass finds it warm. Framework thread only.
+  /// Returns ALL qualities; BuildLane filters to the quality being priced.
+  /// </summary>
+  internal static IReadOnlyList<LaneSale>? TryGet(uint itemId)
+  {
+    var cfg = Plugin.Configuration;
+    if (!cfg.EnableUniversalis || _cts is null)
+      return null;
+
+    if (DataCenterName() is not string dc)
+      return null;
+
+    EnsureScope(dc);
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    lock (Lock)
+    {
+      if (!Cache.TryGetValue(itemId, out var row)
+          || now - row.FetchedAt > (long)cfg.UniversalisCacheTtlHours * 3600)
+      {
+        Enqueue(itemId);
+        return null;
+      }
+
+      // Trust gate: data older than the trust window is treated as NO data.
+      // The row stays cached (no refetch churn) until its TTL expires.
+      if (row.LastUploadAt is not long uploaded
+          || now - uploaded > (long)cfg.UniversalisTrustDays * 86400)
+        return null;
+
+      return row.Sales.Count > 0 ? row.Sales : null;
+    }
+  }
+
+  /// <summary>
+  /// Warms the cache for a known-thin set before the round reaches it: called
+  /// at run start with the standing lane_held triage items so the community
+  /// fallback can deploy THIS run. The cache is in-memory and session-scoped,
+  /// so the old "miss queues a fetch; warm next pinch" promise never paid out
+  /// for one-pinch-per-session play — the fetch landed and the session ended.
+  /// Misses and TTL-expired rows queue exactly like a TryGet miss; fresh rows
+  /// are left alone. Framework thread only.
+  /// </summary>
+  internal static void Prefetch(IReadOnlyCollection<uint> itemIds)
+  {
+    var cfg = Plugin.Configuration;
+    if (itemIds.Count == 0 || !cfg.EnableUniversalis || _cts is null)
+      return;
+
+    if (DataCenterName() is not string dc)
+      return;
+
+    EnsureScope(dc);
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var queued = 0;
+    lock (Lock)
+    {
+      foreach (var id in itemIds)
+        if (!Cache.TryGetValue(id, out var row)
+            || now - row.FetchedAt > (long)cfg.UniversalisCacheTtlHours * 3600)
+        {
+          Enqueue(id);
+          queued++;
+        }
+    }
+
+    if (queued > 0)
+      Svc.Log.Info($"[UniversalisHistory] prefetching community history for {queued} thin-history {(queued == 1 ? "item" : "items")}");
+  }
+
+  /// <summary>
+  /// Where one item's community ask stands — the blanks the pane used to cover
+  /// with one sentence, told apart (08-06: "hard to know when it has worked,
+  /// when it hasn't"). Read-only: never queues a fetch, never touches scope,
+  /// so it is safe to call once per drawn row. Framework thread only.
+  /// </summary>
+  internal static CommunityFetchState StateOf(uint itemId)
+  {
+    var cfg = Plugin.Configuration;
+    if (!cfg.EnableUniversalis || _cts is null)
+      return CommunityFetchState.Unavailable;
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    lock (Lock)
+    {
+      if (_scope is null)
+        return CommunityFetchState.Unavailable;
+      if (Queue.Contains(itemId) || InFlight.Contains(itemId))
+        return now < _backoffUntil ? CommunityFetchState.Retrying : CommunityFetchState.Pending;
+      if (!Cache.TryGetValue(itemId, out var row)
+          || now - row.FetchedAt > (long)cfg.UniversalisCacheTtlHours * 3600)
+        return CommunityFetchState.NotAsked;
+      if (row.LastUploadAt is not long uploaded
+          || now - uploaded > (long)cfg.UniversalisTrustDays * 86400)
+        return CommunityFetchState.Stale;
+      return row.Sales.Count > 0 ? CommunityFetchState.HasTape : CommunityFetchState.NoTape;
+    }
+  }
+
+  /// <summary>Home data-center name (Universalis scope), or null when unavailable.</summary>
+  private static string? DataCenterName()
+  {
+    try
+    {
+      if (!ECommons.GameHelpers.Player.Available
+          || ECommons.GameHelpers.Player.Object is not { } player)
+        return null;
+      var world = player.HomeWorld.RowId;
+      if (world == 0)
+        return null;
+      var name = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.World>()
+        .GetRow(world).DataCenter.ValueNullable?.Name.ToString();
+      return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Debug($"[UniversalisHistory] DC resolve failed: {ex.Message}");
+      return null;
+    }
+  }
+
+  /// <summary>
+  /// Points the cache at a data center, loading its banked rounds from SQLite
+  /// (V29) — on first use and on a DC change alike, since alts can live
+  /// elsewhere and a scope's evidence must never answer for another's.
+  ///
+  /// <para>Storage read happens OUTSIDE the lock (the UniversalisStats model):
+  /// the load is a query, the swap is a memory write, and the fetch worker must
+  /// not wait on the disk to finish a batch.</para>
+  ///
+  /// <para>Storage unavailable degrades to the old behaviour exactly — an empty
+  /// cache that refills by fetching. Framework thread only.</para>
+  /// </summary>
+  private static void EnsureScope(string dc)
+  {
+    lock (Lock)
+      if (_scope == dc)
+        return;
+
+    var freshAfter = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+      - (long)Plugin.Configuration.UniversalisCacheTtlHours * 3600;
+
+    Dictionary<uint, CommunityHistorySchema.Row> banked = [];
+    try { banked = GilStorage.GetCommunityHistory(dc, freshAfter); }
+    catch (Exception ex)
+    {
+      Svc.Log.Debug($"[UniversalisHistory] cache load failed for DC {dc}: {ex.Message}");
+    }
+
+    lock (Lock)
+    {
+      _scope = dc;
+      Cache.Clear();
+      Queue.Clear();
+      foreach (var (id, row) in banked)
+        Cache[id] = row;
+    }
+
+    if (banked.Count > 0)
+      Svc.Log.Info($"[UniversalisHistory] {banked.Count} banked {(banked.Count == 1 ? "item" : "items")} restored for DC {dc} — the community case survives the reload");
+  }
+
+  /// <summary>
+  /// Queues one item for fetch. Caller holds Lock. Back-off delays the WORKER,
+  /// never the queue — an ask made while Universalis is down waits its turn
+  /// instead of vanishing (the 08-06 silent-drop class: two 5xx rounds cost
+  /// 158 items and nothing ever re-asked).
+  /// </summary>
+  private static void Enqueue(uint itemId)
+  {
+    if (InFlight.Contains(itemId))
+      return;
+
+    Queue.Add(itemId);
+
+    if (_worker is null or { IsCompleted: true })
+      _worker = Task.Run(() => WorkAsync(_cts!.Token));
+  }
+
+  /// <summary>
+  /// Drains the queue in polite batches: debounce, one request in flight,
+  /// back-off on failure. Results are marshaled to the framework thread.
+  /// </summary>
+  private static async Task WorkAsync(CancellationToken token)
+  {
+    while (!token.IsCancellationRequested)
+    {
+      await Task.Delay(TimeSpan.FromSeconds(DebounceSeconds), token).ConfigureAwait(false);
+
+      // A failed round parks the worker, not the queue: sleep out the back-off
+      // with the ids still banked, then fetch as normal.
+      long wait;
+      lock (Lock)
+        wait = _backoffUntil - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      if (wait > 0)
+      {
+        await Task.Delay(TimeSpan.FromSeconds(Math.Min(wait, BackoffSeconds)), token).ConfigureAwait(false);
+        continue;
+      }
+
+      string scope;
+      List<uint> ids;
+      lock (Lock)
+      {
+        if (Queue.Count == 0)
+          return;
+        if (_scope is null)
+          return;
+        scope = _scope;
+        ids = Queue.Take(UniversalisClient.MaxBatch).ToList();
+        foreach (var id in ids)
+        {
+          Queue.Remove(id);
+          InFlight.Add(id);
+        }
+      }
+
+      List<UniversalisHistoryResult>? results = null;
+      try
+      {
+        results = await UniversalisClient.FetchHistoryAsync(scope, ids, token).ConfigureAwait(false);
+      }
+      catch (OperationCanceledException)
+      {
+        return;
+      }
+      catch (Exception ex)
+      {
+        // The ids go BACK IN LINE — dropped-at-dequeue plus a failure used to
+        // orphan the whole batch until some future re-score happened to re-ask.
+        lock (Lock)
+        {
+          _backoffUntil = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + BackoffSeconds;
+          foreach (var id in ids)
+            Queue.Add(id);
+        }
+        // Warning, not Debug: a failed round is exactly the moment the black
+        // box needs to say something out loud.
+        Svc.Log.Warning($"[UniversalisHistory] fetch failed ({ids.Count} items) — re-queued, retrying in {BackoffSeconds}s: {ex.Message}");
+      }
+
+      if (results is not null)
+      {
+        try { await Svc.Framework.RunOnFrameworkThread(() => Land(scope, ids, results)).ConfigureAwait(false); }
+        catch (Exception ex) { Svc.Log.Warning($"[UniversalisHistory] failed to store fetched history: {ex.Message}"); }
+      }
+
+      lock (Lock)
+        foreach (var id in ids)
+          InFlight.Remove(id);
+    }
+  }
+
+  /// <summary>
+  /// Lands one fetch round into the memory cache. Requested ids missing from
+  /// the response are cached as "known nothing" so they don't re-queue every
+  /// round. Framework thread.
+  /// </summary>
+  private static void Land(string scope, List<uint> requested, List<UniversalisHistoryResult> results)
+  {
+    // Disposed mid-flight (plugin unload runs on the framework thread): drop
+    // the batch rather than write during teardown.
+    if (_cts is null)
+      return;
+
+    var byId = results.ToDictionary(r => r.ItemId);
+    foreach (var id in requested)
+      if (!byId.ContainsKey(id))
+        byId[id] = new UniversalisHistoryResult(id, Array.Empty<LaneSale>(), null);
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var rounds = new Dictionary<uint, CommunityHistorySchema.Row>(byId.Count);
+    foreach (var r in byId.Values)
+      rounds[r.ItemId] = new CommunityHistorySchema.Row(r.Sales, r.LastUploadAt, now);
+
+    lock (Lock)
+    {
+      // A DC change while the fetch was in flight — drop rather than poison.
+      if (_scope != scope)
+        return;
+      foreach (var (id, row) in rounds)
+        Cache[id] = row;
+    }
+
+    // Write-through AFTER the scope check: a round the memory cache refused is a
+    // round the table must not keep either.
+    try { GilStorage.UpsertCommunityHistory(scope, rounds); }
+    catch (Exception ex) { Svc.Log.Warning($"[UniversalisHistory] cache persist failed (memory only this session): {ex.Message}"); }
+
+    Version++; // framework thread — UI rounds re-run their piles on this
+
+    // Info, not Debug: this is the happy path of the community pipeline — the
+    // one line that says the fetch landed without needing verbose logging on.
+    Svc.Log.Info($"[UniversalisHistory] {byId.Count} {(byId.Count == 1 ? "item" : "items")} landed for DC {scope}");
+  }
+}

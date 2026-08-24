@@ -3,6 +3,7 @@ using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.UIHelpers.AddonMasterImplementations;
+using Scrooge.Windows;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using System.Collections.Generic;
@@ -15,7 +16,7 @@ namespace Scrooge;
 /// window's Turn In pile while the player stands at their GC's personnel
 /// officer with the Expert Delivery tab open.
 ///
-/// Model: WALK THE DISPLAYED LIST, not a private queue (Sam's call,
+/// Model: WALK THE DISPLAYED LIST, not a private queue (Drift's call,
 /// 2026-07-12, after the queue-order model lost two rounds to list
 /// rebuilds). The approved pile is a checklist; each pass scans the
 /// displayed rows top-down and turns in the first row still on the
@@ -44,29 +45,73 @@ internal sealed class GcTurnInOrchestrator
   private bool _pendingHqDelivery;
 
   private uint _sealsBefore;
-  private long _sealsEarned;
-  private int _turnedIn;
   private int _itemsUntilLongPause;
-  private System.DateTime _runStarted;
 
-  internal bool IsRunning { get; private set; }
+  /// <summary>
+  /// The turn-in's declared expected state (spine): the player must be at their
+  /// GC's Expert Delivery window. The best rung available for this gap is
+  /// Port-on-click ("port me as close as you can", spec 2026-07-23), built in WALK
+  /// unit 7 - the deck and the stage rail offer the teleport beside the walk line
+  /// (see <see cref="PortPlan"/>).
+  ///
+  /// <para>The rung is what the ADVISOR can offer, not what this entry point does.
+  /// StartRun still refuses outright when the window is shut, and it must: a port
+  /// lands you at the aetheryte, and the last yards to the counter are the
+  /// player's. Arrival is what clears this expectation - by ARRIVING, not by
+  /// clicking - which is why no arrival machinery was added anywhere. This sensor
+  /// was already the whole mechanism.</para>
+  /// </summary>
+  internal static readonly ExpectedState TurnInExpected = new("turn in",
+    new SpineExpectation(Spine.Facet.Place, "to be at your GC's Expert Delivery", Spine.Rung.PortOnClick));
 
-  /// <summary>Live progress for the routing window's run readout.</summary>
-  internal (int Done, int Total, long Seals, System.TimeSpan? Eta) Progress
+  /// <summary>
+  /// The turn-in's refusal, said once - the caller's instant path and the grace
+  /// window's expiry both end here.
+  ///
+  /// <para>A REFUSAL IS A RUN THAT ENDED (07-26), the same lesson the bell run learned
+  /// in WALK unit 9 and the same shape its RefuseList uses. When the FLOW fired this
+  /// stage, the round has already marked TurnIn done; a refusal nobody reported left it
+  /// walking on to a finished errand with no run behind it and no halt - a silent skip,
+  /// which is the exact failure the completion hub exists to make impossible.
+  /// <see cref="GracePlan.ShouldReport"/> owns which refusals carry that weight: a
+  /// human's own press still gets only the chat error it always got.</para>
+  /// </summary>
+  private static void RefuseTurnIn(SpineEvaluation eval, bool playerPressed)
   {
-    get
-    {
-      var total = _turnedIn + _remaining;
-      // Self-calibrating ETA: observed pace so far spread over what's left.
-      System.TimeSpan? eta = null;
-      if (_turnedIn > 0 && _remaining > 0)
-      {
-        var elapsed = System.DateTime.UtcNow - _runStarted;
-        eta = elapsed * ((double)_remaining / _turnedIn);
-      }
-      return (_turnedIn, total, _sealsEarned, eta);
-    }
+    Svc.Chat.PrintError($"[Scrooge] {eval.Message} (open it at the personnel officer)");
+    if (GracePlan.ShouldReport(playerPressed))
+      RunFlow.ReportDied(RunKind.TurnIn, eval.Message, run: null); // refused at the door - no run, nothing turned in
   }
+
+  private static System.Collections.Generic.List<FacetReading> ReadTurnInState() => new()
+  {
+    SpineSensors.AtExpertDelivery(),
+  };
+
+  /// <summary>
+  /// The shared run-host lifecycle: state, progress (done/total), value (seals),
+  /// self-calibrating ETA, and the stall terminal. This orchestrator was the
+  /// accidental prototype of the contract (the 0129f13 Progress tuple); it now
+  /// drives the generalized core instead of hand-rolling its own bookkeeping.
+  /// </summary>
+  private readonly RunLifecycle _run = new(System.TimeSpan.FromSeconds(30));
+
+  internal bool IsRunning => _run.IsRunning;
+
+  /// <summary>The live run, for the standard progress readout (see RunHostRender).</summary>
+  internal RunLifecycle Run => _run;
+
+  /// <summary>The plan's wallet-fit count at launch, for the completion line's honesty clause.</summary>
+  private int? _plannedFits;
+
+  /// <summary>
+  /// Wedge watchdog. A task timeout clears the queue inside ECommons without
+  /// notifying us - a live run over an idle task manager is exactly that state and
+  /// nothing else. Stall the run (fail closed) so it can't jam StartRun (and the
+  /// Cancel button) until a manual cancel. The predicate and the framework plumbing
+  /// are <see cref="QueueWedgeWatchdog"/>'s; the turn-in keeps only its own outcome.
+  /// </summary>
+  private readonly QueueWedgeWatchdog _wedge;
 
   public GcTurnInOrchestrator()
   {
@@ -75,6 +120,10 @@ internal sealed class GcTurnInOrchestrator
       TimeLimitMS = 10000,
       AbortOnTimeout = true,
     };
+    _wedge = new QueueWedgeWatchdog(
+      isLive: () => _run.IsRunning,
+      isBusy: () => _taskManager.IsBusy,
+      onWedged: () => FinishState(RunState.Stalled, "timed out (the game stopped responding)"));
   }
 
   /// <summary>
@@ -85,39 +134,62 @@ internal sealed class GcTurnInOrchestrator
   internal void Abort()
   {
     _taskManager.Abort();
-    FinishState("cancelled");
+    FinishState(RunState.Cancelled, "cancelled");
   }
 
   /// <summary>
-  /// Clears run state without touching the task manager, so it is safe from
-  /// inside a task. Already-queued follow-up tasks no-op on the IsRunning
-  /// guard at their top. Non-complete finishes close a still-open reward
-  /// dialog so an abort never leaves the game mid-prompt.
+  /// Fail-closed teardown: drives the lifecycle to a terminal state and cleans up
+  /// every resource the run holds, on EVERY exit path. Safe from inside a task -
+  /// it never touches the task manager. Already-queued follow-ups no-op on the
+  /// IsRunning guard at their top. A watchdog Stall may have ended the run before
+  /// this call, in which case only the cleanup runs (once). Non-complete finishes
+  /// close a still-open reward dialog so an abort never leaves the game mid-prompt.
   /// </summary>
-  private unsafe void FinishState(string how)
+  private unsafe void FinishState(RunState outcome, string how)
   {
     _approved = null;
     _passedOver.Clear();
-    if (IsRunning)
+    var now = System.DateTime.UtcNow;
+    var justEnded = _run.IsRunning
+      && (outcome == RunState.Complete ? _run.Complete(now)
+          : outcome == RunState.Stalled ? _run.Stall(now)
+          : _run.Cancel(now));
+    if (justEnded)
     {
-      Svc.Framework.Update -= OnFrameworkUpdate;
-      if (how != "complete")
+      _wedge.Disarm();
+      if (outcome != RunState.Complete)
         CloseRewardDialog();
-      Svc.Chat.Print($"[Scrooge] Turn-in run {how}: {_turnedIn} items, {_sealsEarned:N0} seals.");
-    }
-    IsRunning = false;
-  }
 
-  /// <summary>
-  /// Wedge watchdog. A task timeout clears the queue inside ECommons without
-  /// notifying us - IsRunning with an idle task manager is exactly that state
-  /// and nothing else. Finish so the run can't jam StartRun (and the Cancel
-  /// button) until a manual cancel.
-  /// </summary>
-  private void OnFrameworkUpdate(IFramework framework)
-  {
-    if (IsRunning && !_taskManager.IsBusy)
-      FinishState("timed out (the game stopped responding)");
+      // Close out the run window (ruling 9). Only when CurrentRun is OUR GC run -
+      // never touch a live pinch/hawk run's log. The chat summary is preserved as
+      // it was; the run window gets the seals total as its summary line.
+      // Held past the teardown so the completion below can carry what the churn did
+      // (RunFacts). Scoped to OUR run for the same reason the teardown is: a live
+      // pinch's counts are not this stage's tally.
+      RunData? churn = null;
+      if (Plugin.CurrentRun?.Mode == RunMode.Gc)
+      {
+        churn = Plugin.CurrentRun;
+        Plugin.CurrentRun.AddRunEntry(RunEvent.Summary, $"{_run.Value:N0} seals earned");
+        Plugin.Ledger.EndRun();
+        Plugin.CurrentRun = null;
+      }
+
+      var beatThePlan = outcome == RunState.Complete
+        && _plannedFits is int planned && _run.Done > planned
+          ? $" (the plan expected ~{planned} to fit your seal wallet - you made room mid-run)"
+          : "";
+      Svc.Chat.Print($"[Scrooge] Turn-in run {how}: {_run.Done} items, {_run.Value:N0} seals.{beatThePlan}");
+      _plannedFits = null;
+
+      // The churn ate bag gear and paid in seals - the Ledger's Churn pile and the
+      // seal wallet both moved. A non-complete outcome carries the orchestrator's
+      // own words ("how") as the named gap, so the halt banner says what died.
+      if (outcome == RunState.Complete)
+        RunFlow.ReportDone(RunKind.TurnIn, churn);
+      else
+        RunFlow.ReportDied(RunKind.TurnIn, how, churn);
+    }
   }
 
   private static unsafe void CloseRewardDialog()
@@ -131,20 +203,48 @@ internal sealed class GcTurnInOrchestrator
   /// Entry point. Requires the Expert Delivery tab of the GC supply window
   /// to be open (the routing window's Churn button checks the same thing).
   /// </summary>
-  internal unsafe void StartRun(List<GcTurnInItem> items)
+  internal unsafe void StartRun(List<GcTurnInItem> items, int? plannedFits = null)
   {
     if (_taskManager.IsBusy || IsRunning || items.Count == 0)
       return;
 
-    if (!AtExpertDelivery())
+    // The plan's wallet-fit count, carried so the completion line can explain
+    // itself when the run beats it (strings pass, 08-02): "fit ~27, did 65"
+    // with no sentence between them read as a bug on the 08-02 round - the
+    // truth was Drift spending seals mid-run, and the tape should say so.
+    _plannedFits = plannedFits;
+
+    // Read ONCE, up top: the same fact decides whether the refusal waits, and whether
+    // it reports. Asking twice is how a stage ends up graced as auto-fired and then
+    // reported as player-pressed.
+    var playerPressed = !Plugin.Accountant.RoundActive;
+
+    var eval = SpineEvaluator.Evaluate(TurnInExpected, ReadTurnInState());
+    if (!eval.CanFire)
     {
-      Svc.Chat.PrintError("[Scrooge] Open your GC's Expert Delivery window first (personnel officer).");
+      // The stage-boundary grace (2026-07-26): inside a live round this refusal is as
+      // likely to be the PREVIOUS stage still tearing down as it is a player standing
+      // in the wrong place, and the flow advances on the completion event - which can
+      // land before the game has finished closing anything. Wait the window out; the
+      // refusal is unchanged, only later and only if it is still true.
+      if (GracePlan.ShouldWaitOut(eval, playerPressed)
+          && SpineGrace.Hold("the Expert Delivery window", GracePlan.AutoFireGraceMs,
+               met: () => SpineEvaluator.Evaluate(TurnInExpected, ReadTurnInState()).CanFire,
+               onReturned: () => StartRun(items),
+               onExpired: () => RefuseTurnIn(eval, playerPressed)))
+        return;
+
+      RefuseTurnIn(eval, playerPressed);
       return;
     }
 
     if (GameSafe.CompanySeals() is not { } seals)
     {
+      // The same hole one line further down: an auto-fired stage that cannot read the
+      // wallet is a stage that did nothing, and the round had already marked it done.
       Svc.Chat.PrintError("[Scrooge] Couldn't read your seal wallet - not starting.");
+      if (GracePlan.ShouldReport(playerPressed))
+        RunFlow.ReportDied(RunKind.TurnIn, "couldn't read the seal wallet", run: null);
       return;
     }
 
@@ -157,12 +257,18 @@ internal sealed class GcTurnInOrchestrator
     }
     _remaining = items.Count;
     _passedOver.Clear();
-    _sealsEarned = 0;
-    _turnedIn = 0;
     _itemsUntilLongPause = _random.Next(8, 16);
-    _runStarted = System.DateTime.UtcNow;
-    IsRunning = true;
-    Svc.Framework.Update += OnFrameworkUpdate;
+    _run.Start(items.Count, RunValueUnit.Seals, System.DateTime.UtcNow, $"Turn in {items.Count} items");
+    _wedge.Arm();
+
+    // Ruling 9: GC joins the one run window. The run log carries the full view
+    // (start / per-item / summary); the orchestrator's own RunLifecycle (_run)
+    // stays the authority on seals/value/ETA/stall for the inline Ledger glance.
+    Plugin.CurrentRun = new RunData { Mode = RunMode.Gc };
+    Plugin.Ledger.StartNewRun();
+    Plugin.Ledger.SetCurrentRetainer("Grand Company");
+    Plugin.Ledger.SetTotalItems(items.Count);
+
     Svc.Chat.Print($"[Scrooge] Turning in {items.Count} items ({seals.Current:N0}/{seals.Max:N0} seals).");
     _taskManager.Enqueue(ProcessNext, "GcProcessNext");
   }
@@ -179,7 +285,7 @@ internal sealed class GcTurnInOrchestrator
 
     if (_approved == null || _remaining == 0)
     {
-      FinishState("complete");
+      FinishState(RunState.Complete, "complete");
       return true;
     }
 
@@ -220,7 +326,7 @@ internal sealed class GcTurnInOrchestrator
     {
       // Loaded list, no checklist rows left - done. Anything unticked never
       // appeared (filtered out, already gone, or ineligible) - say so.
-      FinishState(_remaining > 0
+      FinishState(RunState.Complete, _remaining > 0
         ? $"complete - {_remaining} approved {(_remaining == 1 ? "item" : "items")} never appeared in the delivery list"
         : "complete");
       return true;
@@ -229,12 +335,15 @@ internal sealed class GcTurnInOrchestrator
     // Wallet room - stop before the game starts eating the overflow.
     if (GameSafe.CompanySeals() is not { } seals)
     {
-      FinishState("aborted (seal wallet unreadable mid-run)");
+      FinishState(RunState.Cancelled, "aborted (seal wallet unreadable mid-run)");
       return true;
     }
     if (seals.Current + (uint)item.SealReward > seals.Max)
     {
-      FinishState($"stopped - seal wallet nearly full ({seals.Current:N0}/{seals.Max:N0}), {_remaining} items left");
+      // WalletHalt.Marker is the phrase that makes this halt RECOGNIZABLE to the flow,
+      // which re-offers the stage once the wallet has room again. Composed from the
+      // constant so the writer and the recognizer cannot drift apart.
+      FinishState(RunState.Cancelled, $"stopped - {WalletHalt.Marker} ({seals.Current:N0}/{seals.Max:N0}), {_remaining} items left");
       return true;
     }
     _sealsBefore = seals.Current;
@@ -261,12 +370,8 @@ internal sealed class GcTurnInOrchestrator
     return true;
   }
 
-  /// <summary>Base +- uniform jitter, floored at 1ms (desynth's pacing helper).</summary>
-  private int Jitter(int baseMs, int band)
-  {
-    var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * band);
-    return System.Math.Max(1, baseMs + offset);
-  }
+  /// <summary>Base +- uniform jitter, floored at 1ms (the shared pacing helper).</summary>
+  private int Jitter(int baseMs, int band) => Pacing.Jitter(_random, baseMs, band);
 
   /// <summary>
   /// One row of the supply list's DISPLAYED item array, which hangs off the
@@ -339,7 +444,7 @@ internal sealed class GcTurnInOrchestrator
       // doesn't carry names in AtkValues at all (RetainerTaskResult disease).
       DumpAddonStrings("GrandCompanySupplyReward", addon);
       addon->Close(true);
-      FinishState($"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
+      FinishState(RunState.Cancelled, $"ABORTED - reward dialog didn't show {item.Name}. Nothing delivered for it");
       return true;
     }
 
@@ -395,15 +500,25 @@ internal sealed class GcTurnInOrchestrator
 
     if (GameSafe.CompanySeals() is not { } seals)
     {
-      FinishState("aborted (seal wallet unreadable mid-run)");
+      FinishState(RunState.Cancelled, "aborted (seal wallet unreadable mid-run)");
       return true;
     }
 
     if (seals.Current <= _sealsBefore)
       return false; // not landed yet - keep polling (seals lag the Deliver packet)
 
-    _sealsEarned += seals.Current - _sealsBefore;
-    _turnedIn++;
+    // One delivery landed: advance done + accrue the seal delta, resetting the
+    // stall watchdog. The lifecycle owns the progress/value/ETA bookkeeping now.
+    var sealDelta = seals.Current - _sealsBefore;
+    _run.RecordProgress(1, sealDelta, System.DateTime.UtcNow);
+
+    // Mirror the delivery into the one run window (ruling 9).
+    Plugin.Ledger.AddEntry(ItemOutcome.TurnedIn, item.Name, $"turned in for {sealDelta:N0} seals");
+    Plugin.Ledger.IncrementProcessed();
+
+    // V20: stamp the standing routing receipt - the item's Gc exit executed.
+    RoutingReceiptStamp.Executed(item.ItemId, item.IsHq, "TurnedIn");
+
     TickOff(item.ItemId);
     return true;
   }

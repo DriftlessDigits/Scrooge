@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
-using ECommons.DalamudServices;
 using Microsoft.Data.Sqlite;
 
 namespace Scrooge;
@@ -15,109 +14,178 @@ namespace Scrooge;
 /// </summary>
 internal class GilStorageBootstrap
 {
-  /// <summary>Entry point — runs all bootstrap steps in order.</summary>
-  internal static void Run(SqliteConnection connection)
+  // --- THE SEAMS (F-migrations, 08-22): the ladder is Dalamud-free so the whole
+  // climb is linked-source testable against a real temp DB - the empty-install
+  // climb and the 2.6-era one-leap (user_version 12 -> current) both run in
+  // Scrooge.Tests. Plugin wires the real sinks at startup; tests leave the
+  // defaults (silent log, no JSON dir = V1 import skipped, which IS the fresh
+  // install shape).
+  internal static Action<string> LogInfo = _ => { };
+  internal static Action<string> LogDebug = _ => { };
+  internal static Action<string, Exception?> LogError = (_, _) => { };
+  /// <summary>The directory holding gil_data.json for the V1 import, or null to skip
+  /// (fresh install, tests). The plugin config dir in production.</summary>
+  internal static Func<string?> JsonDirProvider = () => null;
+  /// <summary>The V1 legacy-JSON import (path -> success), wired by GilStorage in
+  /// production - its body writes through the GilStorage insert methods, which is
+  /// exactly the dependency the ladder itself must not carry. Null = no import.</summary>
+  internal static Func<string, bool>? JsonImporter = null;
+
+  /// <summary>
+  /// THE LADDER. Every schema rung in one ordered table: the version it stamps,
+  /// the DDL it runs, and the line it speaks once the stamp is durable.
+  ///
+  /// <para>It replaced 43 hand-written <c>if (version &lt; n)</c> blocks that were
+  /// structurally identical and individually forgettable - the shape a rung has to
+  /// take (run, stamp, log) is now the loop's business, not each author's.</para>
+  ///
+  /// <para>An empty <see cref="string.Empty"/> log means the rung speaks for itself
+  /// from inside its own method (V6, V8, V9... log their own row counts); the loop
+  /// stays quiet rather than saying it twice.</para>
+  /// </summary>
+  private static readonly (int Version, Action<SqliteConnection> Apply, string Log)[] Ladder =
+  [
+    (1, MigrateV1, ""),
+    (2, MigrateV2, ""),
+    (3, MigrateV3, ""),
+    (4, MigrateV4, ""),
+    (5, MigrateV5, ""),
+    (6, MigrateV6, ""),
+    (7, MigrateV7, ""),
+    (8, MigrateV8, ""),
+    (9, MigrateV9, ""),
+    (10, MigrateV10, ""),
+    (11, MigrateV11, ""),
+    (12, MigrateV12, ""),
+    (13, MigrateV13, ""),
+    (14, MigrateV14, ""),
+    (15, MigrateV15, ""),
+    (16, MigrateV16, ""),
+    (17, MigrateV17, ""),
+    (18, MigrateV18, ""),
+    (19, MigrateV19, ""),
+    (20, RoutingReceiptSchema.ApplyV20,
+      "V20 migration: routing_receipts table - routing decisions with alternative scores (the 4.0 scoreboard's food)"),
+    (21, StandingBookSchema.ApplyV21,
+      "V21 migration: own_listing_writes table - the write side of our own board presence (the standing book)"),
+    (22, RoutingReceiptSchema.ApplyV22,
+      "V22 migration: routing_receipts gains the EFFECTIVE seal rate + discount flag - a receipt reads back without config archaeology"),
+    (23, MigrateV23, ""),
+    (24, MarketMemorySchema.ApplyV24,
+      "V24 migration: decision_receipts gains the band edges + the segment's story - a receipt reads back who was still voting"),
+    (25, MarketMemorySchema.ApplyV25,
+      "V25 migration: decision_receipts gains queue_position + cluster_size - the spot we took becomes gradeable (A10)"),
+    (26, MarketMemorySchema.ApplyV26,
+      "V26 migration: decision_receipts gains the absolute ask, its close instant, and the grade stamps - the spot we took becomes scoreable (A9)"),
+    (27, MeltYieldPrices.ApplyV27,
+      "V27 migration: community_mat_prices table - yield materials our own boards never priced stop weighing zero (crystals still deliberately do)"),
+    (28, MeltYieldPrices.ApplyV28,
+      "V28 migration: vendor_mat_prices table - the melt scale gains its floor rung, so a yield the counter pays 5,000 for stops weighing zero"),
+    (29, CommunityHistorySchema.ApplyV29,
+      "V29 migration: community_history tables - the DC evidence the list score reads survives a reload, so a restart stops routing 11k rows to melt by forfeit"),
+    (30, MarketMemorySchema.ApplyV30,
+      "V30 migration: decision_receipts gains competitor_position - the spot among real sellers, banked beside the raw queue index (A11)"),
+    (31, PullIntentSchema.ApplyV31,
+      "V31 migration: pull_intents table - a pull-for-melt/GC ruling survives the retainer->bag crossing, so the router never re-asks"),
+    (32, ContestReceiptSchema.ApplyV32,
+      "V32 migration: contest_receipts table - answered contests grade the FLAGS (upheld/overruled/dismissed), and a miscalibrated flag indicts itself"),
+    (33, MarketMemorySchema.ApplyV33,
+      "V33 migration: paged-read phantom events deleted - a full-board turnover claimed inside a sub-30s window is a fabrication, not an observation (~2,773 rows, every day since V19; Drift: delete em)"),
+    (34, MarketMemorySchema.ApplyV34,
+      "V34 migration: decision_receipts gains board_total - the game's own count for the board, so depth < total reads 'this decision ran censored' straight off the row"),
+    (35, MarketMemorySchema.ApplyV35,
+      "V35 migration: decision_receipts gains crasher/cluster gil spans - the queue position's story in numbers (what the crashers were, what the real line asked)"),
+    (36, MarketMemorySchema.ApplyV36,
+      "V36 migration: pre-V19 Watch tenants retired as legacy_unprovable - a lane_held flag with no recorded container can never satisfy the zombie round's proof, and the premium ladder ended the class's inflow (Drift: the tombstones come down)"),
+    (37, MarketMemorySchema.ApplyV37,
+      "V37 migration: decision_receipts gains crowd_behind - the crowd that WON the outnumbering test, so a cell can stop reporting the cluster and calling it the count"),
+    (38, MigrateV38,
+      "V38 migration: contest_receipts gains doubt_branch, and the old Watch pile's recorded rulings rename to Defer - a pivot is only signal if you know WHICH doubt it answered, and a renamed concept must never cost the player his history"),
+    (39, DecisionCacheSchema.ApplyV39,
+      "V39 migration: decision_cache table - recon's banked answer per (item, quality), so the act half can spend ground truth the Look half already bought instead of re-asking the server for it"),
+    (40, RoundLogSchema.ApplyV40,
+      "V40 migration: round_runs + round_log tables and decision_cache.lane_median - a Round gets a DB-issued identity, its transcript survives the reload that used to eat it, and a cached post can true up the receipt recon wrote"),
+    (41, MarketMemorySchema.ApplyV41,
+      "V41 migration: decision_receipts gains margin_donated - the A9 verdicts stopped grading the price, so what the market paid after we left is banked as a measurement in gil (0 = measured and nothing donated, NULL = never measured) instead of a stamp that scored a prediction"),
+    (42, VentureReturnsSchema.ApplyV42,
+      "V42 migration: venture_returns gains venture_id/venture_cost/venture_category - the capture learns WHICH venture it was, so the seals-to-gil arithmetic can stop believing a config knob about token cost and start measuring it off the sheet (NULL on pre-stamp rows, never imputed)"),
+    (43, CofferPullSchema.ApplyV43,
+      "V43 migration: coffer_pulls table - the seals' other exit gets a book. A Materiel Container 3.0/4.0 is 20k seals for a random mount or minion, and until now the plugin saw only the eventual sale, never the trade that produced it. Passive capture only: nothing reads this table in 3.0 (ruled 08-15, let the data bake) - the comparison against the venture exit waits for 3.1, when there is a sample worth comparing"),
+    (44, RoutingReceiptSchema.ApplyV44,
+      "V44 migration: routing_receipts gains melt_grade + skillup_color - a melt score reads back as measured yields, a band average, or the skillup knob, so the 4.0 crossover can ask which way you ruled at the value you had it set to"),
+    (45, MarketMemorySchema.ApplyV45,
+      "V45 migration: decision_receipts gains undercut_posture - the stance the price was written under (self, caps, rail, write style), because a receipt that records only the outcome cannot grade the knobs that produced it"),
+    (46, RoutingOverrideSchema.ApplyV46,
+      "V46 migration: routing_overrides gains receipt_id - a ruling names the receipt it ruled against instead of leaving 4.0 to guess by item and timestamp"),
+    (47, MarketMemorySchema.ApplyV47,
+      "V47 migration: decision_receipts gains seat_at_write (the true 1-based seat, crashers count - competitor_position's writer retires, its zero could not say 'not first') and the shadow trio shadow_price/shadow_seat/shadow_defense - the 3.1 queue-doctrine candidate's answer on the same board, banked so the 3.1 ruling opens on paired data"),
+    (48, MarketMemorySchema.ApplyV48,
+      "V48 migration: back-marks standing recon phantoms with arm_id 'recon' (the Neo-Ishgardian Sword, 08-23: a Look's receipt wore ask grammar on the trail, the state line and the On Market tab) - new recon receipts are born marked, adoption's true-up clears the mark"),
+  ];
+
+  /// <summary>
+  /// Thrown by a rung that has already reported its own failure and wants the
+  /// climb to stop QUIETLY - the JSON import is the only one. It is a stop signal,
+  /// not an error: nothing after it runs (that is the point), but storage is not
+  /// declared dead over it, because the next startup retries from the same rung.
+  /// </summary>
+  private sealed class BootstrapHalt : Exception;
+
+  /// <summary>
+  /// The JSON file the V1 import consumed, renamed to .bak only once its rung's
+  /// transaction is durable. Renaming inside the transaction would hand a rollback
+  /// the power to lose the player's only copy.
+  /// </summary>
+  private static string? _jsonToArchive;
+
+  /// <summary>
+  /// Entry point — climbs the ladder, then runs the idempotent fixes.
+  /// <paramref name="ceiling"/> stops the climb at a given rung - the test seam
+  /// that lets the ladder build its OWN historical shapes (a 2.6.2.0-era database
+  /// is rungs 1..12 of this very ladder; the rungs are append-only history).
+  /// Production never passes it.
+  /// </summary>
+  internal static void Run(SqliteConnection connection, int? ceiling = null)
   {
     var version = GetSchemaVersion(connection);
 
-    if (version < 1)
+    foreach (var (stepVersion, apply, log) in Ladder)
     {
-      CreateTables(connection);
-      if (!MigrateFromJson(connection))
-        return; // Migration failed — don't stamp version, retry next startup
-      SeedQuotes(connection);
-      SeedCategoryGroups(connection);
-      SetSchemaVersion(connection, 1);
-    }
+      if (ceiling is int cap && stepVersion > cap) break;
+      if (version >= stepVersion) continue;
 
-    if (version < 2)
-    {
-      MigrateV2(connection);
-      SetSchemaVersion(connection, 2);
-    }
+      // A rung is all-or-nothing: the DDL and the stamp that claims it ran commit
+      // together, so a crash mid-migration can never leave a database whose
+      // user_version lies about its shape. Raw BEGIN/COMMIT rather than
+      // SqliteConnection.BeginTransaction() deliberately - the ADO transaction
+      // object makes every command that does not carry it throw, and the DDL in
+      // these methods (and in the schema files they call) is written against a
+      // bare connection.
+      RunSql(connection, "BEGIN;");
+      try
+      {
+        apply(connection);
+        SetSchemaVersion(connection, stepVersion);
+      }
+      catch (BootstrapHalt)
+      {
+        Rollback(connection);
+        return; // Already reported. Nothing after this rung runs, including the fixes.
+      }
+      catch
+      {
+        Rollback(connection);
+        throw;
+      }
+      RunSql(connection, "COMMIT;");
 
-    if (version < 3)
-    {
-      MigrateV3(connection);
-      SetSchemaVersion(connection, 3);
-    }
+      if (_jsonToArchive is string archived)
+      {
+        _jsonToArchive = null;
+        File.Move(archived, archived + ".bak", overwrite: true);
+      }
 
-    if (version < 4)
-    {
-      MigrateV4(connection);
-      SetSchemaVersion(connection, 4);
-    }
-
-    if (version < 5)
-    {
-      MigrateV5(connection);
-      SetSchemaVersion(connection, 5);
-    }
-
-    if (version < 6)
-    {
-      MigrateV6(connection);
-      SetSchemaVersion(connection, 6);
-    }
-
-    if (version < 7)
-    {
-      MigrateV7(connection);
-      SetSchemaVersion(connection, 7);
-    }
-
-    if (version < 8)
-    {
-      MigrateV8(connection);
-      SetSchemaVersion(connection, 8);
-    }
-
-    if (version < 9)
-    {
-      MigrateV9(connection);
-      SetSchemaVersion(connection, 9);
-    }
-
-    if (version < 10)
-    {
-      MigrateV10(connection);
-      SetSchemaVersion(connection, 10);
-    }
-
-    if (version < 11)
-    {
-      MigrateV11(connection);
-      SetSchemaVersion(connection, 11);
-    }
-
-    if (version < 12)
-    {
-      MigrateV12(connection);
-      SetSchemaVersion(connection, 12);
-    }
-
-    if (version < 13)
-    {
-      MigrateV13(connection);
-      SetSchemaVersion(connection, 13);
-    }
-
-    if (version < 14)
-    {
-      MigrateV14(connection);
-      SetSchemaVersion(connection, 14);
-    }
-
-    if (version < 15)
-    {
-      MigrateV15(connection);
-      SetSchemaVersion(connection, 15);
-    }
-
-    if (version < 16)
-    {
-      MigrateV16(connection);
-      SetSchemaVersion(connection, 16);
+      if (log.Length > 0) LogInfo(log);
     }
 
     // Idempotent fixes — safe to run every startup
@@ -125,6 +193,45 @@ internal class GilStorageBootstrap
         "UPDATE category_groups SET ui_category = REPLACE(ui_category, '–', '-') WHERE ui_category LIKE '%–%'",
         connection);
     fixDashes.ExecuteNonQuery();
+  }
+
+  private static void RunSql(SqliteConnection connection, string sql)
+  {
+    using var cmd = new SqliteCommand(sql, connection);
+    cmd.ExecuteNonQuery();
+  }
+
+  /// <summary>
+  /// Undoes the open rung. SQLite auto-rolls-back on some errors, so a ROLLBACK
+  /// that finds nothing open is expected - and must never replace the real
+  /// exception on its way out.
+  /// </summary>
+  private static void Rollback(SqliteConnection connection)
+  {
+    _jsonToArchive = null;
+    try { RunSql(connection, "ROLLBACK;"); }
+    catch (Exception ex) { LogDebug($"[GilTrack] rollback no-op: {ex.Message}"); }
+  }
+
+  /// <summary>
+  /// V1: the birth rung — tables, the one-time JSON import, and the seeds.
+  /// A failed import halts the climb without stamping, so the next startup
+  /// retries against the preserved gil_data.json.
+  /// </summary>
+  private static void MigrateV1(SqliteConnection connection)
+  {
+    CreateTables(connection);
+    if (!MigrateFromJson(connection))
+      throw new BootstrapHalt();
+    SeedQuotes(connection);
+    SeedCategoryGroups(connection);
+  }
+
+  /// <summary>V38: the column and the rename of the rulings that column has to describe.</summary>
+  private static void MigrateV38(SqliteConnection connection)
+  {
+    ContestReceiptSchema.ApplyV38(connection);
+    ContestReceiptSchema.MigrateWatchVerdictNames(connection);
   }
 
   private static int GetSchemaVersion(SqliteConnection connection)
@@ -251,73 +358,34 @@ internal class GilStorageBootstrap
   // =========================================================================
 
   /// <summary>
-  /// Imports data from the old gil_data.json into SQLite, then renames to .bak.
+  /// Imports data from the old gil_data.json into SQLite, then queues the rename
+  /// to .bak for after the rung commits.
   /// Uses GilStorage write methods so all SQL stays in one place.
-  /// Wrapped in a transaction for atomicity — if anything fails, the JSON is preserved.
+  /// Atomicity comes from the ladder's rung transaction — if anything fails, the
+  /// whole rung rolls back and the JSON is preserved.
   /// Returns true if migration succeeded or no JSON file exists. Returns false on failure
-  /// (caller should NOT stamp schema version so migration retries next startup).
+  /// (the rung then halts without stamping, so migration retries next startup).
   /// </summary>
   private static bool MigrateFromJson(SqliteConnection connection)
   {
-    var jsonPath = Path.Combine(Plugin.PluginInterface.GetPluginConfigDirectory(), "gil_data.json");
+    if (JsonDirProvider() is not string jsonDir)
+      return true; // no config dir (fresh install / tests) - nothing to import
+    var jsonPath = Path.Combine(jsonDir, "gil_data.json");
     if (!File.Exists(jsonPath)) return true; // No file to migrate — success
+    if (JsonImporter is not { } import)
+      return true; // nobody wired an importer (tests) - nothing to import
 
     try
     {
-      var json = File.ReadAllText(jsonPath);
-      var data = JsonSerializer.Deserialize<GilData>(json);
-      if (data == null) return false; // Corrupt/empty — fail, retry next time
-
-      using var transaction = connection.BeginTransaction();
-
-      // Sales -> transactions
-      foreach (var sale in data.Sales)
-      {
-        GilStorage.InsertTransaction(sale.SaleTimestamp, "earned", "retainer_sale",
-            sale.TotalGil, sale.ItemId, sale.ItemName, sale.Category,
-            sale.Quantity, sale.UnitPrice, sale.IsHQ, sale.RetainerName,
-            sale.BuyerName, transaction);
-      }
-
-      // GilSnapshots -> gil_snapshots + retainer_snapshots
-      foreach (var snap in data.GilHistory)
-      {
-        var snapshotId = GilStorage.InsertGilSnapshot(snap.Timestamp, snap.PlayerGil, "pinch_run", transaction);
-        foreach (var (name, gil) in snap.RetainerGil)
-        {
-          GilStorage.InsertRetainerSnapshot(snapshotId, name, gil, transaction);
-        }
-      }
-
-      // MarketSnapshots -> market_snapshots
-      foreach (var ms in data.MarketHistory)
-      {
-        GilStorage.InsertMarketSnapshot(ms.Timestamp, ms.ItemCount,
-            ms.TotalListingValue, ms.AverageListingAgeDays, "full", transaction);
-      }
-
-      // CurrentListings -> listings
-      foreach (var listing in data.CurrentListings)
-      {
-        GilStorage.UpsertListing(listing.RetainerName, listing.SlotIndex,
-            listing.ItemId, listing.ItemName, listing.Category,
-            listing.UnitPrice, listing.Quantity, listing.IsHQ,
-            listing.FirstSeenTimestamp, listing.LastUpdatedTimestamp, transaction);
-      }
-
-      transaction.Commit();
-      File.Move(jsonPath, jsonPath + ".bak", overwrite: true);
-      Svc.Log.Info($"[GilTrack] Migrated {data.Sales.Count} sales, " +
-          $"{data.GilHistory.Count} snapshots from JSON to SQLite. Backup: gil_data.json.bak");
+      if (!import(jsonPath)) return false; // Corrupt/empty — fail, retry next time
+      _jsonToArchive = jsonPath;
       return true;
     }
     catch (Exception ex)
     {
-      Svc.Log.Error(ex, "[GilTrack] JSON migration failed — gil_data.json preserved");
+      LogError("[GilTrack] JSON migration failed — gil_data.json preserved", ex);
       return false;
     }
-
-
   }
 
   // =========================================================================
@@ -441,17 +509,14 @@ internal class GilStorageBootstrap
             ("Only fools pay retail.", "Rule of Acquisition #141"),
     };
 
-    using var transaction = connection.BeginTransaction();
     foreach (var (text, author) in quotes)
     {
       using var cmd = new SqliteCommand(
           "INSERT INTO quotes (text, author) VALUES (@t, @a)", connection);
-      cmd.Transaction = transaction;
       cmd.Parameters.AddWithValue("@t", text);
       cmd.Parameters.AddWithValue("@a", author);
       cmd.ExecuteNonQuery();
     }
-    transaction.Commit();
   }
 
   /// <summary>Seeds category_groups display mapping. Only called when schema version is below 1.</summary>
@@ -578,31 +643,30 @@ internal class GilStorageBootstrap
             ("Seasonal Miscellany", "Miscellany"),
     };
 
-    using var transaction = connection.BeginTransaction();
     foreach (var (uiCategory, displayGroup) in groups)
     {
       using var cmd = new SqliteCommand(
           "INSERT INTO category_groups (ui_category, display_group) VALUES (@ui, @dg)",
           connection);
-      cmd.Transaction = transaction;
       cmd.Parameters.AddWithValue("@ui", uiCategory);
       cmd.Parameters.AddWithValue("@dg", displayGroup);
       cmd.ExecuteNonQuery();
     }
-    transaction.Commit();
   }
 
   // =========================================================================
   // Schema V2: Add macro_group to category_groups
   // =========================================================================
 
-  /// <summary>Schema v2: Add macro_group column to category_groups for 3-level category tree.</summary>
+  /// <summary>
+  /// Schema v2: Add macro_group column to category_groups for 3-level category tree.
+  /// Column-guarded: a database left half-climbed by a pre-transaction crash still
+  /// gets past this rung instead of throwing "duplicate column" forever.
+  /// </summary>
   private static void MigrateV2(SqliteConnection connection)
   {
-    using var alterCmd = new SqliteCommand(
-        "ALTER TABLE category_groups ADD COLUMN macro_group TEXT NOT NULL DEFAULT ''",
-        connection);
-    alterCmd.ExecuteNonQuery();
+    SchemaGuards.EnsureColumns(connection, "category_groups",
+      "macro_group TEXT NOT NULL DEFAULT ''");
 
     var macroMap = new Dictionary<string, string>
     {
@@ -620,18 +684,15 @@ internal class GilStorageBootstrap
       { "Miscellany", "Other" },
     };
 
-    using var transaction = connection.BeginTransaction();
     foreach (var (displayGroup, macroGroup) in macroMap)
     {
       using var cmd = new SqliteCommand(
           "UPDATE category_groups SET macro_group = @macro WHERE display_group = @dg",
           connection);
-      cmd.Transaction = transaction;
       cmd.Parameters.AddWithValue("@macro", macroGroup);
       cmd.Parameters.AddWithValue("@dg", displayGroup);
       cmd.ExecuteNonQuery();
     }
-    transaction.Commit();
   }
 
   // =========================================================================
@@ -719,7 +780,7 @@ internal class GilStorageBootstrap
       connection);
     fixLsp.ExecuteNonQuery();
 
-    Svc.Log.Info($"[GilTrack] V6 migration: fixed {affected} retainer_sale amounts (UnitPrice was total, not per-unit)");
+    LogInfo($"[GilTrack] V6 migration: fixed {affected} retainer_sale amounts (UnitPrice was total, not per-unit)");
   }
 
   /// <summary>
@@ -730,10 +791,8 @@ internal class GilStorageBootstrap
   /// </summary>
   private static void MigrateV7(SqliteConnection connection)
   {
-    using var addCol = new SqliteCommand(
-      "ALTER TABLE transactions ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0",
-      connection);
-    addCol.ExecuteNonQuery();
+    SchemaGuards.EnsureColumns(connection, "transactions",
+      "is_pending INTEGER NOT NULL DEFAULT 0");
 
     using var addIdx = new SqliteCommand(
       "CREATE INDEX IF NOT EXISTS idx_txn_pending ON transactions(is_pending, item_id, quantity, amount) WHERE is_pending = 1",
@@ -762,7 +821,7 @@ internal class GilStorageBootstrap
       connection);
     var affected = fix.ExecuteNonQuery();
 
-    Svc.Log.Info($"[GilTrack] V8 migration: removed {affected} catchall rows duplicating vendor_sale");
+    LogInfo($"[GilTrack] V8 migration: removed {affected} catchall rows duplicating vendor_sale");
   }
 
   /// <summary>
@@ -772,6 +831,8 @@ internal class GilStorageBootstrap
   /// </summary>
   private static void MigrateV9(SqliteConnection connection)
   {
+    if (SchemaGuards.TableExists(connection, "desynth_runs")) return;
+
     using var cmd = new SqliteCommand(
       @"CREATE TABLE desynth_runs (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -784,7 +845,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_desynth_runs_started_at ON desynth_runs(started_at DESC);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V9 migration: created desynth_runs table");
+    LogInfo("V9 migration: created desynth_runs table");
   }
 
   /// <summary>
@@ -794,6 +855,8 @@ internal class GilStorageBootstrap
   /// </summary>
   private static void MigrateV10(SqliteConnection connection)
   {
+    if (SchemaGuards.TableExists(connection, "desynth_yields")) return;
+
     using var cmd = new SqliteCommand(
       @"CREATE TABLE desynth_yields (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -812,7 +875,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_desynth_yields_captured ON desynth_yields(captured_at DESC);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V10 migration: created desynth_yields table");
+    LogInfo("V10 migration: created desynth_yields table");
   }
 
   /// <summary>
@@ -823,6 +886,8 @@ internal class GilStorageBootstrap
   /// </summary>
   private static void MigrateV12(SqliteConnection connection)
   {
+    if (SchemaGuards.TableExists(connection, "triage_flags")) return;
+
     using var cmd = new SqliteCommand(
       @"CREATE TABLE triage_flags (
           id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -841,7 +906,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_triage_flags_status ON triage_flags(status, created_at DESC);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V12 migration: created triage_flags table");
+    LogInfo("V12 migration: created triage_flags table");
   }
 
   /// <summary>
@@ -860,7 +925,7 @@ internal class GilStorageBootstrap
         UPDATE desynth_yields SET captured_at = captured_at / 1000 WHERE captured_at > 100000000000;",
       connection);
     var affected = cmd.ExecuteNonQuery();
-    Svc.Log.Info($"[Scrooge] V11 migration: desynth timestamps ms -> s ({affected} values converted)");
+    LogInfo($"V11 migration: desynth timestamps ms -> s ({affected} values converted)");
   }
 
   /// <summary>
@@ -874,11 +939,9 @@ internal class GilStorageBootstrap
   /// </summary>
   private static void MigrateV13(SqliteConnection connection)
   {
-    // The one destructive migration (DROP + RENAME): atomic or not at all.
-    // Without the transaction, a crash between DROP and RENAME leaves
-    // user_version=12 with the v13 table present - the bare CREATE then
-    // throws on every subsequent boot and storage is dead permanently.
-    using var tx = connection.BeginTransaction();
+    // The one destructive migration (DROP + RENAME): atomic or not at all. The
+    // ladder's rung transaction is what makes it so - this method used to open
+    // its own, back when it was the only rung that had one.
 
     // Rows only the old table knows (their transactions were pruned) carry
     // over as NQ - their HQ split is unknowable. Count them for the log so a
@@ -887,7 +950,7 @@ internal class GilStorageBootstrap
       @"SELECT COUNT(*) FROM last_sale_prices WHERE item_id NOT IN (
           SELECT DISTINCT item_id FROM transactions
           WHERE direction = 'earned' AND source = 'retainer_sale' AND item_id > 0)",
-      connection, tx);
+      connection);
     var carriedAsNq = Convert.ToInt32(countCmd.ExecuteScalar());
 
     using var cmd = new SqliteCommand(
@@ -908,23 +971,32 @@ internal class GilStorageBootstrap
           SELECT item_id, 0, unit_price, timestamp FROM last_sale_prices;
         DROP TABLE last_sale_prices;
         ALTER TABLE last_sale_prices_v13 RENAME TO last_sale_prices;",
-      connection, tx);
+      connection);
     cmd.ExecuteNonQuery();
-    tx.Commit();
-    Svc.Log.Info("[Scrooge] V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
+    LogInfo("V13 migration: last_sale_prices split by quality (item_id, is_hq) + sold_after_days");
     if (carriedAsNq > 0)
-      Svc.Log.Info($"[Scrooge] V13: {carriedAsNq} pruned-history rows carried over as NQ - their HQ price history starts fresh at the next HQ sale");
+      LogInfo($"V13: {carriedAsNq} pruned-history rows carried over as NQ - their HQ price history starts fresh at the next HQ sale");
   }
 
   /// <summary>
   /// V14: Add routing_overrides table. Every time the player overrules a
   /// routing verdict (checks a gated item in the Hawk window), the disagreement
-  /// is recorded — recurring overrides suggest config tweaks, and the history
-  /// is the context a future judgment hook would need. Day-one requirement of
-  /// the routing brain design.
+  /// is recorded. Day-one requirement of the routing brain design.
+  ///
+  /// <para>WHAT ACTUALLY READS IT TODAY: the confidence tier's demotion count
+  /// (GetRoutingOverrideCounts) and the persisted-ruling replay
+  /// (GetLatestRoutingRulings). A third reader - the triage case's override-history
+  /// trap - died with the traps register (3b-1). Nothing suggests a config tweak off these rows, and
+  /// nothing ever has - this doc used to say recurring overrides do, which read
+  /// as a description of shipped behavior. The knob-tuning read is the 4.0
+  /// scoreboard's, and it is why the table keeps banking rulings the tier loop
+  /// deliberately ignores (the Desynth&lt;-&gt;Vendor reshuffles); V46 gives those
+  /// rulings the receipt link that read will need.</para>
   /// </summary>
   private static void MigrateV14(SqliteConnection connection)
   {
+    if (SchemaGuards.TableExists(connection, "routing_overrides")) return;
+
     using var cmd = new SqliteCommand(
       @"CREATE TABLE routing_overrides (
           id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -939,7 +1011,7 @@ internal class GilStorageBootstrap
         CREATE INDEX ix_routing_overrides_item ON routing_overrides(item_id, is_hq);",
       connection);
     cmd.ExecuteNonQuery();
-    Svc.Log.Info("[Scrooge] V14 migration: created routing_overrides table");
+    LogInfo("V14 migration: created routing_overrides table");
   }
 
   /// <summary>
@@ -976,7 +1048,7 @@ internal class GilStorageBootstrap
         "ALTER TABLE gil_snapshots ADD COLUMN venture_tokens INTEGER;", connection))
         alter.ExecuteNonQuery();
 
-    Svc.Log.Info("[Scrooge] V15 migration: venture_returns table + gil_snapshots.venture_tokens");
+    LogInfo("V15 migration: venture_returns table + gil_snapshots.venture_tokens");
   }
 
   /// <summary>
@@ -1001,18 +1073,165 @@ internal class GilStorageBootstrap
       connection))
       cmd.ExecuteNonQuery();
 
-    Svc.Log.Info("[Scrooge] V16 migration: universalis_stats cache table");
+    LogInfo("V16 migration: universalis_stats cache table");
   }
 
-  // =========================================================================
-  // Legacy JSON model (used only for migration from v2.2.0)
-  // =========================================================================
-
-  private class GilData
+  /// <summary>
+  /// V17: decision memory on triage_flags. Adds an evidence column — the
+  /// snapshot of the world a hold was judged against (standing listing, sale
+  /// count, newest sale, cheapest competitor) — so a re-flag can ask "did
+  /// anything change?" instead of firing every pinch. The ALTER is guarded so
+  /// a fresh DB that already has the column (future CreateTables) migrates
+  /// cleanly.
+  ///
+  /// Same migration one-shots the lane-rewrite legacy: upward_held and
+  /// outlier_warn lost their producer code in branch 1, so no processing pass
+  /// will ever re-confirm them. The self-heal round clears the ones whose item
+  /// gets pinched again; this closes the strays whose item never does, so the
+  /// triage inbox stops rendering dead questions immediately rather than
+  /// waiting on a trigger that may never fire. Idempotent — a second run
+  /// matches zero open rows.
+  /// </summary>
+  private static void MigrateV17(SqliteConnection connection)
   {
-    public List<SaleRecord> Sales { get; set; } = [];
-    public List<GilSnapshot> GilHistory { get; set; } = [];
-    public List<MarketSnapshot> MarketHistory { get; set; } = [];
-    public List<ListingRecord> CurrentListings { get; set; } = [];
+    var hasColumn = false;
+    using (var check = new SqliteCommand("PRAGMA table_info(triage_flags);", connection))
+    using (var reader = check.ExecuteReader())
+      while (reader.Read())
+        if (reader.GetString(1) == "evidence") { hasColumn = true; break; }
+
+    if (!hasColumn)
+      using (var alter = new SqliteCommand(
+        "ALTER TABLE triage_flags ADD COLUMN evidence TEXT NOT NULL DEFAULT '';", connection))
+        alter.ExecuteNonQuery();
+
+    using var cleanup = new SqliteCommand(
+      @"UPDATE triage_flags
+        SET status = 'resolved', acted_at = @now
+        WHERE status = 'open' AND reason IN ('upward_held', 'outlier_warn')",
+      connection);
+    cleanup.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    var closed = cleanup.ExecuteNonQuery();
+
+    LogInfo($"V17 migration: triage_flags.evidence column + closed {closed} dead-producer flags (upward_held/outlier_warn)");
   }
+
+  /// <summary>
+  /// V18: dedupes open triage flags. DecideUpsert treated a legacy row's empty
+  /// evidence as "no open flag" and INSERTED a second row next to it (fixed in
+  /// the same commit), leaving duplicate open questions per
+  /// (item, hq, retainer, reason) key. One-shot: the keeper is the OLDEST row
+  /// ("held since" stays honest), it adopts the newest non-empty evidence +
+  /// detail from its group, and the younger duplicates are deleted — they are
+  /// bug artifacts describing the same open question, not player history.
+  /// Idempotent — a deduped table matches zero rows.
+  /// </summary>
+  private static void MigrateV18(SqliteConnection connection)
+  {
+    // Keepers with a legacy '' snapshot adopt the best evidence in their group
+    // (newest evidenced duplicate) before the duplicates are removed.
+    using (var adopt = new SqliteCommand(
+      @"UPDATE triage_flags
+        SET evidence = (SELECT t2.evidence FROM triage_flags t2
+                        WHERE t2.status = 'open'
+                          AND t2.item_id = triage_flags.item_id
+                          AND t2.is_hq = triage_flags.is_hq
+                          AND t2.retainer_name = triage_flags.retainer_name
+                          AND t2.reason = triage_flags.reason
+                          AND t2.evidence <> ''
+                        ORDER BY t2.created_at DESC, t2.id DESC LIMIT 1),
+            detail   = (SELECT t2.detail FROM triage_flags t2
+                        WHERE t2.status = 'open'
+                          AND t2.item_id = triage_flags.item_id
+                          AND t2.is_hq = triage_flags.is_hq
+                          AND t2.retainer_name = triage_flags.retainer_name
+                          AND t2.reason = triage_flags.reason
+                          AND t2.evidence <> ''
+                        ORDER BY t2.created_at DESC, t2.id DESC LIMIT 1)
+        WHERE status = 'open' AND evidence = ''
+          AND EXISTS (SELECT 1 FROM triage_flags t2
+                      WHERE t2.status = 'open'
+                        AND t2.item_id = triage_flags.item_id
+                        AND t2.is_hq = triage_flags.is_hq
+                        AND t2.retainer_name = triage_flags.retainer_name
+                        AND t2.reason = triage_flags.reason
+                        AND t2.evidence <> '')",
+      connection))
+      adopt.ExecuteNonQuery();
+
+    // Delete every open row that has an OLDER open sibling on the same key.
+    using var dedup = new SqliteCommand(
+      @"DELETE FROM triage_flags
+        WHERE status = 'open'
+          AND EXISTS (SELECT 1 FROM triage_flags t2
+                      WHERE t2.status = 'open'
+                        AND t2.item_id = triage_flags.item_id
+                        AND t2.is_hq = triage_flags.is_hq
+                        AND t2.retainer_name = triage_flags.retainer_name
+                        AND t2.reason = triage_flags.reason
+                        AND (t2.created_at < triage_flags.created_at
+                             OR (t2.created_at = triage_flags.created_at
+                                 AND t2.id < triage_flags.id)))",
+      connection);
+    var removed = dedup.ExecuteNonQuery();
+
+    LogInfo($"V18 migration: deduped triage_flags — removed {removed} duplicate open flags (oldest row kept, evidence adopted)");
+  }
+
+  /// <summary>
+  /// V19: market memory + decision receipts (M4, [[Scrooge - Market Memory - Design]]).
+  /// Creates three new tables and one guarded column; the old listings table's shape
+  /// is NOT touched. This migration RETIRES the listings-table tripwire: writes to
+  /// market memory through the append-diff path below are expected and correct, while
+  /// ad hoc writes to the old listings table remain wrong.
+  ///
+  /// - market_board_snapshot: the current-board read model (the "cache of the last
+  ///   diff"). One row per live foreign/own board listing, keyed by soft identity
+  ///   (item, hq, retainer, qty); price mutable. The design's "snapshot table" - it
+  ///   did not exist per-listing before M4 (the board was in-memory only), so it is
+  ///   created here rather than repurposed.
+  /// - market_events: the append-only diff log (appeared/disappeared/price_moved),
+  ///   with observation-window columns (seen_after/seen_by - no foreign point
+  ///   timestamp), observer provenance (own_scan now, community is the 4.0 seam), and
+  ///   certainty tier + disappearance resolution (own upgrades to sold via GilTrack;
+  ///   foreign stays gone).
+  /// - decision_receipts: one row per pricing decision, all coordinates RELATIVE,
+  ///   carrying arm_id + item_category + stack coords from day one; the outcome join
+  ///   (time_to_clear / outcome_state) fills later, never at write time.
+  /// - triage_flags.scope: the container a lane_held flag points at (board vs
+  ///   inventory) so the zombie round only closes what the observing run can prove
+  ///   absent. Guarded ALTER; legacy rows default '' (Unknown = never zombie-closed).
+  ///
+  /// Diffable + idempotent (V11 model): every CREATE is IF NOT EXISTS and the ALTER is
+  /// column-guarded, so a re-run is a no-op.
+  /// </summary>
+  private static void MigrateV19(SqliteConnection connection)
+  {
+    MarketMemorySchema.ApplyV19(connection);
+    LogInfo("V19 migration: market_board_snapshot + market_events + decision_receipts tables, triage_flags.scope column; listings-table tripwire retired");
+  }
+
+  /// <summary>
+  /// V23: two halves of the same regime-anchor substrate
+  /// ([[Scrooge - Lane Pricing - Design]], amendment).
+  ///
+  /// First, the cleanup: V13's quality split carried old quality-blind rows over
+  /// as NQ, so any item whose last pre-split sale was HQ got a phantom NQ twin -
+  /// identical price and timestamp to its HQ row - and those phantoms have fed
+  /// the lane's LastSale evidence ever since (138 in the live DB, all predating
+  /// V13's ship date; the live writer is quality-correct and produces none).
+  ///
+  /// Second, the tape: the sale_history table banks the MB history packet that
+  /// every pinch already receives and discards. Substrate only - no readers yet.
+  /// SQL lives in SaleHistorySchema (Dalamud-free, linked-source tested).
+  /// </summary>
+  private static void MigrateV23(SqliteConnection connection)
+  {
+    var deleted = SaleHistorySchema.DeleteV13PhantomNqRows(connection);
+    LogInfo($"V23: {deleted} phantom NQ rows deleted (V13 carry)");
+
+    SaleHistorySchema.ApplyV23(connection);
+    LogInfo("V23 migration: sale_history table - the banked tape of the board's settled sales");
+  }
+
 }

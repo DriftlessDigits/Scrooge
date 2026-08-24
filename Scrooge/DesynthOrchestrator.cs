@@ -1,3 +1,4 @@
+using Dalamud.Game.ClientState.Conditions;
 using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
@@ -27,12 +28,51 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// </summary>
   private const int MinFreeInventorySlots = 5;
 
+  /// <summary>
+  /// The melt's declared expected state (spine). Two facets, in report order:
+  /// the salvage window must be open, and the player must not be occupied - the
+  /// game refuses Desynthesize otherwise. Both are dead ends the advisor cannot
+  /// self-clear (it does not walk you to Mutamix, and it will not close your
+  /// bell for you), so both refuse loudly, naming the gap.
+  /// </summary>
+  internal static readonly ExpectedState MeltExpected = new("melt",
+    new SpineExpectation(Spine.Facet.View, "the desynthesis window open", Spine.Rung.Refuse),
+    new SpineExpectation(Spine.Facet.Occupancy, "to be un-occupied", Spine.Rung.Refuse));
+
+  /// <summary>Reads the melt's expected-state facets from live game sensors.</summary>
+  private static System.Collections.Generic.List<FacetReading> ReadMeltState() => new()
+  {
+    SpineSensors.AddonReady("SalvageItemSelector", "it isn't open (talk to Mutamix first)"),
+    SpineSensors.Unoccupied(),
+  };
+
   private readonly TaskManager _taskManager;
   private readonly Random _random = new();
 
   private Queue<DesynthItem>? _queue;
   private int _processed;
   private int _itemsUntilNextLongPause;
+
+  /// <summary>
+  /// True when the run may auto-continue: the player took everything eligible
+  /// (Select All intent), so a window that repopulates after the queue drains
+  /// (the game's agent list truncates large inventories — run 74 melted
+  /// exactly 100 with a known eligible left over) refills the queue instead
+  /// of announcing a dishonest plain success. Hand-picked subsets never
+  /// auto-continue; they get a leftover report instead.
+  /// </summary>
+  private bool _autoContinue;
+
+  /// <summary>
+  /// Slots already attempted this run. A rescan only feeds the queue slots we
+  /// have not touched — a stuck item must not produce an infinite
+  /// rescan-melt-rescan loop.
+  /// </summary>
+  private readonly HashSet<(InventoryType Container, int Slot)> _attempted = new();
+
+  /// <summary>_processed at the start of the current round; a continuation
+  /// round that makes no progress ends the run loudly instead of rescanning.</summary>
+  private int _roundStartProcessed;
 
   /// <summary>
   /// Per-run monotonic counter incremented at the head of every act (including
@@ -44,8 +84,48 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// <summary>Read by DesynthYieldTracker to stamp the attempt_seq on incoming yield rows.</summary>
   internal int CurrentAttemptSeq => _currentAttemptSeq;
 
+  /// <summary>
+  /// The melt's run state, on the shared lifecycle rather than a hand-rolled bool
+  /// (orchestrators item 15). What it buys beyond tidiness is the TERMINAL LATCH: a
+  /// run can only leave Running once, so a queue that dies at the same moment its
+  /// last item lands cannot report both a completion and a death (S18).
+  /// </summary>
+  private readonly RunLifecycle _run = new(TimeSpan.FromSeconds(45));
+
+  /// <summary>The lifecycle, for the round's rail and the completion summary.</summary>
+  internal RunLifecycle Run => _run;
+
   /// <summary>True while a desynth run is in progress.</summary>
-  internal bool IsRunning { get; private set; }
+  internal bool IsRunning => _run.IsRunning;
+
+  /// <summary>
+  /// The game refuses the Desynthesize command outright while the player is in
+  /// any occupied state - the 07-22 round lap died exactly this way (desynth
+  /// fired over an open retainer bell; SalvageDialog force-opened fine, then
+  /// the server answered "Unable to execute command while occupied" and the run
+  /// timed out). Force-openable UI is not permission: check BEFORE starting.
+  /// </summary>
+  internal static bool PlayerOccupied(out string why)
+  {
+    if (Svc.Condition[ConditionFlag.OccupiedSummoningBell])
+    {
+      why = "the retainer bell is open";
+      return true;
+    }
+    if (Svc.Condition[ConditionFlag.OccupiedInEvent]
+        || Svc.Condition[ConditionFlag.OccupiedInQuestEvent]
+        || Svc.Condition[ConditionFlag.Occupied]
+        || Svc.Condition[ConditionFlag.Occupied30]
+        || Svc.Condition[ConditionFlag.Occupied33]
+        || Svc.Condition[ConditionFlag.Occupied38]
+        || Svc.Condition[ConditionFlag.Occupied39])
+    {
+      why = "you're occupied (an NPC or window has you)";
+      return true;
+    }
+    why = "";
+    return false;
+  }
 
   internal DesynthOrchestrator()
   {
@@ -54,64 +134,115 @@ internal sealed class DesynthOrchestrator : IDisposable
       TimeLimitMS = 10000,
       AbortOnTimeout = true,
     };
+    // isLive reads the LIFECYCLE now, not a bool the executor kept in step by hand.
+    // Same answer, one fewer thing that can drift out of it - and it can no longer
+    // be true after a terminal transition, which is what makes the watchdog's death
+    // and a natural end mutually exclusive rather than merely unlikely.
+    _wedge = new QueueWedgeWatchdog(
+      isLive: () => _run.IsRunning,
+      isBusy: () => _taskManager.IsBusy,
+      onWedged: () =>
+      {
+        Svc.Chat.PrintError(
+          "[Scrooge] Desynth run stalled (task queue died without finishing) - run closed. " +
+          "The melt pile is untouched; run it again when you're clear.");
+        CloseRunAborted("watchdog: task queue died without run end", stalled: true);
+      });
   }
 
   /// <summary>
-  /// Per-action humanizer. Owns its own randomness; deliberately independent of
-  /// `Configuration.EnableJitter` (which is an AutoPinch-scoped knob and defaults
-  /// off). Pacing is "non-negotiable" per the spec — it must not be coupled to a
-  /// plugin-wide toggle a player might flip for unrelated reasons. Bands match
-  /// the spec's "Pacing and humanization" table per call site.
+  /// Per-action humanizer, over this run's own randomness. Bands match the spec's
+  /// "Pacing and humanization" table per call site; the rule is <see cref="Pacing"/>.
   /// </summary>
-  private int Jitter(int baseMs, int band)
-  {
-    var offset = (int)(((_random.NextDouble() * 2.0) - 1.0) * band);
-    return Math.Max(1, baseMs + offset);
-  }
+  private int Jitter(int baseMs, int band) => Pacing.Jitter(_random, baseMs, band);
 
   public void Dispose()
   {
     _taskManager.Abort();
+    _wedge.Disarm();
   }
 
   /// <summary>Resets state on error/abort.</summary>
   internal void Abort()
   {
     _taskManager.Abort();
-    IsRunning = false;
+    CloseRunAborted("user-initiated abort or addon closed mid-run");
+  }
+
+  /// <summary>
+  /// The ONE way a run dies: every abort path (user, addon timeout, watchdog)
+  /// funnels here so the run row is stamped aborted, the busy flag drops, and
+  /// the round deck learns the stage did not finish. The 07-22 leak was this
+  /// hygiene existing in Abort() but not in the timeout paths - the TaskManager's
+  /// own TimeLimitMS cleared the queue and left IsRunning true forever.
+  /// </summary>
+  private void CloseRunAborted(string reason, bool stalled = false)
+  {
+    // Read liveness BEFORE the transition, exactly as RunTeardown.Die does: after
+    // it there is no way left to tell an already-dead run from one this call just
+    // killed, and a second death report overwrites the round's halt banner.
+    var wasLive = _run.IsRunning;
+    var now = DateTime.UtcNow;
+    if (stalled) _run.Stall(now); else _run.Cancel(now);
     _queue = null;
-    Plugin.PinchRunLog.CancelRun();
+    Plugin.Ledger.CancelRun();
+    // The dying melt's facts, taken before the teardown - a melt that died halfway
+    // still put real materials in the bags, and its run id is how the bell learns it
+    // may admit their yields (invariant B's one exception, review ruling S1).
+    RunData? melt = null;
     if (Plugin.CurrentRun != null && Plugin.CurrentRun.Mode == RunMode.Desynth)
     {
+      melt = Plugin.CurrentRun;
       if (Plugin.CurrentRun.DesynthRunId is long runId)
       {
         try
         {
-          Plugin.DesynthYieldStore?.AbortRun(runId, DateTimeOffset.UtcNow,
-            "user-initiated abort or addon closed mid-run");
+          Plugin.DesynthYieldStore?.AbortRun(runId, DateTimeOffset.UtcNow, reason);
         }
         catch (Exception ex)
         {
-          Svc.Log.Error(ex, "[Scrooge] Failed to update desynth_runs row on abort");
+          Svc.Log.Error(ex, "Failed to update desynth_runs row on abort");
         }
       }
       Plugin.CurrentRun = null;
     }
+    if (wasLive)
+      RunFlow.ReportDied(RunKind.Melt, reason, melt);
   }
 
-  /// <summary>Entry point. Called by DesynthPreviewWindow when user clicks Run.</summary>
-  internal unsafe void StartRun(List<DesynthItem> items)
+  /// <summary>
+  /// Backstop for the backstop: if the ECommons TaskManager's TimeLimitMS ever
+  /// fires (it clears the queue WITHOUT telling us), the run would otherwise
+  /// stay "in progress" forever and wedge every busy-gate in the plugin. The
+  /// predicate and the framework plumbing are <see cref="QueueWedgeWatchdog"/>'s;
+  /// what stays here is what the melt owes the player when it happens.
+  /// </summary>
+  private readonly QueueWedgeWatchdog _wedge;
+
+  /// <summary>
+  /// Entry point. Called by DesynthPreviewWindow when user clicks Run.
+  /// <paramref name="allEligibleSelected"/> = the player took every
+  /// non-protected item in the scan (Select All intent) — the run may
+  /// auto-continue if the window repopulates after the queue drains.
+  /// </summary>
+  internal unsafe void StartRun(List<DesynthItem> items, bool allEligibleSelected = false)
   {
     if (IsRunning || _taskManager.IsBusy || items.Count == 0)
       return;
 
-    if (!GenericHelpers.TryGetAddonByName<AtkUnitBase>("SalvageItemSelector", out _))
+    // The salvage window must be open and the player un-occupied (the game
+    // refuses Desynthesize otherwise - the desynth windows still force-open,
+    // which is the trap). Both flow through the one spine evaluation now, so
+    // the refusal names the gap in the same vocabulary every executor uses,
+    // instead of timing out ten silent seconds into the run.
+    var eval = SpineEvaluator.Evaluate(MeltExpected, ReadMeltState());
+    if (!eval.CanFire)
     {
-      Svc.Chat.PrintError("[Scrooge] SalvageItemSelector not open. Talk to Mutamix first.");
+      Svc.Chat.PrintError($"[Scrooge] {eval.Message}");
       return;
     }
 
-    int freeSlots = CountFreeInventorySlots();
+    int freeSlots = Bags.FreeSlots();
     if (freeSlots < MinFreeInventorySlots)
     {
       Svc.Chat.PrintError(
@@ -120,7 +251,7 @@ internal sealed class DesynthOrchestrator : IDisposable
       return;
     }
 
-    IsRunning = true;
+    _run.Start(items.Count, RunValueUnit.None, DateTime.UtcNow, $"Desynth {items.Count} items");
     Plugin.CurrentRun = new RunData { Mode = RunMode.Desynth };
 
     // Mode inference: any red/yellow row tags Skillup; otherwise Burn. Imperfect
@@ -137,20 +268,33 @@ internal sealed class DesynthOrchestrator : IDisposable
     }
     catch (Exception ex)
     {
-      Svc.Log.Error(ex, "[Scrooge] Failed to insert desynth_runs row — yield capture for this run will be unattributed");
+      Svc.Log.Error(ex, "Failed to insert desynth_runs row — yield capture for this run will be unattributed");
     }
     _currentAttemptSeq = 0;
 
     // PinchRunLog renders LogEntry rows only under an open RetainerHeader tree.
     // Set a synthetic "retainer" name so per-item rows render. Without this,
     // the run log shows summary lines but no per-item entries.
-    Plugin.PinchRunLog.SetCurrentRetainer("Desynth");
+    Plugin.Ledger.SetCurrentRetainer("Desynth");
     _queue = new Queue<DesynthItem>(items);
     _processed = 0;
+    _autoContinue = allEligibleSelected;
+    _attempted.Clear();
+    _roundStartProcessed = 0;
     _itemsUntilNextLongPause = NextPauseInterval();
 
-    Plugin.PinchRunLog.StartNewRun(isDesynthRun: true);
-    Plugin.PinchRunLog.SetTotalItems(items.Count);
+    Plugin.Ledger.StartNewRun();
+    Plugin.Ledger.SetTotalItems(items.Count);
+
+    // The TaskManager's own timeout must never RACE a task's internal deadline:
+    // on 07-22 both sat at 10s, TimeLimitMS won by milliseconds, and its queue
+    // wipe bypassed WaitForAddon's cleanup entirely. Keep the manager's limit
+    // comfortably above the longest per-task ceiling so the graceful path
+    // always fires first; the watchdog below catches anything that slips.
+    _taskManager.TimeLimitMS =
+      Math.Max(15000, Plugin.Configuration.ServerRoundTripCeilingMs + 5000);
+
+    _wedge.Arm();
 
     _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
   }
@@ -163,11 +307,13 @@ internal sealed class DesynthOrchestrator : IDisposable
   private unsafe bool? ProcessNext()
   {
     if (!IsRunning) return true;
-    if (_queue == null || _queue.Count == 0)
+    if (_queue == null)
     {
       EndRun();
       return true;
     }
+    if (_queue.Count == 0)
+      return TryContinueOrEnd();
 
     // Verify the addon is still open. If the player walked away from Mutamix
     // mid-run, abort cleanly.
@@ -190,7 +336,66 @@ internal sealed class DesynthOrchestrator : IDisposable
       return true;
     }
 
+    _attempted.Add((item.Container, item.SlotIndex));
     EnqueueActChain(item, agentIndex, isContinuation: false);
+    return true;
+  }
+
+  /// <summary>
+  /// Queue drained. Rescan the window before declaring success: the game's
+  /// agent list truncates large inventories, so a drained queue does not mean
+  /// a drained inventory. All-eligible runs refill and continue (progress
+  /// guard: a round that melted nothing ends loudly rather than rescanning);
+  /// hand-picked runs report the leftovers — fail loud even on success.
+  /// </summary>
+  private bool? TryContinueOrEnd()
+  {
+    var leftovers = DesynthInventoryScanner.Scan()
+      .FindAll(i => !i.IsProtected && !_attempted.Contains((i.Container, i.SlotIndex)));
+
+    if (leftovers.Count == 0)
+    {
+      EndRun();
+      return true;
+    }
+
+    if (!_autoContinue)
+    {
+      Svc.Chat.Print(
+        $"[Scrooge] Desynth run complete — {leftovers.Count} more eligible item(s) still in the window.");
+      EndRun();
+      return true;
+    }
+
+    if (_processed <= _roundStartProcessed)
+    {
+      Svc.Chat.PrintError(
+        $"[Scrooge] Desynth window still shows {leftovers.Count} eligible item(s) but the last round made no progress. Stopping.");
+      EndRun();
+      return true;
+    }
+
+    _roundStartProcessed = _processed;
+    _queue = new Queue<DesynthItem>(leftovers);
+    // The continuation round revises the total in place - the lifecycle must learn
+    // it too, or its ETA keeps quoting against the round that already drained.
+    _run.SetTotal(_processed + leftovers.Count, RunValueUnit.None, DateTime.UtcNow);
+    Plugin.Ledger.SetTotalItems(_processed + leftovers.Count);
+    if (Plugin.CurrentRun?.DesynthRunId is long continuedRunId)
+    {
+      try
+      {
+        Plugin.DesynthYieldStore?.UpdateTotalItems(continuedRunId, _processed + leftovers.Count);
+      }
+      catch (Exception ex)
+      {
+        Svc.Log.Error(ex, "Failed to update desynth_runs total_items on auto-continue");
+      }
+    }
+    Svc.Chat.Print(
+      $"[Scrooge] Desynth window refilled — continuing with {leftovers.Count} more item(s).");
+
+    _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
     return true;
   }
 
@@ -356,10 +561,10 @@ internal sealed class DesynthOrchestrator : IDisposable
 
     // Wait for SalvageResult — strict, abort-on-timeout. Per Q1 (2026-05-03
     // in-game observation), SalvageResult always fires after every desynth.
-    // Absence within the 4000ms ceiling means a stale UI state we shouldn't
-    // continue from.
+    // This is the act's server round trip, so it draws the shared ceiling
+    // (ServerRoundTripCeilingMs), not the UI-local 4000ms band above.
     _taskManager.DelayNext(Jitter(600, 200));
-    _taskManager.Enqueue(WaitForAddon("SalvageResult", 4000),
+    _taskManager.Enqueue(WaitForAddon("SalvageResult", Plugin.Configuration.ServerRoundTripCeilingMs),
       $"DesynthWaitResult_{item.Name}");
 
     // PostActDecision logs the act and decides Retry-vs-Close.
@@ -376,11 +581,17 @@ internal sealed class DesynthOrchestrator : IDisposable
     // Bail if a prior task aborted the run (e.g. WaitForAddon timeout).
     if (!IsRunning || _queue == null) return true;
 
-    // Log the act. ItemOutcome.Desynthed gets plain-text render in Task 13.
+    // Log the act.
     _processed++;
-    Plugin.PinchRunLog.AddEntry(ItemOutcome.Desynthed, item.Name,
+    _run.RecordProgress(1, 0, DateTime.UtcNow); // one item done; the melt earns no gil
+    Plugin.Ledger.AddEntry(ItemOutcome.Desynthed, item.Name,
       $"desynthed{(item.IsHq ? " (HQ)" : "")}");
-    Plugin.PinchRunLog.IncrementProcessed();
+    Plugin.Ledger.IncrementProcessed();
+
+    // V20: stamp the standing routing receipt - the item's Desynth exit
+    // executed. Only the newest unexecuted receipt takes the stamp, so stack
+    // continuations after the first act are no-ops.
+    RoutingReceiptStamp.Executed(item.ItemId, item.IsHq, "Desynthed");
 
     // Long-pause injection — counted per-act, not per-queue-item, so a stack
     // of 99 contributes 99 acts toward the next pause. Decrement first; if
@@ -444,13 +655,10 @@ internal sealed class DesynthOrchestrator : IDisposable
       {
         Svc.Chat.PrintError($"[Scrooge] Timeout waiting for {addonName}. Aborting.");
         // Don't call _taskManager.Abort() from inside a task — corrupts the
-        // tick loop. Just clear our state; the remaining enqueued tasks will
-        // see IsRunning == false and bail at their guard.
-        IsRunning = false;
-        _queue = null;
-        Plugin.PinchRunLog.CancelRun();
-        if (Plugin.CurrentRun != null && Plugin.CurrentRun.Mode == RunMode.Desynth)
-          Plugin.CurrentRun = null;
+        // tick loop. CloseRunAborted only clears state (and stamps the run row
+        // aborted, which the old inline cleanup forgot); the remaining enqueued
+        // tasks see IsRunning == false and bail at their guard.
+        CloseRunAborted($"timeout waiting for {addonName}");
         return true;
       }
       return false; // keep polling
@@ -459,7 +667,15 @@ internal sealed class DesynthOrchestrator : IDisposable
 
   private void EndRun()
   {
-    Plugin.PinchRunLog.EndRun();
+    // The terminal latch, at the one completion funnel: TryContinueOrEnd reaches
+    // here down four branches and ProcessNext down two, so a second arrival used to
+    // mean a second summary line and a second completion event. Now it is a no-op.
+    if (!_run.Complete(DateTime.UtcNow)) return;
+    Plugin.Ledger.EndRun();
+    // Captured before the teardown two lines down: the completion carries this run's
+    // id to the bell, which is the only way the yields it just made are admissible
+    // (review ruling S1 - the handler used to ask a run that was already null).
+    var melt = Plugin.CurrentRun;
     if (Plugin.CurrentRun?.DesynthRunId is long runId)
     {
       try
@@ -468,48 +684,19 @@ internal sealed class DesynthOrchestrator : IDisposable
       }
       catch (Exception ex)
       {
-        Svc.Log.Error(ex, "[Scrooge] Failed to update desynth_runs row on end");
+        Svc.Log.Error(ex, "Failed to update desynth_runs row on end");
       }
     }
     Plugin.CurrentRun = null;
-    IsRunning = false;
     _queue = null;
-    Util.FlashWindow();
+    // No flash here (ruled 08-15) - the completion handler owns the taskbar.
     Svc.Chat.Print($"[Scrooge] Desynthed {_processed} items.");
+    // The melt consumed bag gear and produced yields - both sides of the Ledger's
+    // bag picture moved, so it re-reads before the next stage is offered.
+    RunFlow.ReportDone(RunKind.Melt, melt);
   }
 
   /// <summary>Random 8..15 — items between long-pause injections.</summary>
   private int NextPauseInterval() => _random.Next(8, 16);
 
-  /// <summary>
-  /// Counts empty (ItemId == 0) slots across the four main inventory pages.
-  /// Returns 0 if InventoryManager isn't available (defensive — treat as
-  /// "can't verify, don't start").
-  /// </summary>
-  private static unsafe int CountFreeInventorySlots()
-  {
-    var im = InventoryManager.Instance();
-    if (im == null) return 0;
-
-    var containers = new[]
-    {
-      InventoryType.Inventory1,
-      InventoryType.Inventory2,
-      InventoryType.Inventory3,
-      InventoryType.Inventory4,
-    };
-
-    int free = 0;
-    foreach (var ct in containers)
-    {
-      var c = im->GetInventoryContainer(ct);
-      if (c == null) continue;
-      for (int i = 0; i < c->Size; i++)
-      {
-        var s = c->GetInventorySlot(i);
-        if (s != null && s->ItemId == 0) free++;
-      }
-    }
-    return free;
-  }
 }

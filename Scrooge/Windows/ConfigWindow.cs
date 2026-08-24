@@ -14,8 +14,6 @@ namespace Scrooge.Windows;
 
 public sealed class ConfigWindow : Window
 {
-  private static readonly string[] _virtualKeyStrings = Enum.GetNames<VirtualKey>();
-
   private string _currentQuote = string.Empty;
 
   private string _currentQuoteAuthor = string.Empty;
@@ -28,24 +26,6 @@ public sealed class ConfigWindow : Window
       _currentQuote = quote.Text;
       _currentQuoteAuthor = quote.Author;
     }
-  }
-
-  /// <summary>Converts PascalCase enum names to display-friendly format (e.g. "FixedAmount" → "Fixed Amount").</summary>
-  /// <param name="name">The raw PascalCase enum name.</param>
-  /// <returns>The name with spaces inserted before each capital letter (except the first).</returns>
-  private static string FormatEnumName(string name)
-  {
-    var result = new System.Text.StringBuilder();
-
-    for (int i = 0; i < name.Length; i++)
-    {
-      if (i > 0 && char.IsUpper(name[i]))
-        result.Append(' ');
-
-      result.Append(name[i]);
-    }
-
-    return result.ToString();
   }
 
   public ConfigWindow()
@@ -112,7 +92,7 @@ public sealed class ConfigWindow : Window
         ImGui.EndTabItem();
       }
 
-      if (ImGui.BeginTabItem("Hawk Settings"))
+      if (ImGui.BeginTabItem("Item Rules"))
       {
         DrawHawkSettingsTab();
         ImGui.EndTabItem();
@@ -121,6 +101,15 @@ public sealed class ConfigWindow : Window
       if (ImGui.BeginTabItem("Desynth"))
       {
         DrawDesynthTab();
+        ImGui.EndTabItem();
+      }
+
+      // "Rounds" since the reconcile (ruled 2026-08-23): the old name "Ledger"
+      // collided with the run-transcript window (whose knob lives on Output),
+      // while these knobs configure the window titled "Scrooge - Rounds".
+      if (ImGui.BeginTabItem("Rounds"))
+      {
+        DrawRoundsTab();
         ImGui.EndTabItem();
       }
 
@@ -141,6 +130,23 @@ public sealed class ConfigWindow : Window
     }
   }
 
+  /// <summary>
+  /// Persist a PRICING knob. Saving one and forgetting to drop the round's cached
+  /// prices leaves the run quoting numbers the settings no longer describe - and
+  /// which knobs needed the drop used to be nine hand-written call sites and a hope.
+  /// Every setter on the Pricing tab goes through here, so the question stops being
+  /// asked per-knob: if it is on this tab, it re-prices.
+  ///
+  /// <para>It lives in the window rather than in Configuration because the cache is a
+  /// live-run concern (Plugin.PinchHost), and Configuration has to stay reachable
+  /// from a test build with no Dalamud in it.</para>
+  /// </summary>
+  private static void SavePricing()
+  {
+    Plugin.Configuration.Save();
+    Plugin.PinchHost.ClearCachedPrices();
+  }
+
   private void DrawPricingTab()
   {
     // --- Undercut Settings ---
@@ -148,206 +154,132 @@ public sealed class ConfigWindow : Window
     ImGui.BeginGroup();
     ImGui.Text("Mode: ");
     ImGui.SameLine();
-    var enumValues = Enum.GetNames<UndercutMode>();
-    var displayNames = enumValues.Select(FormatEnumName).ToArray();
-    int undercutIndex = Array.IndexOf(enumValues, Plugin.Configuration.UndercutMode.ToString());
+    var undercutMode = Plugin.Configuration.UndercutMode;
     ImGui.SetNextItemWidth(150);
-    if (ImGui.Combo("##undercutModeCombo", ref undercutIndex, displayNames, displayNames.Length))
+    if (ConfigWidgets.EnumCombo("##undercutModeCombo", ref undercutMode))
     {
-      var value = Enum.Parse<UndercutMode>(enumValues[undercutIndex]);
-      if (value == UndercutMode.Percentage && Plugin.Configuration.UndercutAmount >= 100)
-        Plugin.Configuration.UndercutAmount = 1;
-
-      Plugin.Configuration.UndercutMode = value;
-      Plugin.Configuration.Save();
+      Plugin.Configuration.UndercutMode = undercutMode;
+      SavePricing();
     }
     ImGui.EndGroup();
 
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("How to calculate the listing price relative to the lowest market board offer.\n\n" +
+    ConfigWidgets.Hint("How the hand writes the price once the lane has picked the seat.\n" +
+                       "Every mode sits in the same place in the queue — they differ in the last few gil.\n\n" +
                        "Fixed Amount: Subtract a flat gil amount from the lowest listing.\n" +
-                       "Percentage: Subtract a percentage of the lowest listing's price.\n" +
                        "Gentlemans Match: Match the lowest listing exactly — no undercut.\n" +
-                       "Clean Numbers: Ronds down to a clean number. Interval scales with price.\n" +
+                       "Clean Numbers: Rounds down to a clean number. Interval scales with price.\n" +
                        "Humanized: Randomly picks between Random Pinch, Gentleman's Match, or Clean Numbers per item.\n" +
-                       "Simulates natural pricing — as if you checked the price and typed it from memory.");
-      ImGui.EndTooltip();
-    }
+                       "Simulates natural pricing — as if you checked the price and typed it from memory.\n\n" +
+                       "TWO PLACES NO MODE APPLIES:\n" +
+                       "Your own listing. If the price being written against is your own retainer's row,\n" +
+                       "it is copied exactly and no mode arithmetic runs at all.\n" +
+                       "A better-quality row. When the anchor is an HQ listing and the item being priced\n" +
+                       "is NQ, the write is forced strictly under it however the mode landed — so\n" +
+                       "Gentleman's Match does NOT match across qualities. Matching a strictly better\n" +
+                       "item at the same money is a listing no buyer ever reaches.");
 
-    if (Plugin.Configuration.UndercutMode != UndercutMode.GentlemansMatch &&
-        Plugin.Configuration.UndercutMode != UndercutMode.CleanNumbers &&
-        Plugin.Configuration.UndercutMode != UndercutMode.Humanized)
+    // Fixed Amount is the only surviving mode that takes a number from the player;
+    // the other three derive their own step from the price they write against.
+    if (Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount)
     {
-      ImGui.BeginGroup();
-      ImGui.Text("Amount:");
-      ImGui.SameLine();
       int amount = Plugin.Configuration.UndercutAmount;
-      if (Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount)
+      if (ConfigWidgets.LabeledInt("Amount:", "##undercutAmountFixed", ref amount, 100, suffix: "Gil"))
       {
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("##undercutAmountFixed", ref amount))
-        {
-          Plugin.Configuration.UndercutAmount = Math.Clamp(amount, 1, int.MaxValue);
-          Plugin.Configuration.Save();
-        }
+        Plugin.Configuration.UndercutAmount = Math.Clamp(amount, 1, int.MaxValue);
+        SavePricing();
       }
-      else
-      {
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.SliderInt("##undercutAmountPercentage", ref amount, 1, 99))
-        {
-          Plugin.Configuration.UndercutAmount = amount;
-          Plugin.Configuration.Save();
-        }
-      }
-      ImGui.SameLine();
-      ImGui.Text($"{(Plugin.Configuration.UndercutMode == UndercutMode.FixedAmount ? "Gil" : "%")}");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("How much to undercut the lowest listing by.\n\n" +
-                         "Fixed Amount: The exact number of gil to subtract.\n" +
-                         "Percentage: The percentage of the listing price to subtract.");
-        ImGui.EndTooltip();
-      }
-
-      ImGui.BeginGroup();
-      ImGui.Text("Max Undercut percentage:");
-      ImGui.SameLine();
-      float maxUndercut = Plugin.Configuration.MaxUndercutPercentage;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##maximumUndercutAmountPercentage", ref maxUndercut, 0.1f, 99.9f, "%.1f"))
-      {
-        Plugin.Configuration.MaxUndercutPercentage = MathF.Round(maxUndercut, 1);
-        Plugin.Configuration.Save();
-      }
-      ImGui.SameLine();
-      ImGui.Text($"%");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Safety cap: skip an item if undercutting it would drop the price by more than this percentage.\n\n" +
-                         "Protects against accidentally tanking prices when a single low outlier listing exists.\n" +
-                         "Set to 99.9% to effectively disable this check.");
-        ImGui.EndTooltip();
-      }
+      ConfigWidgets.Hint("How far under the row in front of us the hand writes, in gil.\n\n" +
+                         "The seat is already chosen — this is only the size of the pinch.");
     }
+
+    // THE CRASHER-GUARD is delisted (ruled 2026-08-23). The lane owns crasher defense
+    // now - the company test and nonsense-half conviction step over bait before a seat
+    // is ever picked, and the floor refuses a crash to nothing - so the guard's only
+    // remaining trigger was interrupting a correct write after a genuine market move.
+    // MaxUndercutPercentage stays in Configuration at its inert default (100 = the
+    // question never fires) until the guard is removed outright in 3.1.
 
     // --- Max Price Increase Cap ---
     var enableMaxIncrease = Plugin.Configuration.EnableMaxPriceIncreaseCap;
     if (ImGui.Checkbox("Max Price Increase Cap", ref enableMaxIncrease))
     {
       Plugin.Configuration.EnableMaxPriceIncreaseCap = enableMaxIncrease;
-      Plugin.Configuration.Save();
+      SavePricing();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Skip an item if the new price would be much higher than your current listing.\n\n" +
-                       "Prevents overpricing when competition delists and the next listing is far above yours.\n" +
-                       "The item is skipped entirely — your current price stays unchanged.");
-      ImGui.EndTooltip();
-    }
+    ConfigWidgets.Hint("Limit how far a price may climb in one pinch.\n\n" +
+                       "Pricing up is a move backward in the queue — you are letting others go first — so one\n" +
+                       "board read only buys a bounded step. The price steps up to the cap and keeps climbing on\n" +
+                       "later pinches as the reads keep agreeing. It never freezes and it never skips the item.\n\n" +
+                       "PINCH RUNS ONLY. A hawk run writes the full climb in one go — it is you standing at\n" +
+                       "the board with the row in front of you, and the brake exists for the unattended pass.");
 
     if (Plugin.Configuration.EnableMaxPriceIncreaseCap)
     {
-      ImGui.BeginGroup();
-      ImGui.Text("Max Price Increase:");
-      ImGui.SameLine();
       float maxIncrease = Plugin.Configuration.MaxPriceIncreasePercentage;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##maxPriceIncreasePercentage", ref maxIncrease, 10f, 200f, "%.0f"))
+      if (ConfigWidgets.LabeledFloat("Max Price Increase:", "##maxPriceIncreasePercentage",
+                                     ref maxIncrease, 10f, 200f, 150, "%.0f", "%"))
       {
         Plugin.Configuration.MaxPriceIncreasePercentage = MathF.Round(maxIncrease);
-        Plugin.Configuration.Save();
+        SavePricing();
       }
-      ImGui.SameLine();
-      ImGui.Text("%");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Maximum allowed price increase as a percentage of your current listing price.\n\n" +
-                         "Example at 50%: If your item is listed at 10,000 gil, the new price can't exceed 15,000 gil.\n" +
-                         "If it would, the item is skipped and a warning is logged.\n\n" +
+      ConfigWidgets.Hint("How far back in the queue one board read may move you: the maximum upward step, as a\n" +
+                         "percentage of your current listing price.\n\n" +
+                         "Example at 50%: if your item is listed at 10,000 gil, this pinch writes at most 15,000.\n" +
+                         "A bigger jump is clamped to the cap, not skipped — the next pinch climbs from there,\n" +
+                         "so the price still gets all the way to the seat over a few passes.\n\n" +
                          "Higher = more permissive. Lower = stricter.");
-        ImGui.EndTooltip();
-      }
     }
 
     if (Plugin.Configuration.UndercutMode == UndercutMode.Humanized)
     {
-      ImGui.BeginGroup();
-      ImGui.Text("Max Random Pinch:");
-      ImGui.SameLine();
       int maxPinch = Plugin.Configuration.HumanizedMaxPinch;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderInt("##humanizedMaxPinch", ref maxPinch, 1, 10))
+      if (ConfigWidgets.LabeledSlider("Max Random Pinch:", "##humanizedMaxPinch", ref maxPinch, 1, 10, 150, suffix: "Gil"))
       {
         Plugin.Configuration.HumanizedMaxPinch = maxPinch;
-        Plugin.Configuration.Save();
+        SavePricing();
       }
-      ImGui.SameLine();
-      ImGui.Text("Gil");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("When Random Pinch is rolled, undercut by a random amount from 1 to this value.\n\n" +
-                         "Default: 3 gil. Simulates a human who saw the price and typed something close.");
-        ImGui.EndTooltip();
-      }
+      ConfigWidgets.Hint("The widest Random Pinch. When Humanized rolls Random Pinch, the write lands a\n" +
+                         "random 1 to this many gil under the row in front.\n\n" +
+                         "It only ever changes the last few gil — the seat in the queue is already chosen\n" +
+                         "by the time this runs.");
     }
 
     var undercutSelf = Plugin.Configuration.UndercutSelf;
     if (ImGui.Checkbox("Undercut Self", ref undercutSelf))
     {
       Plugin.Configuration.UndercutSelf = undercutSelf;
-      Plugin.Configuration.Save();
+      SavePricing();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("When enabled, your own retainer listings are treated like any other seller's.\n\n" +
-                       "When disabled, if your retainer already has the lowest price, the listing is left unchanged.");
-      ImGui.EndTooltip();
-    }
+    // THE REAL SCOPE, SAID (B8). The lane deliberately never classifies your own rows
+    // as competition - a stale own lowball must be free to walk UP - so this knob has
+    // no effect on the lane path at all. It governs the first-pass read and nothing
+    // else, and a label that implied otherwise was promising a behaviour on a path
+    // where it is inert by design.
+    ConfigWidgets.Hint("Whether your own retainer's listing counts as competition on the FIRST-PASS\n" +
+                       "board read.\n\n" +
+                       "On: your own row is treated like any other seller's and gets undercut.\n" +
+                       "Off: if your retainer already holds the lowest price, the listing is left\n" +
+                       "unchanged.\n\n" +
+                       "The lane never reads this. It excludes your own rows from the queue on purpose —\n" +
+                       "they are the thing being repriced, not the market — so a stale own lowball can\n" +
+                       "still walk up whichever way this sits.");
 
     ImGui.SameLine(0, 40);
     var hq = Plugin.Configuration.HQ;
     if (ImGui.Checkbox("Use HQ price", ref hq))
     {
       Plugin.Configuration.HQ = hq;
-      Plugin.Configuration.Save();
+      SavePricing();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("When enabled, compares against HQ listings only for HQ items.\n\n" +
-                       "If there are no HQ listings on the market board, the item will be skipped.\n" +
-                       "Disable this to always compare against the cheapest listing regardless of quality.");
-      ImGui.EndTooltip();
-    }
+    // THE QUALITY LINE THROUGH ALL EVIDENCE (registry reconcile, 2026-08-23). The old
+    // text claimed "no HQ listings -> skipped", which is true only on the quick
+    // single-item read - the lane prices on regardless. It also owned the listings
+    // half alone, while the same flag picks which SALES the lane trusts.
+    ConfigWidgets.Hint("For an HQ item, price off HQ evidence only - HQ listings on the board and HQ sales\n" +
+                       "in your sale history.\n\n" +
+                       "With no HQ listings, the lane still prices: off HQ sales, or off NQ sales plus your\n" +
+                       "HQ premium. Only the quick single-item read skips outright.\n\n" +
+                       "Disable to compare against the cheapest listing regardless of quality.");
 
     ImGui.Separator();
     // --- Price Floor Mode dropdown ---
@@ -355,57 +287,39 @@ public sealed class ConfigWindow : Window
     ImGui.BeginGroup();
     ImGui.Text("Price Floor Mode:");
     ImGui.SameLine();
-    var floorEnumValues = Enum.GetNames<PriceFloorMode>();
-    var floorDisplayNames = floorEnumValues.Select(FormatEnumName).ToArray();
-    int floorIndex = Array.IndexOf(floorEnumValues, Plugin.Configuration.PriceFloorMode.ToString());
+    var priceFloorMode = Plugin.Configuration.PriceFloorMode;
     ImGui.SetNextItemWidth(150);
-    if (ImGui.Combo("##priceFloorModeCombo", ref floorIndex, floorDisplayNames, floorDisplayNames.Length))
+    if (ConfigWidgets.EnumCombo("##priceFloorModeCombo", ref priceFloorMode))
     {
-      Plugin.Configuration.PriceFloorMode = Enum.Parse<PriceFloorMode>(floorEnumValues[floorIndex]);
+      Plugin.Configuration.PriceFloorMode = priceFloorMode;
       // When switching to DomanEnclave, disable auto vendor sell
       if (Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave)
       {
         Plugin.Configuration.AutoVendorSellOnPriceCheckFail = false;
       }
-      Plugin.Configuration.Save();
-      Plugin.AutoPinch.ClearCachedPrices();
+      SavePricing();
     }
     ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Items are skipped when the undercut price falls below the selected floor.\n\n" +
+    ConfigWidgets.Hint("An honest price under the selected floor forfeits the listing — the other exits\n" +
+                       "compete for the item instead.\n\n" +
                        "None: No price floor. Items are listed at any price.\n" +
-                       "Vendor: Skip if price is below what a vendor would pay.\n" +
-                       "Doman Enclave: Skip if price is below 2x vendor price (Assumes max Doman Enclave donation rate).");
-      ImGui.EndTooltip();
-    }
-    ImGui.BeginGroup();
-    ImGui.Text("Minimum Listing Price:");
-    ImGui.SameLine();
+                       "Vendor: no listing under what a vendor would pay.\n" +
+                       "Doman Enclave: no listing under 2x vendor price (assumes the max donation rate).\n\n" +
+                       "Under Doman Enclave, a forfeited item is never auto-vendored: it is worth twice as\n" +
+                       "much at the Enclave as at the counter, so it is kept in your bags for you.");
+
     int minPrice = Plugin.Configuration.MinimumListingPrice;
-    ImGui.SetNextItemWidth(100);
-    if (ImGui.InputInt("##minimumListingPrice", ref minPrice))
+    if (ConfigWidgets.LabeledInt("Minimum Listing Price:", "##minimumListingPrice", ref minPrice, 100, suffix: "Gil"))
     {
       Plugin.Configuration.MinimumListingPrice = Math.Max(minPrice, 0);
-      Plugin.Configuration.Save();
-      Plugin.AutoPinch.ClearCachedPrices();
+      SavePricing();
     }
-    ImGui.SameLine();
-    ImGui.Text("Gil");
-    ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Items priced below this amount are skipped during auto-pinch.\n" +
-                       "Each retainer slot is valuable — don't waste them on low-value items.\n\n" +
+    ConfigWidgets.Hint("Your own floor, in gil. Scrooge holds ONE floor: the higher of this and the Price\n" +
+                       "Floor Mode above.\n\n" +
+                       "An honest price that lands under it forfeits the listing — the item is never priced\n" +
+                       "up to reach the floor, it simply stops competing for the List exit, and the vendor,\n" +
+                       "melt and turn-in exits compete for it instead.\n\n" +
                        "Set to 0 to disable.");
-      ImGui.EndTooltip();
-    }
 
     // --- Auto Vendor Sell toggle ---
     var isDomanEnclave = Plugin.Configuration.PriceFloorMode == PriceFloorMode.DomanEnclave;
@@ -415,496 +329,321 @@ public sealed class ConfigWindow : Window
     if (ImGui.Checkbox("Auto vendor-sell items that fail price checks", ref autoVendor))
     {
       Plugin.Configuration.AutoVendorSellOnPriceCheckFail = autoVendor;
-      Plugin.Configuration.Save();
+      SavePricing();
     }
 
     if (isDomanEnclave) ImGui.EndDisabled();
 
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
+    ConfigWidgets.Hint(
+      "During hawk runs, items that fail price floor or minimum listing price checks\n" +
+      "are vendor-sold via the retainer instead of skipped.\n\n" +
+      "Not available with Doman Enclave price floor mode — those items are\n" +
+      "saved for manual Enclave donation.\n\n" +
+      "Note: Items on the Always Vendor list are always vendor-sold regardless\n" +
+      "of this toggle or price floor mode.");
+
+    // MOVED HOME FROM GIL TRACKING (ruled 2026-08-23). It dims stale last-sales in
+    // Hawk, but it also gates whether your own last sale may price a market-silent
+    // item - a knob that writes real asks. On the wrong tab it saved with a bare
+    // Save(), dodging the cache-drop doctrine above: change it, and the next pinch
+    // still posted prices computed under the rule you had just revoked.
+    int staleDays = Plugin.Configuration.StalePriceDays;
+    if (ConfigWidgets.LabeledSlider("Stale Price Threshold:", "##stalePriceDays", ref staleDays, 0, 100, 150, suffix: "days"))
     {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip(
-        "During hawk runs, items that fail price floor or minimum listing price checks\n" +
-        "are vendor-sold via the retainer instead of skipped.\n\n" +
-        "Not available with Doman Enclave price floor mode — those items are\n" +
-        "saved for manual Enclave donation.\n\n" +
-        "Note: Items on the Always Vendor list are always vendor-sold regardless\n" +
-        "of this toggle or price floor mode.");
-      ImGui.EndTooltip();
+      Plugin.Configuration.StalePriceDays = staleDays;
+      SavePricing();
     }
+    ConfigWidgets.Hint("How old a sale of yours may be and still count. Two jobs:\n\n" +
+                       "Display: last sale prices older than this are dimmed in the Hawk\n" +
+                       "Window.\n" +
+                       "Pricing: when the board is fully silent, your own last sale prices\n" +
+                       "the item - but only if it settled inside this window. Older, and\n" +
+                       "the item is left for you.\n\n" +
+                       "Set to 0 to turn both off: nothing dims, and the own-sale fallback\n" +
+                       "prices at any age.");
 
     ImGui.Separator();
-    // --- Outlier Detection ---
-    SectionHeader("Outlier Detection");
-    var outlierDetection = Plugin.Configuration.OutlierDetection;
-    if (ImGui.Checkbox("Outlier Detection", ref outlierDetection))
-    {
-      Plugin.Configuration.OutlierDetection = outlierDetection;
-      Plugin.Configuration.Save();
-      Plugin.AutoPinch.ClearCachedPrices();
-    }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Detect and skip abnormally low price listings on the market board.\n\n" +
-                       "Compares each listing to the next — if the price jump is too large,\n" +
-                       "the cheap listing is treated as an outlier and skipped.\n\n" +
-                       "When an outlier is skipped and no valid listings remain, Scrooge\n" +
-                       "uses the median sale price from the last 14 days instead.\n" +
-                       "If the median also fails floor/minimum checks, the item goes to triage.\n\n" +
-                       "Only applies to NQ items. HQ items skip outlier detection.");
-      ImGui.EndTooltip();
-    }
-    if (Plugin.Configuration.OutlierDetection)
-    {
-      ImGui.BeginGroup();
-      ImGui.Text("Outlier Threshold:");
-      ImGui.SameLine();
-      float threshold = Plugin.Configuration.OutlierThresholdPercent;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##outlierThreshold", ref threshold, 10f, 90f, "%.0f"))
-      {
-        Plugin.Configuration.OutlierThresholdPercent = MathF.Round(threshold);
-        Plugin.Configuration.Save();
-        Plugin.AutoPinch.ClearCachedPrices();
-      }
-      ImGui.SameLine();
-      ImGui.Text("%");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("A price plunge is detected when the gap between two listings\n" +
-                         "exceeds this percentage.\n\n" +
-                         "Example at 50%: A listing at 40 gil is bait if the next is 100 gil\n" +
-                         "(60% cheaper = plunge detected).\n\n" +
-                         "Lower = catches smaller gaps, more aggressive.\n" +
-                         "Higher = only catches large gaps, more tolerant.");
-        ImGui.EndTooltip();
-      }
+    // --- Lane Pricing ---
+    SectionHeader("Lane Pricing");
+    ImGui.TextDisabled("Listings are what people want; sales are what people paid.");
+    ImGui.Spacing();
 
-      ImGui.BeginGroup();
-      ImGui.Text("Search Window:");
-      ImGui.SameLine();
-      int searchWindow = Plugin.Configuration.OutlierSearchWindow;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderInt("##outlierSearchWindow", ref searchWindow, 1, 9))
-      {
-        Plugin.Configuration.OutlierSearchWindow = searchWindow;
-        Plugin.Configuration.Save();
-        Plugin.AutoPinch.ClearCachedPrices();
-      }
-      ImGui.SameLine();
-      ImGui.Text("past first");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("How many listings past the cheapest to check for an outlier.\n\n" +
-                         "1 = only compare the 1st and 2nd listing.\n" +
-                         "9 = check all 10 listings in the batch.\n\n" +
-                         "Lower = sell fast at market edge.\n" +
-                         "Higher = look deeper, avoid outliers, may sell higher (eventually).");
-        ImGui.EndTooltip();
-      }
-
-      var relativeWindow = Plugin.Configuration.RelativeOutlierWindow;
-      if (ImGui.Checkbox("Scale window for small batches", ref relativeWindow))
-      {
-        Plugin.Configuration.RelativeOutlierWindow = relativeWindow;
-        Plugin.Configuration.Save();
-        Plugin.AutoPinch.ClearCachedPrices();
-      }
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("When enabled, scales the search window proportionally for batches with fewer than 10 listings.\n\n" +
-                         "Example: Search window of 3, and item with 6 listings -> checks 2 instead of 3.\n\n" +
-                         "Prevents over-aggressive outlier detection in thin markets where\n" +
-                         "a fixed window would scan most of the available listings.");
-        ImGui.EndTooltip();
-      }
-    }
-
-    var flagUpward = Plugin.Configuration.FlagUpwardRepriceEnabled;
-    if (ImGui.Checkbox("Hold suspicious upward reprices", ref flagUpward))
+    float laneCeiling = Plugin.Configuration.UpwardRepriceMultiplier;
+    if (ConfigWidgets.LabeledFloat("Lane ceiling:", "##laneCeiling", ref laneCeiling, 1.5f, 10f, 150, "%.1fx"))
     {
-      Plugin.Configuration.FlagUpwardRepriceEnabled = flagUpward;
-      Plugin.Configuration.Save();
+      Plugin.Configuration.UpwardRepriceMultiplier = MathF.Round(laneCeiling, 1);
+      SavePricing();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("When a pinch would RAISE an existing listing's price far past your\n" +
-                       "own sale history, the price is kept and the item is flagged to triage.\n\n" +
-                       "Protects listings you priced by hand from being multiplied onto a\n" +
-                       "troll wall by one packet of bad market data. Flags persist until\n" +
-                       "you reprice, pull, or dismiss them.");
-      ImGui.EndTooltip();
-    }
-    if (Plugin.Configuration.FlagUpwardRepriceEnabled)
-    {
-      ImGui.BeginGroup();
-      ImGui.Text("Sanity multiplier:");
-      ImGui.SameLine();
-      float upwardMult = Plugin.Configuration.UpwardRepriceMultiplier;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##upwardRepriceMult", ref upwardMult, 1.5f, 10f, "%.1fx"))
-      {
-        Plugin.Configuration.UpwardRepriceMultiplier = MathF.Round(upwardMult, 1);
-        Plugin.Configuration.Save();
-      }
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Hold the reprice when the new price exceeds your last sale for the\n" +
-                         "item times this multiplier (or the current listing price times this,\n" +
-                         "when you have no sale history for it).");
-        ImGui.EndTooltip();
-      }
-    }
+    ConfigWidgets.Hint("Board listings above (lane median x this) are walls and never\n" +
+                       "anchor a price. One idea in every direction: 3x what it actually\n" +
+                       "sells for = suspicious.\n\n" +
+                       "It also caps what Scrooge writes when the board has nobody real\n" +
+                       "on it. No sales history, no ceiling - the rail is built from what\n" +
+                       "the item actually sells for.");
 
+    // THE LABEL NAMES ALL FOUR DOORS (B8, RULED: it stays ONE knob; the tape door paid
+    // 08-23). This number is read at four call sites and the old label owned one of
+    // them, so a player raising his pricing bar silently raised the routing brain's bar
+    // and the confidence tier's with it. One knob is the right shape - "enough settled
+    // sales to trust" is one question - but a knob with four jobs has to say four jobs.
+    int minSamples = Plugin.Configuration.LaneMinHistorySamples;
+    if (ConfigWidgets.LabeledSlider("Min sales to trust:", "##laneMinSamples", ref minSamples, 1, 10, 150))
+    {
+      Plugin.Configuration.LaneMinHistorySamples = minSamples;
+      SavePricing();
+    }
+    ConfigWidgets.Hint("Settled sales needed before evidence counts as enough. One bar, four\n" +
+                       "doors - moving it moves all four:\n\n" +
+                       "Lane pricing: below this the item is held and flagged instead of\n" +
+                       "priced off an unvalidated board.\n" +
+                       "Routing's tape witness: settled sales on this world need this many\n" +
+                       "before they score the List exit.\n" +
+                       "Community routing: the DC-wide sale count the router needs before\n" +
+                       "it will weigh community evidence at all.\n" +
+                       "Confidence tier: a lane thinner than this cannot seat a verdict\n" +
+                       "unasked - the row comes to you at the hinge instead.");
+
+    float halfLife = Plugin.Configuration.LaneHalfLifeDays;
+    if (ConfigWidgets.LabeledFloat("Recency half-life:", "##laneHalfLife", ref halfLife, 7f, 60f, 150, "%.0f days"))
+    {
+      Plugin.Configuration.LaneHalfLifeDays = MathF.Round(halfLife);
+      SavePricing();
+    }
+    ConfigWidgets.Hint("How fast old sales fade from the lane. A sale this many days old\n" +
+                       "carries half the weight of one from today. Seed value - receipts\n" +
+                       "will derive per-item values over time; erring long fails toward\n" +
+                       "holding value.");
+
+    int hqPremium = Plugin.Configuration.HqPremiumPercent;
+    if (ConfigWidgets.LabeledSlider("HQ premium:", "##hqPremium", ref hqPremium, 0, 100, 150, "%d%%"))
+    {
+      Plugin.Configuration.HqPremiumPercent = Math.Clamp(hqPremium, 0, 100);
+      SavePricing();
+    }
+    ConfigWidgets.Hint("How much extra an HQ item asks over its NQ price when there are\n" +
+                       "no HQ sales to go on. Used only then - with HQ sales on record,\n" +
+                       "or real sellers in the queue, those decide the price instead.");
+
+    int seatBudget = Plugin.Configuration.SeatBudget;
+    if (ConfigWidgets.LabeledSlider("Seat budget:", "##seatBudget", ref seatBudget, 0, 10, 150, "%d rows"))
+    {
+      Plugin.Configuration.SeatBudget = Math.Clamp(seatBudget, 0, 10);
+      SavePricing();
+    }
+    ConfigWidgets.Hint("The judgment budget: the deepest seat a pricing walk may take on\n" +
+                       "its own authority, in rows left standing in front of your listing.\n" +
+                       "Stepping over crashers is fine while the seat stays this shallow;\n" +
+                       "wanting a deeper one means the walk is wrong - it takes the front\n" +
+                       "of the line instead. Use good judgement, but don't be wrong.");
   }
 
   private void DrawRoutingTab()
   {
-    SectionHeader("Routing (advisor preview)");
+    // PRICING-BAR DRESS (registry reconcile, 2026-08-23). The two TreeNodes
+    // flattened to SectionHeaders - they were the only collapsibles in the
+    // window, closed by default, so a fresh install saw an empty tab. "Rules
+    // engine" was engine jargon a player never sees elsewhere; the bare
+    // "Routing" header repeated the tab strip and led nothing.
+    SectionHeader("Where an Item Goes");
+    ImGui.TextDisabled("Scrooge weighs selling, melting, and turning in, then picks the best exit.");
+    ImGui.Spacing();
 
-    var routingOn = Plugin.Configuration.EnableRoutingBrain;
-    if (ImGui.Checkbox("Enable routing brain", ref routingOn))
+    var sealRate = Plugin.Configuration.SealToGilRate;
+    if (ConfigWidgets.LabeledInt("A GC seal is worth (gil):", "##sealToGilRate", ref sealRate, 150, 5, 25) && sealRate >= 0)
     {
-      Plugin.Configuration.EnableRoutingBrain = routingOn;
+      Plugin.Configuration.SealToGilRate = sealRate;
       Plugin.Configuration.Save();
     }
+    ConfigWidgets.Hint("What one Grand Company seal is worth to you in gil, so a turn-in can be\n" +
+                       "compared against selling or melting. A rough starting number - once Scrooge\n" +
+                       "has watched 10 ventures come back, it measures the real rate from what they\n" +
+                       "returned and ignores this setting. The dashboard's Ventures tab says which\n" +
+                       "one is in play.");
+
+    // THE SEAL S-CURVE (Drift, 2026-08-05), REPARAMETERIZED (Drift, 2026-08-23:
+    // "set the middle and the desired + -"). Storage stays FullBelow/ZeroAbove;
+    // the UI speaks center +/- width and writes the endpoints back. The old
+    // two-endpoint form let a player set full above zero - SealRunway then
+    // scores seals at nothing forever, silently. A width cannot be negative,
+    // so the trap is unbuildable now instead of warned about.
+    var curveFull = Plugin.Configuration.SealCurveFullBelow;
+    var curveZero = Plugin.Configuration.SealCurveZeroAbove;
+    var curveCenter = (curveFull + curveZero) / 2;
+    var curveWidth = (curveZero - curveFull) / 2;
+    ImGui.BeginGroup();
+    ImGui.Text("Token stock sweet spot:");
     ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
+    ImGui.SetNextItemWidth(90);
+    var centerChanged = ImGui.InputInt("##sealCurveCenter", ref curveCenter, 0, 0);
+    ImGui.SameLine();
+    ImGui.TextDisabled("plus or minus");
+    ImGui.SameLine();
+    ImGui.SetNextItemWidth(90);
+    var widthChanged = ImGui.InputInt("##sealCurveWidth", ref curveWidth, 0, 0);
+    ImGui.EndGroup();
+    if (centerChanged || widthChanged)
     {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("The whole advisor: the listing gate (Route tags in the Hawk window,\n" +
-                       "gated items left out of Select All) AND the router itself - the Route\n" +
-                       "button / '/scrooge route' pile view with one-confirm execution.\n" +
-                       "Judged only on YOUR data - own sales, own desynth yields, plus the\n" +
-                       "Universalis almanac when enabled. No evidence = no opinion. Overriding\n" +
-                       "a verdict always wins (and teaches the router).");
-      ImGui.EndTooltip();
+      curveCenter = Math.Max(0, curveCenter);
+      curveWidth = Math.Clamp(curveWidth, 0, curveCenter);
+      Plugin.Configuration.SealCurveFullBelow = curveCenter - curveWidth;
+      Plugin.Configuration.SealCurveZeroAbove = curveCenter + curveWidth;
+      Plugin.Configuration.Save();
     }
+    ConfigWidgets.Hint("Where you'd like your venture token stock to settle, give or take. Seals are\n" +
+                       "worth full value when stock is at the bottom of this range, nothing at the\n" +
+                       "top, sliding smoothly between (half value at the center). The effect is a\n" +
+                       "thermostat: stocked up, seals cheapen and melting wins more; running low,\n" +
+                       "seals richen and turn-in takes over - so your stockpile hovers near the\n" +
+                       "center on its own. Turn-in reasons say when the curve changed a call.\n\n" +
+                       "The dashboard's token color follows this too: orange under half the center,\n" +
+                       "red under a quarter.");
 
-    if (Plugin.Configuration.EnableRoutingBrain)
+    var reviewBand = Plugin.Configuration.RoutingReviewBandPct;
+    if (ConfigWidgets.LabeledSlider("Send to Review when this close (%):", "##routingReviewBand", ref reviewBand, 0, 50, 150, "%d%%"))
     {
+      Plugin.Configuration.RoutingReviewBandPct = reviewBand;
+      Plugin.Configuration.Save();
+    }
+    ConfigWidgets.Hint("When the best two exits score within this much of each other, Scrooge stops\n" +
+                       "guessing and puts the item in Review with both reasons shown. Larger = more\n" +
+                       "items come to you. One exception: if turn-in is one of the two and your\n" +
+                       "tokens are below the number beneath, the call goes to turn-in instead.");
+
+      // TWO OF THREE BANDS RIPPED OUT (ruled 2026-08-23). The old hover was a
+      // double fossil: it promised a 45,000-gil rule on the "turn in" band that
+      // exists nowhere, and called "panic" unread while it colored the
+      // dashboard. VentureBandLow/Panic were paint-only - the ramp now derives
+      // from the seal curve (orange under half its midpoint, red under a
+      // quarter; GilWindow.Ventures) and both fields die in 3.1. Tilt stays:
+      // it is the one band that changes a decision.
       ImGui.BeginGroup();
-      ImGui.Text("Listing floor (gil):");
-      ImGui.SameLine();
-      var floorGil = Plugin.Configuration.ListingFloorGil;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.InputInt("##listingFloorGil", ref floorGil, 1000, 5000)
-          && floorGil >= 0)
+      var bandFull = Plugin.Configuration.VentureBandFull;
+      ImGui.SetNextItemWidth(90);
+      if (ImGui.InputInt("Prefer turn-in when tokens dip below", ref bandFull, 0, 0) && bandFull >= 0)
       {
-        Plugin.Configuration.ListingFloorGil = floorGil;
+        Plugin.Configuration.VentureBandFull = bandFull;
         Plugin.Configuration.Save();
       }
       ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Equipment is worth listing when it sells for at least this much.\n" +
-                         "Gear below the floor routes to desynth or turn-in when a better exit exists.");
-        ImGui.EndTooltip();
-      }
+      ConfigWidgets.Hint("When your venture token stock is below this, a too-close call between\n" +
+                         "turn-in and something else goes to turn-in instead of Review - and the\n" +
+                         "reason line says so. Above it, turn-in competes on pure value.\n\n" +
+                         "The dashboard's token color turns green above this number.");
 
-      ImGui.BeginGroup();
-      ImGui.Text("Velocity floor (days):");
-      ImGui.SameLine();
-      var velocityDays = Plugin.Configuration.ListingVelocityDays;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderInt("##listingVelocityDays", ref velocityDays, 1, 30, "%dd"))
+    SectionHeader("Community Market Data");
+    ImGui.TextDisabled("Universalis fills the gaps when your own book has nothing to say.");
+    ImGui.Spacing();
+
+    {
+      // THE DC PRICES, LAST IN LINE (registry reconcile, 2026-08-23; ruled "code
+      // wins, fix words to match"). The old hover swore "advisor data only: it
+      // NEVER sets a pinch or listing price" - false since the community lane:
+      // when local history is thin, LaneEvaluation builds the pricing lane from
+      // DC settled sales (ItemPricingPipeline hands UniversalisHistory in as the
+      // communityProvider). The witness ladder and the ingot ruling (DC speaks
+      // only when own-sale/tape/Look are ALL silent) settled the doctrine; only
+      // this hover and a Configuration.cs comment claimed otherwise. The old
+      // label's "(home world)" was also half the truth - sale history is
+      // DATA-CENTER scope; only velocity/recency is home-world.
+      var uniOn = Plugin.Configuration.EnableUniversalis;
+      if (ImGui.Checkbox("Use Universalis market data", ref uniOn))
       {
-        Plugin.Configuration.ListingVelocityDays = velocityDays;
+        Plugin.Configuration.EnableUniversalis = uniOn;
         Plugin.Configuration.Save();
       }
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
+      ConfigWidgets.Hint("Universalis is community-uploaded market data. Scrooge reads two things from\n" +
+                         "it and never uploads anything: how fast an item sells on your world, which\n" +
+                         "fills in the pace for gear you've never sold - and your data center's settled\n" +
+                         "sales, which are consulted only when your own sale history is too thin to\n" +
+                         "price from. That second one can set a listing price: your own sales always\n" +
+                         "outrank it, and it only speaks when they're silent.\n\n" +
+                         "Off, Scrooge uses only what it has watched happen to you.");
+
+      if (uniOn)
       {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("...AND it should move within this many days. Judged from how long\n" +
-                         "the item sat listed before its last sale (captured going forward;\n" +
-                         "older sales have no sit time and get the benefit of the doubt).");
-        ImGui.EndTooltip();
-      }
-
-      ImGui.Spacing();
-      if (ImGui.TreeNode("Rules engine"))
-      {
-        ImGui.BeginGroup();
-        ImGui.Text("Seals-to-gil rate:");
-        ImGui.SameLine();
-        var sealRate = Plugin.Configuration.SealToGilRate;
-        ImGui.SetNextItemWidth(150);
-        if (ImGui.InputInt("##sealToGilRate", ref sealRate, 5, 25) && sealRate >= 0)
+        var trustDays = Plugin.Configuration.UniversalisTrustDays;
+        ImGui.SetNextItemWidth(120);
+        if (ImGui.SliderInt("Ignore data older than", ref trustDays, 1, 30, "%dd"))
         {
-          Plugin.Configuration.SealToGilRate = sealRate;
+          Plugin.Configuration.UniversalisTrustDays = trustDays;
           Plugin.Configuration.Save();
         }
-        ImGui.EndGroup();
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("Rough gil value per GC seal, used to score the turn-in exit against\n" +
-                           "gil exits. Placeholder until venture-return tracking measures the\n" +
-                           "real gil-per-venture number.");
-          ImGui.EndTooltip();
-        }
+        ConfigWidgets.Hint("Data nobody has uploaded since this long ago is treated as no data at all,\n" +
+                           "rather than as a stale number worth guessing from. Thin-market items stay\n" +
+                           "your call.");
 
-        ImGui.BeginGroup();
-        ImGui.Text("Review band (%):");
-        ImGui.SameLine();
-        var reviewBand = Plugin.Configuration.RoutingReviewBandPct;
-        ImGui.SetNextItemWidth(150);
-        if (ImGui.SliderInt("##routingReviewBand", ref reviewBand, 0, 50, "%d%%"))
+        var ttlHours = Plugin.Configuration.UniversalisCacheTtlHours;
+        ImGui.SetNextItemWidth(120);
+        if (ImGui.SliderInt("Ask again after", ref ttlHours, 1, 48, "%dh"))
         {
-          Plugin.Configuration.RoutingReviewBandPct = reviewBand;
+          Plugin.Configuration.UniversalisCacheTtlHours = ttlHours;
           Plugin.Configuration.Save();
         }
-        ImGui.EndGroup();
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("When two exits score within this band, the item goes to the Review\n" +
-                           "pile with both reasons shown instead of a confident guess.");
-          ImGui.EndTooltip();
-        }
-
-        ImGui.BeginGroup();
-        ImGui.Text("Venture bands:");
-        ImGui.SameLine();
-        ImGui.TextDisabled("tilt");
-        ImGui.SameLine();
-        var bandFull = Plugin.Configuration.VentureBandFull;
-        ImGui.SetNextItemWidth(70);
-        if (ImGui.InputInt("##ventureBandFull", ref bandFull, 0, 0) && bandFull >= 0)
-        {
-          Plugin.Configuration.VentureBandFull = bandFull;
-          Plugin.Configuration.Save();
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("turn in");
-        ImGui.SameLine();
-        var bandLow = Plugin.Configuration.VentureBandLow;
-        ImGui.SetNextItemWidth(70);
-        if (ImGui.InputInt("##ventureBandLow", ref bandLow, 0, 0) && bandLow >= 0)
-        {
-          Plugin.Configuration.VentureBandLow = bandLow;
-          Plugin.Configuration.Save();
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("panic");
-        ImGui.SameLine();
-        var bandPanic = Plugin.Configuration.VentureBandPanic;
-        ImGui.SetNextItemWidth(70);
-        if (ImGui.InputInt("##ventureBandPanic", ref bandPanic, 0, 0) && bandPanic >= 0)
-        {
-          Plugin.Configuration.VentureBandPanic = bandPanic;
-          Plugin.Configuration.Save();
-        }
-        ImGui.EndGroup();
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("Venture token stock thresholds, high to low.\n" +
-                           "Above 'tilt': GC competes on pure value.\n" +
-                           "Below 'tilt': borderline calls tilt to turn-in.\n" +
-                           "Below 'turn in': turn in unless the item is worth the floor x multiplier.\n" +
-                           "Below 'panic': turn in everything GC-eligible until stock recovers.");
-          ImGui.EndTooltip();
-        }
-
-        ImGui.TreePop();
-      }
-
-      ImGui.Spacing();
-      if (ImGui.TreeNode("Universalis almanac"))
-      {
-        var uniOn = Plugin.Configuration.EnableUniversalis;
-        if (ImGui.Checkbox("Use Universalis market data (home world)", ref uniOn))
-        {
-          Plugin.Configuration.EnableUniversalis = uniOn;
-          Plugin.Configuration.Save();
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("Community-crowdsourced sale velocity for items you have no history\n" +
-                           "on - fills the routing brain's velocity axis so never-sold gear gets\n" +
-                           "a real verdict instead of a coin flip. Advisor data only: it NEVER\n" +
-                           "sets a pinch or listing price. Offline = local evidence only.");
-          ImGui.EndTooltip();
-        }
-
-        if (uniOn)
-        {
-          var trustDays = Plugin.Configuration.UniversalisTrustDays;
-          ImGui.SetNextItemWidth(120);
-          if (ImGui.SliderInt("Trust data newer than", ref trustDays, 1, 30, "%dd"))
-          {
-            Plugin.Configuration.UniversalisTrustDays = trustDays;
-            Plugin.Configuration.Save();
-          }
-          ImGui.SameLine();
-          ImGui.TextDisabled("(?)");
-          if (ImGui.IsItemHovered())
-          {
-            ImGui.BeginTooltip();
-            ImGui.SetTooltip("Stale = unknown. Data last uploaded before this window is treated\n" +
-                             "as NO data - thin-market items stay human calls.");
-            ImGui.EndTooltip();
-          }
-
-          var ttlHours = Plugin.Configuration.UniversalisCacheTtlHours;
-          ImGui.SetNextItemWidth(120);
-          if (ImGui.SliderInt("Refetch after", ref ttlHours, 1, 48, "%dh"))
-          {
-            Plugin.Configuration.UniversalisCacheTtlHours = ttlHours;
-            Plugin.Configuration.Save();
-          }
-        }
-
-        ImGui.TreePop();
-      }
-
-      ImGui.Spacing();
-      if (ImGui.TreeNode("Slow-mover pressure"))
-      {
-        var pressureOn = Plugin.Configuration.SlowMoverPressureOptIn;
-        if (ImGui.Checkbox("Pressure slow listings during pinches", ref pressureOn))
-        {
-          Plugin.Configuration.SlowMoverPressureOptIn = pressureOn;
-          Plugin.Configuration.Save();
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-        {
-          ImGui.BeginTooltip();
-          ImGui.SetTooltip("Items that sat listed get judged by the 14-day MB history:\n" +
-                           "others are selling = your price is the blocker - the pinch cut deepens.\n" +
-                           "Nobody is buying = cutting destroys value - the item is flagged for\n" +
-                           "eviction in Triage with the router's verdict on where it should go.");
-          ImGui.EndTooltip();
-        }
-
-        if (pressureOn)
-        {
-          var afterDays = Plugin.Configuration.PressureAfterDays;
-          ImGui.SetNextItemWidth(120);
-          if (ImGui.SliderInt("Deepen after (days)", ref afterDays, 1, 14, "%dd"))
-          {
-            Plugin.Configuration.PressureAfterDays = afterDays;
-            Plugin.Configuration.Save();
-          }
-
-          var pct1 = Plugin.Configuration.PressureDeepenPct;
-          ImGui.SetNextItemWidth(120);
-          if (ImGui.SliderInt("Deepen by (%)", ref pct1, 1, 10, "%d%%"))
-          {
-            Plugin.Configuration.PressureDeepenPct = pct1;
-            Plugin.Configuration.Save();
-          }
-
-          var pct2 = Plugin.Configuration.PressureDeepenMaxPct;
-          ImGui.SetNextItemWidth(120);
-          if (ImGui.SliderInt("Deepen at 14d+ (%)", ref pct2, 1, 20, "%d%%"))
-          {
-            Plugin.Configuration.PressureDeepenMaxPct = pct2;
-            Plugin.Configuration.Save();
-          }
-
-          var evictDays = Plugin.Configuration.EvictAfterDays;
-          ImGui.SetNextItemWidth(120);
-          if (ImGui.SliderInt("Evict after (days, dead market)", ref evictDays, 7, 30, "%dd"))
-          {
-            Plugin.Configuration.EvictAfterDays = evictDays;
-            Plugin.Configuration.Save();
-          }
-        }
-
-        ImGui.TreePop();
+        // THE TTL IS ALSO A DELETE CUTOFF (registry reconcile, 2026-08-23):
+        // EnsureScope hands it to GetCommunityHistory as the prune line -
+        // lowering the slider destroys banked DC rows older than the new
+        // setting at the next scope load. Harmless by the schema's own
+        // argument (those rows were already invisible), but the player is
+        // told now.
+        ConfigWidgets.Hint("How long a fetched Universalis answer is reused before Scrooge asks again.\n\n" +
+                           "Shorter = fresher numbers and more calls to the service. Longer = fewer\n" +
+                           "calls, and a routing verdict can be built on a read this many hours old.\n" +
+                           "Nothing is refetched mid-run either way.\n\n" +
+                           "Lowering this also clears saved answers older than the new setting.");
       }
     }
   }
 
   private void DrawTimingTab()
   {
-    // --- Market Board Timings ---
+    // PRICING-BAR DRESS (registry reconcile, 2026-08-23): headers only - every
+    // tooltip on this tab was rewritten earlier tonight and stands as ruled.
+    SectionHeader("Board Timing");
+    ImGui.TextDisabled("How long Scrooge gives the market board to answer.");
+    ImGui.Spacing();
+
     float currentMBDelay = Plugin.Configuration.GetMBPricesDelayMS / 1000f;
-    ImGui.BeginGroup();
-    ImGui.Text("Price Check Delay (s):");
-    ImGui.SameLine();
-    ImGui.SetNextItemWidth(150);
-    if (ImGui.SliderFloat("###sliderMBDelay", ref currentMBDelay, 0.1f, 10f, "%.1f"))
+    if (ConfigWidgets.LabeledFloat("Price Check Delay (s):", "###sliderMBDelay", ref currentMBDelay, 0.1f, 10f, 150, "%.1f"))
     {
       Plugin.Configuration.GetMBPricesDelayMS = (int)(currentMBDelay * 1000);
       Plugin.Configuration.Save();
     }
-    ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("How long to wait before opening the market board price list.\n\n" +
-                       "Too low and prices may fail to load. Too high and pinching is slow.\n" +
-                       "Recommended: 3-4s. Reduce at your own risk!");
-      ImGui.EndTooltip();
-    }
+    // THE TOOLTIP AND THE DEFAULT AGREE (the mechanical pile, 3b). It recommended 3-4s
+    // over a knob that ships at 5.0s, so the settings screen advised against its own
+    // shipped value and a player following the advice was tightening a margin nobody
+    // had measured. The default is what it is; the tooltip says what that buys.
+    // "Skipped" was the wrong fate (registry reconcile, 2026-08-23): a board that
+    // never answers holds the item with a standing flag - it comes back to the
+    // player, it is not passed over. And the delay is only paid on a cache miss.
+    ConfigWidgets.Hint("How long to wait before opening the market board price list.\n\n" +
+                       "Ships at 5.0s - slow, and reliable on a loaded server. Too low and prices\n" +
+                       "fail to load and the item is held for you unpriced; too high and every\n" +
+                       "uncached item costs the difference. Lower it only if your runs never miss\n" +
+                       "a read.");
 
     float currentMBKeepOpenDelay = Plugin.Configuration.MarketBoardKeepOpenMS / 1000f;
-    ImGui.BeginGroup();
-    ImGui.Text("Keep Open Time (s):");
-    ImGui.SameLine();
-    ImGui.SetNextItemWidth(150);
-    if (ImGui.SliderFloat("###sliderMBKeepOpen", ref currentMBKeepOpenDelay, 0.1f, 10f, "%.1f"))
+    if (ConfigWidgets.LabeledFloat("Keep Open Time (s):", "###sliderMBKeepOpen", ref currentMBKeepOpenDelay, 0.1f, 10f, 150, "%.1f"))
     {
       Plugin.Configuration.MarketBoardKeepOpenMS = (int)(currentMBKeepOpenDelay * 1000);
       Plugin.Configuration.Save();
     }
-    ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("How long to keep the market board open while fetching prices.\n\n" +
-                       "Too low and price data may not fully load.\n" +
-                       "Recommended: 1-2s. Reduce at your own risk!");
-      ImGui.EndTooltip();
-    }
+    // THE LADDER OUTGREW THIS TOOLTIP (registry reconcile, 2026-08-23). The old text
+    // warned that a short wait truncates the read - pre-ladder truth. Today this is
+    // only the FIRST window of BoardReadLadder's four (retries hardcoded 3s/5s/10s,
+    // waits re-arm while pages land), so the knob's remaining tuning value is the two
+    // flat-wait gap paths the ladder doesn't cover (PinchRunExecutor post-pinch
+    // re-read, StandingOrchestrator reprice wait - named at BoardReadLadder.cs:16-17)
+    // plus recon's inter-item beat. 3.1: move those gaps onto the ladder, then delist
+    // this row the way the deep-cut guard went.
+    ConfigWidgets.Hint("How long to wait for prices on the first try.\n\n" +
+                       "Ships at 3.0s. If prices are still coming in when time runs out, Scrooge\n" +
+                       "just waits a bit longer, then tries again at 3, 5, and 10 seconds before\n" +
+                       "giving up - so a slow server costs time, not a bad read.\n\n" +
+                       "Also sets the pause between items during a recon run.");
+
+    SectionHeader("Humanization");
+    ImGui.TextDisabled("Randomness in the waits, so the timing doesn't look scripted.");
+    ImGui.Spacing();
 
     var enableJitter = Plugin.Configuration.EnableJitter;
     if (ImGui.Checkbox("Timing Humanization", ref enableJitter))
@@ -912,57 +651,58 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.EnableJitter = enableJitter;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Add random jitter into the pinch process timings");
-      ImGui.EndTooltip();
-    }
+    // THE SWITCH COVERS MORE THAN PINCH (registry reconcile, 2026-08-23): it also
+    // jitters recon's pacing and the bell reach - and imposes ApplyJitter's 1000ms
+    // floor, which makes the 600ms bell reach SLOWER most of the time (the intent,
+    // BellReach.cs:82-84). Hawk runs are deliberately unjittered; desynth humanizes
+    // itself through Pacing.Jitter and never reads this flag.
+    ConfigWidgets.Hint("Randomize the waits during pinch runs, recon runs, and the reach for the bell,\n" +
+                       "so the timing doesn't look scripted.\n\n" +
+                       "Every randomized wait is at least 1 second.\n" +
+                       "Desynth paces itself separately - this switch doesn't touch it.");
     if (Plugin.Configuration.EnableJitter)
     {
       float currentJitter = Plugin.Configuration.JitterMS / 1000f;
-      ImGui.BeginGroup();
-      ImGui.Text("Timing Jitter (s):");
-      ImGui.SameLine();
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderFloat("##timingJitter", ref currentJitter, 0.5f, 3.5f, "%.1f"))
+      if (ConfigWidgets.LabeledFloat("Timing Jitter (s):", "##timingJitter", ref currentJitter, 0.5f, 3.5f, 150, "%.1f"))
       {
         Plugin.Configuration.JitterMS = (int)(currentJitter * 1000);
         Plugin.Configuration.Save();
       }
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Random variance (±) added to the Price Check Delay and Keep Open Time.\n\n" +
-                         "Example: 1.0s jitter on a 4.0s delay → actual delay is 3.0s–5.0s.\n" +
-                         "Both timings are clamped to a minimum of 1s after jitter is applied.\n\n" +
-                         "Makes timing patterns look more natural.");
-        ImGui.EndTooltip();
-      }
+      // Scope and the 1s floor live on the Humanization tooltip above; this knob's
+      // only job is the width. The old text named two of the five jittered waits.
+      ConfigWidgets.Hint("How wide the randomness swings, plus or minus.\n\n" +
+                         "Example: 1.0s jitter on a 4.0s wait means anywhere from 3.0s to 5.0s.\n" +
+                         "Applies to every wait the Timing Humanization switch covers.");
     }
   }
 
   private void DrawOutputTab()
   {
-    // --- Server info bar ---
+    // PRICING-BAR DRESS (registry reconcile, 2026-08-23): headers only - every
+    // tooltip on this tab was rewritten earlier tonight and stands as ruled. The
+    // Ledger toggle leaves the chat columns for its own section: it is a
+    // recording switch, not a chat preference, and it was the odd man in a grid
+    // of chat lines.
+    SectionHeader("Server Info Bar");
     var dtrOn = Plugin.Configuration.EnableDtrToday;
     if (ImGui.Checkbox("Today's gil in the server info bar", ref dtrOn))
     {
       Plugin.Configuration.EnableDtrToday = dtrOn;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-      ImGui.SetTooltip("One glanceable number: today's total-gil delta. Click it to open the dashboard.");
+    // THE BAR HAS PRECONDITIONS (registry reconcile, 2026-08-23): it is a snapshot
+    // delta off Gil Tracking's daily buckets, so it needs EnableGilTracking on, and
+    // it hides itself without today's snapshot plus one earlier day to compare
+    // against - a fresh install shows nothing for a day and the checkbox looks broken.
+    ConfigWidgets.Hint("Puts today's gil change in the server info bar. Click it to open the dashboard.\n\n" +
+                       "'Today' is your local calendar day. The number only moves when a run records\n" +
+                       "your gil, so it needs Gil Tracking switched on - and it stays hidden until it\n" +
+                       "has an earlier day to compare against.");
     ImGui.Spacing();
 
-    // --- Chat Output ---
+    SectionHeader("Chat");
+    ImGui.TextDisabled("What a run says out loud while it works.");
+    ImGui.Spacing();
     ImGui.Columns(2, "##chatOutputColumns", false);
 
     bool chatErrors = Plugin.Configuration.ShowErrorsInChat;
@@ -971,15 +711,15 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.ShowErrorsInChat = chatErrors;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Show error messages in chat when an item is skipped.\n\n" +
-                       "Reasons include: price floor violations, no market board listings, or exceeding the max undercut cap.");
-      ImGui.EndTooltip();
-    }
+    // ITEM LINES ONLY (registry reconcile, 2026-08-23). The old text implied it gated
+    // errors generally, and cited the max-undercut cap - a reason that can no longer
+    // print (the guard is delisted, inert at its 100 default, gone in 3.1). Every
+    // orchestrator-level error is deliberately ungated: a run that breaks must say so.
+    ConfigWidgets.Hint("Chat lines about individual items the run couldn't price.\n\n" +
+                       "Covers: no legal ask above your floor, a board that came back with nothing,\n" +
+                       "and pricing errors on a single item.\n\n" +
+                       "Run-wide problems - a run that aborted, a view that wasn't open - always\n" +
+                       "print, whichever way this sits.");
 
     ImGui.NextColumn();
 
@@ -989,33 +729,16 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.ShowPriceAdjustmentsMessages = adjustmentsMessages;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Show a chat message each time an item's price is adjusted.\n\n" +
-                       "Displays the old price, new price, and percentage change with a clickable item link.");
-      ImGui.EndTooltip();
-    }
-
-    ImGui.NextColumn();
-
-    bool outlierMessages = Plugin.Configuration.ShowOutlierDetectionMessages;
-    if (ImGui.Checkbox("Show Outlier Detection", ref outlierMessages))
-    {
-      Plugin.Configuration.ShowOutlierDetectionMessages = outlierMessages;
-      Plugin.Configuration.Save();
-    }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Show a chat message when a bait listing is detected and skipped.\n\n" +
-                       "Displays the skipped price and the valid price being used instead.");
-      ImGui.EndTooltip();
-    }
+    // THREE KINDS OF LINE, ONE GATE (registry reconcile, 2026-08-23). The old text
+    // owned the repriced line only, but the same flag silences the Held line and the
+    // own-sales-fallback notice - the two lines that explain why NOTHING happened.
+    // The Ledger's counters increment from the pipeline, never from these printers,
+    // so chat off cannot skew the transcript.
+    ConfigWidgets.Hint("Chat lines about what happened to each item's price.\n\n" +
+                       "A repriced item shows the old price, the new one, and the percent change,\n" +
+                       "with a clickable link. Also covers items the run left alone on purpose and\n" +
+                       "items priced off your own past sales.\n\n" +
+                       "Vendor sales and the end-of-run summary print either way.");
 
     ImGui.NextColumn();
 
@@ -1025,47 +748,48 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.ShowRetainerNames = retainerNames;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Print the retainer's name in chat before processing their listings.\n\n" +
+    ConfigWidgets.Hint("Print the retainer's name in chat before processing their listings.\n\n" +
                        "Helpful for tracking which retainer's items are being adjusted.");
-      ImGui.EndTooltip();
-    }
-
-    ImGui.NextColumn();
-
-    var enablePinchRunLog = Plugin.Configuration.EnablePinchRunLog;
-    if (ImGui.Checkbox("Show Pinch Run Log", ref enablePinchRunLog))
-    {
-      Plugin.Configuration.EnablePinchRunLog = enablePinchRunLog;
-      Plugin.Configuration.Save();
-    }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Opens a separate window during auto-pinch that collects errors and warnings for review.\n\n" +
-                       "The log works independently of the chat settings above — errors and warnings\n" +
-                       "are always captured even when their chat messages are disabled.\n\n" +
-                       "The log auto-clears at the start of each run. Close the window when you're done reviewing.");
-      ImGui.EndTooltip();
-    }
 
     ImGui.Columns(1);
+
+    SectionHeader("The Ledger");
+    ImGui.TextDisabled("The run's written record.");
+    ImGui.Spacing();
+
+    // A RECORDING TOGGLE, NOT A WINDOW TOGGLE (registry reconcile, 2026-08-23). The
+    // old label said "Show" and the old text promised "errors and warnings are always
+    // captured" - but every write path early-returns when this is off (AddEntry, all
+    // four counters): nothing is recorded, there is no transcript to go back to. It
+    // also transcribes every errand now, and Rounds chapter instead of clearing.
+    var enableLedger = Plugin.Configuration.EnableLedger;
+    if (ImGui.Checkbox("Keep a run transcript (the Ledger)", ref enableLedger))
+    {
+      Plugin.Configuration.EnableLedger = enableLedger;
+      Plugin.Configuration.Save();
+    }
+    ConfigWidgets.Hint("Opens the Ledger when a run starts and records what happened to every item -\n" +
+                       "repriced, held, vendor-sold - plus the run's totals.\n\n" +
+                       "Switching this off doesn't just hide the window: nothing is recorded, and\n" +
+                       "there's no transcript to go back to afterwards.\n\n" +
+                       "A run on its own replaces the last transcript; during a Round each stage adds\n" +
+                       "a chapter instead, and the whole Round reads as one book.");
+
     #if DEBUG
-    // Debug-only: reset stored ETA average for testing first-run behavior
-    if (Plugin.Configuration.AvgMsPerItem > 0f)
+    // Debug-only: reset the learned pace for testing first-run behavior. Clears BOTH
+    // banks (ruled 2026-08-23) - it used to zero the overall pace only, so a "reset"
+    // Round still quoted its old per-stage ETAs and first-run testing wasn't.
+    if (Plugin.Configuration.AvgMsPerItem > 0f || Plugin.Configuration.AvgMsPerItemByStage.Count > 0)
     {
       ImGui.SameLine();
-      if (ImGui.SmallButton("Reset ETA"))
+      if (ImGui.SmallButton("Reset pace"))
       {
         Plugin.Configuration.AvgMsPerItem = 0f;
+        Plugin.Configuration.AvgMsPerItemByStage.Clear();
         Plugin.Configuration.Save();
       }
+      ConfigWidgets.Hint("Forget every learned pace - the overall ms/item and each Round stage's own.\n" +
+                         "The next run estimates from scratch, like a first install. Debug builds only.");
       ImGui.SameLine();
       ImGui.TextDisabled($"({Plugin.Configuration.AvgMsPerItem:F0}ms/item)");
     }
@@ -1074,50 +798,55 @@ public sealed class ConfigWindow : Window
 
   private void DrawGilTrackingTab()
   {
-    // --- Gil Tracking ---
+    // PRICING-BAR DRESS (registry reconcile, 2026-08-23): header + subheader; the
+    // tooltip was rewritten earlier tonight (e8a9bd4) and stands, gaining one
+    // line - the Rounds-tab freshness gate depends on this recorder (bffb8ca).
+    SectionHeader("Gil Tracking");
+    ImGui.TextDisabled("Scrooge's memory of your money.");
+    ImGui.Spacing();
+
     var enableGil = Plugin.Configuration.EnableGilTracking;
     if (ImGui.Checkbox("Gil Tracking", ref enableGil))
     {
       Plugin.Configuration.EnableGilTracking = enableGil;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Track sales, gil balances, and listing duration during pinch runs.\n\n" +
-                       "Adds ~1.5 seconds per retainer to view each retainer's sale history.\n" +
-                       "Data is shown in the Gil Dashboard (use the button below or /giltrack).");
-      ImGui.EndTooltip();
-    }
-
-    ImGui.Spacing();
-
-    ImGui.BeginGroup();
-    ImGui.Text("Stale Price Threshold:");
-    ImGui.SameLine();
-    int staleDays = Plugin.Configuration.StalePriceDays;
-    ImGui.SetNextItemWidth(150);
-    if (ImGui.SliderInt("##stalePriceDays", ref staleDays, 0, 100))
-    {
-      Plugin.Configuration.StalePriceDays = staleDays;
-      Plugin.Configuration.Save();
-    }
-    ImGui.SameLine();
-    ImGui.Text("days");
-    ImGui.EndGroup();
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-      ImGui.SetTooltip("Last sale prices older than this are dimmed in the Hawk Window.\n\n" +
-                       "Set to 0 to never mark prices as stale.");
+    // A PASSIVE RECORDER, NOT A RUN FEATURE (registry reconcile, 2026-08-23). The old
+    // text said "during pinch runs" - runs are a minority of the capture sites now
+    // (zone/logout/bell snapshots, purchases, quest/FATE/duty rewards, shop trades,
+    // chat-parsed sales). The one thing OFF never touches is the settled-sales tape:
+    // MarketBoardHandler banks every board packet ungated, so lane pricing survives.
+    // What OFF really costs: last_sale_prices freezes (own-sales fallback and
+    // melt/desynth valuations drift onto aging evidence), DtrToday starves, the
+    // dashboard silently goes stale. The 1.5s claim is exact (hardcoded 1500ms).
+    ConfigWidgets.Hint("Keeps a record of your money: what your retainers sell, what you spend and\n" +
+                       "earn everywhere else, how long your listings sit, and what your retainers\n" +
+                       "are holding.\n\n" +
+                       "Most of it records quietly in the background - quests, duties, market\n" +
+                       "purchases, shop trips. A pinch adds about a second and a half per retainer\n" +
+                       "to read that retainer's sale history.\n\n" +
+                       "Switching it off stops all of that: the dashboard keeps showing the last\n" +
+                       "numbers it had, the server bar's daily total goes quiet, pricing slowly\n" +
+                       "loses touch with what your own items sold for, and every round re-checks\n" +
+                       "prices no matter how fresh they are (this is what records when a price check\n" +
+                       "finished). Board prices are unaffected - those are read fresh every time.\n\n" +
+                       "The Gil Dashboard shows it all (button below, or /giltrack).");
 
     #if DEBUG
-    if (ImGui.SmallButton("Reset DB"))
+    // THE MOST DESTRUCTIVE CONTROL IN THE PLUGIN (guarded 2026-08-23): it drops every
+    // table sqlite_master names - the tape, decision receipts, transactions, all of
+    // it - then re-runs the legacy migration. A bare SmallButton under the checkbox
+    // was live ammunition for a mis-aimed click. Ctrl to arm, like its label says.
+    var ctrlHeld = ImGui.GetIO().KeyCtrl;
+    if (!ctrlHeld) ImGui.BeginDisabled();
+    if (ImGui.SmallButton("Reset DB (drops everything)"))
     {
       GilStorage.ResetDatabase();
     }
+    if (!ctrlHeld) ImGui.EndDisabled();
+    ConfigWidgets.Hint("Debug: drops every table - sales, receipts, transactions, all of it - and\n" +
+                       "re-runs the migration from the legacy backup. For testing migrations.\n" +
+                       "Hold Ctrl and click.");
     #endif
 
     if (ImGui.Button("Open Gil Dashboard"))
@@ -1127,7 +856,22 @@ public sealed class ConfigWindow : Window
   private void DrawRetainersTab()
   {
     // --- Retainers ---
-    ImGui.TextDisabled("Select which retainers are included during Auto Pinch.");
+    // PINCH-ONLY, AND SAY SO (registry reconcile, 2026-08-23). The old header -
+    // "included during Auto Pinch", fossil name and all - read as "Scrooge won't
+    // touch this retainer", which is false three ways: hawk parks in the first free
+    // retainer, recon does the same, and the standing leg navigates wherever the
+    // deck's items live. The fleet-capacity walk ignores the filter on purpose.
+    // ONE LINE IN THE UI, MECHANICS BEHIND THE (?) (Pricing-bar ruling, same
+    // night): skip-scope and the whitelist rule both live in the hover.
+    SectionHeader("Pinch Visits");
+    ImGui.TextDisabled("Which retainers the pinch run visits when it re-reads your board.");
+    ConfigWidgets.Hint("Unchecked retainers are skipped by the pinch only - Scrooge still visits them\n" +
+                       "when listing new items, when reading prices, and when repricing or pulling\n" +
+                       "their existing listings.\n\n" +
+                       "With every box checked, retainers you hire later are included automatically.\n" +
+                       "Uncheck even one and the selection becomes a fixed list - new retainers are\n" +
+                       "left out until you check them here.");
+    ImGui.Spacing();
     // Try to fetch retainer names from the RetainerList addon if available
     unsafe
     {
@@ -1166,9 +910,19 @@ public sealed class ConfigWindow : Window
       // Use fetched names if available, otherwise use stored names
       var namesToDisplay = retainerNameArray ?? [.. Plugin.Configuration.LastKnownRetainerNames];
 
+      // EDITS ONLY AGAINST A LIVE LIST (ruled 2026-08-23). Two writes below trust
+      // namesToDisplay's LENGTH and CONTENTS - the all-checked collapse and the
+      // whitelist materialization on the first uncheck. Against a stale cache both
+      // write the wrong selection (a cache of 3 vs 10 owned: check all 3 and the
+      // collapse enables all 10; uncheck one and a recently hired retainer is
+      // dropped from the materialized list). The cached view stays visible, but
+      // read-only - editing is a bell errand.
+      var editable = retainerNameArray != null;
+
       // Only display checkboxes if we have retainer names (either fetched or stored)
       if (namesToDisplay.Length > 0)
       {
+        if (!editable) ImGui.BeginDisabled();
         // Calculate column offset from longest retainer name + checkbox width + padding
         float maxNameWidth = 0;
         for (int i = 0; i < namesToDisplay.Length; i++)
@@ -1228,9 +982,11 @@ public sealed class ConfigWindow : Window
             ImGui.SameLine(columnOffset);
         }
 
+        if (!editable) ImGui.EndDisabled();
+
         if (retainerNameArray == null && !namesUpdated)
         {
-          ImGui.TextColored(ScroogeColors.Muted, "(Using cached retainer list - open retainer list to refresh)");
+          ImGui.TextColored(ScroogeColors.Muted, "(Showing the last list Scrooge saw - open your retainer list to edit)");
         }
       }
       else
@@ -1251,15 +1007,12 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.EnablePostPinchkey = enablePostPinchKey;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Hold a key while posting an item to automatically set the undercut price.\n\n" +
-                       "Saves time when listing new items — no need to manually check prices.");
-      ImGui.EndTooltip();
-    }
+    // THE SELL-PRICE PANEL, BOTH DOORS (registry reconcile, 2026-08-23): the panel
+    // opens for Put Up for Sale AND Adjust Price, and since 18064c4 the listener is
+    // named to it - the old "while posting an item" owned half the trigger.
+    ConfigWidgets.Hint("Hold the key when the sell price window opens - a new Put Up for Sale or an\n" +
+                       "Adjust Price on an existing listing - and Scrooge fills in the price for you\n" +
+                       "instead of you checking the board by hand.");
     ImGui.EndGroup();
 
     ImGui.BeginGroup();
@@ -1268,23 +1021,16 @@ public sealed class ConfigWindow : Window
       ImGui.Text("Post'n'Pinch Key:");
       ImGui.SameLine();
 
-      var postPinchKeyIndex = Array.IndexOf(_virtualKeyStrings, Plugin.Configuration.PostPinchKey.ToString());
+      var postPinchKey = Plugin.Configuration.PostPinchKey;
       ImGui.SetNextItemWidth(150);
-      if (ImGui.Combo("##postPinchKeyCombo", ref postPinchKeyIndex, _virtualKeyStrings, _virtualKeyStrings.Length))
+      if (ConfigWidgets.EnumCombo("##postPinchKeyCombo", ref postPinchKey, false))
       {
-        Plugin.Configuration.PostPinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[postPinchKeyIndex]);
+        Plugin.Configuration.PostPinchKey = postPinchKey;
         Plugin.Configuration.Save();
       }
 
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("The key to hold when posting an item to trigger auto-pricing.\n\n" +
+      ConfigWidgets.Hint("The key to hold when posting an item to trigger auto-pricing.\n\n" +
                          "Note: This key still performs its normal game function as well.");
-        ImGui.EndTooltip();
-      }
     }
     ImGui.EndGroup();
 
@@ -1295,40 +1041,30 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.EnablePinchKey = enablePinchKey;
       Plugin.Configuration.Save();
     }
-    ImGui.SameLine();
-    ImGui.TextDisabled("(?)");
-    if (ImGui.IsItemHovered())
-    {
-      ImGui.BeginTooltip();
-      ImGui.SetTooltip("Press a key to start auto-pinching all items on the current retainer.\n\n" +
-                       "Works from both the retainer list and individual sell list views.");
-      ImGui.EndTooltip();
-    }
+    // THE ROSTER PATH DOES EVERYONE (registry reconcile, 2026-08-23): the old text
+    // said "the current retainer" while the retainer-list path pinches every enabled
+    // retainer - the two sentences contradicted each other.
+    ConfigWidgets.Hint("Press the key to start a pinch without clicking the button.\n\n" +
+                       "On the retainer list it pinches every enabled retainer; on one retainer's\n" +
+                       "sell list it pinches just that retainer. Holding the key restarts the run\n" +
+                       "when the last one finishes.");
 
     ImGui.BeginGroup();
     if (enablePinchKey)
     {
-      ImGui.Text("Auto Pinch Key:");
+      ImGui.Text("Pinch Key:");
       ImGui.SameLine();
 
-      string currentKey = Plugin.Configuration.PinchKey.ToString();
-      var pinchKeyIndex = Array.IndexOf(_virtualKeyStrings, currentKey);
+      var pinchKey = Plugin.Configuration.PinchKey;
       ImGui.SetNextItemWidth(150);
-      if (ImGui.Combo("##pinchKeyCombo", ref pinchKeyIndex, _virtualKeyStrings, _virtualKeyStrings.Length))
+      if (ConfigWidgets.EnumCombo("##pinchKeyCombo", ref pinchKey, false))
       {
-        Plugin.Configuration.PinchKey = Enum.Parse<VirtualKey>(_virtualKeyStrings[pinchKeyIndex]);
+        Plugin.Configuration.PinchKey = pinchKey;
         Plugin.Configuration.Save();
       }
 
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("The key to press to start the auto-pinching process.\n\n" +
+      ConfigWidgets.Hint("The key that starts the pinch.\n\n" +
                          "Note: This key still performs its normal game function as well.");
-        ImGui.EndTooltip();
-      }
     }
     ImGui.EndGroup();
 
@@ -1354,15 +1090,14 @@ public sealed class ConfigWindow : Window
         Plugin.Configuration.Save();
       }
       ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Speak a custom phrase when all retainers have been processed.\n\n" +
-                         "Great for AFK pinching — you'll hear when everything is done.");
-        ImGui.EndTooltip();
-      }
+      // TTS is inherited upstream code, unused here; fix-or-retire is a 3.1 decision
+      // (registry reconcile, 2026-08-23). Text-only truths landed meanwhile: Enter
+      // commits the field (EnterReturnsTrue - click-away discards), pinch runs only.
+      ConfigWidgets.Hint("Speak a phrase out loud when a pinch has finished every retainer.\n\n" +
+                         "Only pinch runs speak - inside a Round this fires when the pinch stage\n" +
+                         "ends, not when the Round does.\n\n" +
+                         "Type your own phrase in the box and press Enter to save it - clicking\n" +
+                         "away discards the edit.");
 
       ImGui.BeginGroup();
       bool ttseach = Plugin.Configuration.TTSWhenEachDone;
@@ -1380,56 +1115,61 @@ public sealed class ConfigWindow : Window
         Plugin.Configuration.Save();
       }
       ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Speak a custom phrase after each retainer's listings are processed.\n\n" +
-                         "Useful for tracking progress when pinching multiple retainers.");
-        ImGui.EndTooltip();
-      }
+      // Known defect, banked for the 3.1 fix-or-retire ruling: in a multi-retainer
+      // pinch the Speak is Enqueued to the back while item steps are Inserted at the
+      // front, so "Each" fires N times in a row at the END of the run instead of per
+      // retainer. The tooltip says so rather than promising the intent.
+      ConfigWidgets.Hint("Speak a phrase out loud as retainers finish. Type your own phrase and\n" +
+                         "press Enter to save it - clicking away discards the edit.\n\n" +
+                         "Known quirk: in a multi-retainer pinch the announcements currently\n" +
+                         "bunch up at the end of the run instead of following each retainer.");
 
-      ImGui.BeginGroup();
-      ImGui.Text("TTS Volume:");
-      ImGui.SameLine();
       int volume = Plugin.Configuration.TTSVolume;
-      ImGui.SetNextItemWidth(150);
-      if (ImGui.SliderInt("##ttsVolumeAmount", ref volume, 1, 99))
+      if (ConfigWidgets.LabeledSlider("TTS Volume:", "##ttsVolumeAmount", ref volume, 1, 99, 150, suffix: "%"))
       {
         Plugin.Configuration.TTSVolume = volume;
         Plugin.Configuration.Save();
       }
-      ImGui.SameLine();
-      ImGui.Text("%");
-      ImGui.EndGroup();
-      ImGui.SameLine();
-      ImGui.TextDisabled("(?)");
-      if (ImGui.IsItemHovered())
-      {
-        ImGui.BeginTooltip();
-        ImGui.SetTooltip("Volume level for text-to-speech notifications.");
-        ImGui.EndTooltip();
-      }
+      ConfigWidgets.Hint("How loud the spoken lines are (1-99), as a share of the voice's own\n" +
+                         "volume. Your Windows volume still applies on top.");
     }
   }
 
-  /// <summary>Draws the Hawk Settings tab with Always Vendor and Ban lists.</summary>
+  /// <summary>
+  /// THE ITEM RULES TAB (renamed from "Hawk Settings" 2026-08-23): the Always Vendor
+  /// and Ban lists. The old name was hawk-scoped for lists that reach the router's
+  /// first two rules, every board pile, recon's work set, and the salvage scan -
+  /// these are the player's standing rules per item, not a run's settings.
+  /// </summary>
   private void DrawHawkSettingsTab()
   {
     var vendorIds = Plugin.Configuration.AlwaysVendorItemIds;
     var bannedIds = Plugin.Configuration.BannedItemIds;
     var itemSheet = Svc.Data.GetExcelSheet<Item>();
 
+    // INSTRUCTIONS FOR THE READER WHO HAS ITEMS (registry reconcile, 2026-08-23).
+    // Each list's explanation only drew on the EMPTY state - shown to the one
+    // player who didn't need it - and the vendor copy named the wrong gesture
+    // (there is no right-click in the Hawk window; the menu is on the bag while
+    // Hawk is open). Headers are unconditional now, lists sort by name, and a
+    // vanished item id degrades to its number instead of throwing the tab down.
+    // ONE LINE IN THE UI, MECHANICS BEHIND THE (?) (Pricing-bar ruling, same
+    // night): each list keeps a plain subheader; the full rule and the add
+    // gesture live in the hover.
     // --- Always Vendor list ---
     ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Amber);
     ImGui.Text("Always Vendor");
     ImGui.PopStyleColor();
     ImGui.Separator();
+    ImGui.TextDisabled("Straight to the vendor, never the market board.");
+    ConfigWidgets.Hint("Every Hawk run sells these to the vendor, picked or not, and the round skips\n" +
+                       "checking prices on them entirely.\n\n" +
+                       "To add one, right-click it in your bag and choose Always Vendor.");
+    ImGui.Spacing();
 
     if (vendorIds.Count == 0)
     {
-      ImGui.TextWrapped("No items set to always vendor. Right-click items in the Hawk Window to add them.");
+      ImGui.TextDisabled("No items set to always vendor.");
     }
     else
     {
@@ -1437,10 +1177,11 @@ public sealed class ConfigWindow : Window
 
       uint? vendorToRemove = null;
 
-      foreach (var itemId in vendorIds)
+      foreach (var itemId in SortedByName(vendorIds, itemSheet))
       {
-        var item = itemSheet.GetRow(itemId);
-        ImGui.Text(item.Name.ToString());
+        // Stored in the house convention: HQ is the item id plus one million.
+        var v = BellCommit.Decode(itemId);
+        ImGui.Text(Format.Hq(SheetName(itemSheet, v.ItemId), v.IsHq));
         ImGui.SameLine();
         if (ImGui.SmallButton($"Remove##{itemId}"))
           vendorToRemove = itemId;
@@ -1450,6 +1191,9 @@ public sealed class ConfigWindow : Window
       {
         vendorIds.Remove(vendorToRemove.Value);
         Plugin.Configuration.Save();
+        // Every context-menu mutation refreshes the Hawk window; the tab's exit
+        // door owes the same courtesy, or an open Hawk keeps the stale row.
+        Plugin.HawkWindow.RefreshInventory();
       }
     }
 
@@ -1462,9 +1206,16 @@ public sealed class ConfigWindow : Window
     ImGui.PopStyleColor();
     ImGui.Separator();
 
+    ImGui.TextDisabled("Scrooge leaves these alone.");
+    ConfigWidgets.Hint("They don't appear in the Hawk window, they're never listed or melted, and a\n" +
+                       "price pass walks past one that's already listed without touching it.\n\n" +
+                       "To add one, right-click it in your bag or on a retainer's sell list and choose\n" +
+                       "Ban from Scrooge, or use the Ban button on a Hawk row.");
+    ImGui.Spacing();
+
     if (bannedIds.Count == 0)
     {
-      ImGui.TextWrapped("No items are banned. Use the Ban button in the Hawk Window or right-click context menu to add items Scrooge should never reprice or list.");
+      ImGui.TextDisabled("No items are banned.");
     }
     else
     {
@@ -1472,10 +1223,11 @@ public sealed class ConfigWindow : Window
 
       uint? banToRemove = null;
 
-      foreach (var itemId in bannedIds)
+      foreach (var itemId in SortedByName(bannedIds, itemSheet))
       {
-        var item = itemSheet.GetRow(itemId);
-        ImGui.Text(item.Name.ToString());
+        // Stored in the house convention: HQ is the item id plus one million.
+        var v = BellCommit.Decode(itemId);
+        ImGui.Text(Format.Hq(SheetName(itemSheet, v.ItemId), v.IsHq));
         ImGui.SameLine();
         if (ImGui.SmallButton($"Unban##{itemId}"))
           banToRemove = itemId;
@@ -1485,42 +1237,209 @@ public sealed class ConfigWindow : Window
       {
         bannedIds.Remove(banToRemove.Value);
         Plugin.Configuration.Save();
+        Plugin.HawkWindow.RefreshInventory();
       }
     }
   }
 
-  private void DrawDesynthTab()
+  /// <summary>List entries in reading order - the raw HashSet is bucket order,
+  /// which reads as random and shuffles across reloads.</summary>
+  private static IEnumerable<uint> SortedByName(HashSet<uint> ids, Lumina.Excel.ExcelSheet<Item> sheet)
+    => ids.OrderBy(id => SheetName(sheet, BellCommit.Decode(id).ItemId), StringComparer.OrdinalIgnoreCase);
+
+  /// <summary>An id the sheet no longer knows degrades to its number instead of
+  /// throwing mid-draw (TryGetRow is the house style - see LedgerCache).</summary>
+  private static string SheetName(Lumina.Excel.ExcelSheet<Item> sheet, uint itemId)
+    => sheet.TryGetRow(itemId, out var row) ? row.Name.ToString() : $"(unknown item {itemId})";
+
+  /// <summary>
+  /// THE ROUNDS TAB (nee Ledger; ruled ledger stage 2a, renamed at the 2026-08-23
+  /// reconcile - the old name collided with the run-transcript window). The board
+  /// and the round it launches are one surface now - one launch control, four
+  /// stage boxes, one completion banner - and the knobs behind that surface had
+  /// been scattered into whichever tab they were born next to. This is their home;
+  /// new round knobs land here rather than wherever the code that reads them
+  /// happens to live.
+  /// </summary>
+  private void DrawRoundsTab()
   {
-    ImGui.TextWrapped("Hands-off desynthesis automation. Open Mutamix's Desynthesis menu in-game and the \"Desynth Preview\" overlay button will appear.");
+    // PRICING-BAR DRESS (registry reconcile, 2026-08-23). The old intro spoke
+    // "the ledger board" (a phrase that existed nowhere else in the codebase)
+    // and "the one launch control" (the player sees a button called Make the
+    // Rounds). Both hovers now obey the 08-02 strings ruling the gate's own
+    // in-window message already followed: say what happens, not the
+    // mechanism's pet names. "Floored at 1h" is gone from both - the slider
+    // minimums are already 1, so the code floor only defends JSON edits.
+    SectionHeader("Price Checks");
+    ImGui.TextDisabled("How fresh a price has to be before a round trusts it.");
     ImGui.Spacing();
 
-    var enable = Plugin.Configuration.EnableDesynthPreview;
-    if (ImGui.Checkbox("Show Desynth Preview launcher overlay", ref enable))
+    // "THE BOARD READ" WAS NEVER A BOARD READ (finding folded here by ruling):
+    // the clock is the completion stamp of the last all-retainer pinch that
+    // FINISHED - single-retainer pinches, recons, hawks, and aborted runs never
+    // stamp, and the stamp lands at run end. The hover says so in player words.
+    // THE GATE'S CLOCK LIVES IN THE GIL TRACKER (same pass): the stamp is only
+    // written by GilTracker.FinalizeRun behind EnableGilTracking - tracking off
+    // means every round re-checks forever. Documented by ruling; killing the
+    // master toggle outright is the 3.1 seed.
+    var repinchFloor = Plugin.Configuration.RepinchFloorHours;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderInt("Skip the price check if newer than (hours)", ref repinchFloor, 1, 12))
     {
-      Plugin.Configuration.EnableDesynthPreview = enable;
+      Plugin.Configuration.RepinchFloorHours = repinchFloor;
       Plugin.Configuration.Save();
     }
+    ConfigWidgets.Hint("A round opens by re-reading your retainers' prices. If the last full price\n"
+      + "check finished less than this many hours ago, the round skips that step and\n"
+      + "gets straight to work. Full means it visited every retainer and finished - a\n"
+      + "single-retainer check, a Look, or a cancelled run doesn't count.\n\n"
+      + "Needs Gil Tracking on - that's what records when a price check finished. With\n"
+      + "it off, every round re-checks prices no matter what this says.");
 
-    var yellow = Plugin.Configuration.YellowForSkillGain;
-    if (ImGui.Checkbox("Yellow tag for items still in skillup range", ref yellow))
+    var reconFresh = Plugin.Configuration.ReconFreshHours;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderInt("Looked-up prices stay good for (hours)", ref reconFresh, 1, 72))
     {
-      Plugin.Configuration.YellowForSkillGain = yellow;
+      Plugin.Configuration.ReconFreshHours = reconFresh;
       Plugin.Configuration.Save();
     }
+    ConfigWidgets.Hint("When Scrooge looks up an item's price, it writes the answer down. Inside this\n"
+      + "window, that written answer is trusted: the Look stage skips the item, listing\n"
+      + "it uses the noted price instead of opening the board again, and the router\n"
+      + "hears it when deciding the item's fate. Past this window the answer is old\n"
+      + "news - the Look stage re-reads the item, and listing it pays for a fresh board\n"
+      + "read. One number, both doors: fresh enough to skip re-reading is fresh enough\n"
+      + "to act on.");
+
+    SectionHeader("While Scrooge Is at a Retainer");
+    ImGui.TextDisabled("Extra work the price check can finish, instead of a second trip.");
+    ImGui.Spacing();
+
+    // THE VENDOR RIDER GETS ITS ROW (B1.1, ruled 08-21). It has defaulted ON since
+    // WALK unit 3 and it sells real items, and it had no knob anywhere - a seed that
+    // gates behaviour needs a knob a player can see, or the behaviour is a secret the
+    // settings screen is keeping. Default stays true; this only makes it visible.
+    // "STAGED" WAS FALSE (registry reconcile, 2026-08-23): rows ride two ways -
+    // hand-staged Vendor/Pull/Melt/Gc rows AND any untouched row whose natural
+    // pile is PullAndVendor at Unanimous confidence. The old hover hid the very
+    // thing a player would want to know: Scrooge sells on its own judgment here.
+    // The hover now carries all five truths: auto-rides on confidence, retrieves
+    // as well as sells (pull-for-melt/GC), never touches unsure rows, a
+    // skipped price check skips the rider too, and the Doman Enclave carve-out.
+    var vendorRider = Plugin.Configuration.PinchVendorRider;
+    if (ImGui.Checkbox("Sell and retrieve items during the price check", ref vendorRider))
+    {
+      Plugin.Configuration.PinchVendorRider = vendorRider;
+      Plugin.Configuration.Save();
+    }
+    ConfigWidgets.Hint("On: while Scrooge is at a retainer checking prices, it also clears that\n"
+      + "retainer's Pull & Vendor pile - items it is confident belong at the vendor go\n"
+      + "straight there, even ones you never touched, and anything you staged for\n"
+      + "melting or the Grand Company is pulled to your bags. Items Scrooge isn't sure\n"
+      + "about are never touched; those always wait for you.\n"
+      + "Off: all of it waits for the bell run instead. Nothing is lost either way -\n"
+      + "only whether it happens now or later.\n\n"
+      + "A round that skipped the price check skips this too. With the Doman Enclave\n"
+      + "floor, items held for the Enclave are only sold here if you staged them\n"
+      + "yourself.");
+  }
+
+  private void DrawDesynthTab()
+  {
+    // PRICING-BAR DRESS (registry reconcile, 2026-08-23): headers + one-line
+    // subheaders in the UI, mechanics behind the (?). The old intro paragraph
+    // also credited "Mutamix's Desynthesis menu" - Mutamix is the materia
+    // melding NPC; the launcher anchors to the game's Desynthesis item list
+    // (SalvageItemSelector), so the name is simply gone.
+    // THE LAUNCHER TOGGLE IS GONE (same ruling): it only ever hid the preview
+    // button on that list - rounds and the wizard showed the preview
+    // regardless - and no other overlay button in the plugin offers an
+    // opt-out. EnableDesynthPreview sits inert until 3.1 removes it.
+    SectionHeader("Desynthesis");
+    ImGui.TextDisabled("Scrooge melts the pile for you; the pace is yours to set.");
+    ImGui.Spacing();
 
     var pauses = Plugin.Configuration.DesynthHumanPauses;
-    if (ImGui.Checkbox("Inject random 3-8s pauses every 8-15 items (humanization)", ref pauses))
+    if (ImGui.Checkbox("Pause now and then, like a person would", ref pauses))
     {
       Plugin.Configuration.DesynthHumanPauses = pauses;
       Plugin.Configuration.Save();
     }
+    ConfigWidgets.Hint("Every 8 to 15 items, Scrooge stops for 3 to 8 seconds before carrying on.\n"
+      + "People pause; scripts don't. The pause is added on top of the pace below, so\n"
+      + "those items take a little longer.");
 
+    // THE RIDER RIDES THE MELT, NOT THE ROUND FRONT (registry reconcile,
+    // 2026-08-23). The old label said "front of a round" while the rider's only
+    // call site is FireMeltStage - melt sits immediately before the bell by the
+    // 07-25 ruling, so the coffers pop near the round's END and their contents
+    // join the pile about to be sorted. The label contradicted its own tooltip.
+    var openCoffers = Plugin.Configuration.OpenVentureCoffers;
+    if (ImGui.Checkbox("Open Venture Coffers before melting", ref openCoffers))
+    {
+      Plugin.Configuration.OpenVentureCoffers = openCoffers;
+      Plugin.Configuration.Save();
+    }
+    ConfigWidgets.Hint("Just before a round melts, any Venture Coffers in your bags are opened, one at\n"
+      + "a time, and what comes out joins the pile Scrooge is about to sort. Each one is\n"
+      + "named in the run log. Round-only - the manual desynth button never opens\n"
+      + "coffers. Scrooge skips it quietly if a run is already going or you have fewer\n"
+      + "than five free bag slots.");
+
+    // NO FALSE FLOOR (registry reconcile, 2026-08-23). The old grey line claimed
+    // "Floor: 1500 ms" - the slider min is 800 and the jitter floors at 1 ms
+    // (Pacing.Jitter). 1500 is the default, and lower is the player's judgment.
     var baseMs = Plugin.Configuration.DesynthPerActionBaseMs;
-    if (ImGui.SliderInt("Base inter-item delay (ms)", ref baseMs, 800, 4000))
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.SliderInt("Pace between items (ms)", ref baseMs, 800, 4000))
     {
       Plugin.Configuration.DesynthPerActionBaseMs = baseMs;
       Plugin.Configuration.Save();
     }
-    ImGui.TextDisabled("Floor: 1500 ms recommended. Lower values look more bot-like.");
+    ConfigWidgets.Hint("How long Scrooge waits between one melt and the next, in milliseconds. The\n"
+      + "real wait varies up to four-tenths of a second either side of this number, so\n"
+      + "it is never the same twice. 1500 is the default and a comfortable human pace -\n"
+      + "the lower you go, the faster and less human the run looks. That judgment is\n"
+      + "yours. A stack counts one melt per item in it.");
+
+    // The board freshness gate moved to the Ledger tab (stage 2a) - it is a knob
+    // about the ROUND's cadence, not about desynthesis, and it was only ever here
+    // because the fit check was born next to the melt.
+
+    // THE SKILLUP LECTURE LIVES IN THE HOVERS NOW (same dress pass). The old
+    // five-line wrapped paragraph was the ruling comment from Configuration.cs
+    // recited at the player; the three-thirds mechanism survives whole in the
+    // (?), shared word-for-word by both fields.
+    SectionHeader("Skill-up Worth");
+    ImGui.TextDisabled("What a yellow or red skill-up is worth to you, in gil.");
+    ImGui.Spacing();
+
+    const string skillupHover =
+      "These aren't really desynth settings - they are prices you set, and Scrooge\n"
+      + "uses them everywhere it decides an item's fate. When an item could give you a\n"
+      + "skill-up, melting it is priced at your number, and that price competes against\n"
+      + "everything else the item could be worth: what it actually sells for, what a\n"
+      + "Grand Company pays in seals. A sale comfortably above your number wins the\n"
+      + "market; below it, the melter wins; near it, Scrooge won't guess - the row\n"
+      + "lands in Review for you to call. Red skill-ups are rarer than yellow, so most\n"
+      + "people set red higher - Scrooge honors whatever you enter.";
+
+    var worthYellow = Plugin.Configuration.SkillupWorthYellow;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.InputInt("Yellow skillup worth (gil)", ref worthYellow, 0, 0))
+    {
+      Plugin.Configuration.SkillupWorthYellow = Math.Max(0, worthYellow);
+      Plugin.Configuration.Save();
+    }
+    ConfigWidgets.Hint(skillupHover);
+
+    var worthRed = Plugin.Configuration.SkillupWorthRed;
+    ImGui.SetNextItemWidth(150);
+    if (ImGui.InputInt("Red skillup worth (gil)", ref worthRed, 0, 0))
+    {
+      Plugin.Configuration.SkillupWorthRed = Math.Max(0, worthRed);
+      Plugin.Configuration.Save();
+    }
+    ConfigWidgets.Hint(skillupHover);
   }
 }

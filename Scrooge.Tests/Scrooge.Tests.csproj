@@ -23,17 +23,190 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <!-- The config-shape guard runs the REAL serializer Dalamud persists with
+         (Newtonsoft, TypeNameHandling.Objects). Renaming a persisted class is the
+         one refactor that can take a player's whole settings file down, and the
+         only way to know it hasn't is to make the serializer say so. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" PrivateAssets="all" />
+    <!-- Migration idempotency test runs the real V19 DDL against a temp SQLite DB. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The undercut write styles and their one-way fold off the retired Percentage
+         mode (doctrine sweep, 2026-08-15). Linked because the fold guards a failure
+         nobody sees until a config in the wild loads. -->
+    <Compile Include="..\Scrooge\UndercutMode.cs" Link="Linked\UndercutMode.cs" />
+    <!-- V45 (08-16): the stance a price was written under, as one banked tag. Linked
+         because the grammar IS the contract with the 4.0 reader - a key that gets
+         renamed or reordered splits a tally, and nothing but a pin catches that. -->
+    <Compile Include="..\Scrooge\UndercutPosture.cs" Link="Linked\UndercutPosture.cs" />
     <Compile Include="..\Scrooge\RoutingModels.cs" Link="Linked\RoutingModels.cs" />
     <Compile Include="..\Scrooge\PricingItem.cs" Link="Linked\PricingItem.cs" />
     <Compile Include="..\Scrooge\ListingAccounting.cs" Link="Linked\ListingAccounting.cs" />
+    <Compile Include="..\Scrooge\SealRunway.cs" Link="Linked\SealRunway.cs" />
     <Compile Include="..\Scrooge\RoutingRules.cs" Link="Linked\RoutingRules.cs" />
-    <Compile Include="..\Scrooge\ListingGate.cs" Link="Linked\ListingGate.cs" />
+    <Compile Include="..\Scrooge\BoardPiles.cs" Link="Linked\BoardPiles.cs" />
+    <Compile Include="..\Scrooge\BoardConfidence.cs" Link="Linked\BoardConfidence.cs" />
+    <Compile Include="..\Scrooge\StandingReAsk.cs" Link="Linked\StandingReAsk.cs" />
+    <Compile Include="..\Scrooge\DeferPile.cs" Link="Linked\DeferPile.cs" />
+    <!-- The ruled ledger's board (stage 1): the call-state model, pile grouping,
+         header aggregation, and the say-the-shared-reason-once rule. -->
+    <Compile Include="..\Scrooge\BoardLayout.cs" Link="Linked\BoardLayout.cs" />
+    <Compile Include="..\Scrooge\RunLogLines.cs" Link="Linked\RunLogLines.cs" />
+    <!-- Movement 1 (2026-08-13): the run log's voice. Every sentence the log speaks
+         is composed here, so the wording has exactly one place to be red-penned and
+         exactly one place to be pinned. -->
+    <Compile Include="..\Scrooge\RunLogVoice.cs" Link="Linked\RunLogVoice.cs" />
+    <!-- Movement 2 (2026-08-13): the state-first board. The sentence every hinge
+         pane opens with - where the item IS - before it offers a single exit. -->
+    <Compile Include="..\Scrooge\BoardStateLine.cs" Link="Linked\BoardStateLine.cs" />
+    <Compile Include="..\Scrooge\BoardListings.cs" Link="Linked\BoardListings.cs" />
+    <!-- The ruled ledger's On Market tab (stage 3): what "still listed" can honestly
+         be derived from banked receipts, and the passive freshness piggyback. -->
+    <Compile Include="..\Scrooge\OnMarket.cs" Link="Linked\OnMarket.cs" />
+    <Compile Include="..\Scrooge\RouteTagMap.cs" Link="Linked\RouteTagMap.cs" />
+    <!-- The board mirror (08-22): the last-seen board + banked tape as the triage
+         case's raw-evidence view, badges reconstructed from the walk's own banked
+         counts. Linked because the badge geometry and the header strings are pinned. -->
+    <Compile Include="..\Scrooge\BoardMirror.cs" Link="Linked\BoardMirror.cs" />
+    <Compile Include="..\Scrooge\QueueDoctrine.cs" Link="Linked\QueueDoctrine.cs" />
     <Compile Include="..\Scrooge\DesynthSkillupColor.cs" Link="Linked\DesynthSkillupColor.cs" />
+    <!-- How gil is written for the layers with no window - the spine composes its
+         own prose, and the separators it uses are what the voice tests pin. -->
+    <Compile Include="..\Scrooge\MoneyText.cs" Link="Linked\MoneyText.cs" />
+    <Compile Include="..\Scrooge\LanePricing.cs" Link="Linked\LanePricing.cs" />
+    <!-- The vendor price floor, once (review pricing item 1, 2026-08-16). Four sites
+         spelled the None/Vendor/Doman rule themselves; the Doman doubling drifting
+         between the pinch and the Ledger's preview is what the link pins against. -->
+    <Compile Include="..\Scrooge\PriceFloor.cs" Link="Linked\PriceFloor.cs" />
+    <!-- What the pricing pass SAYS (review pricing split, 2026-08-16). The hold
+         sentences are the rows a player comes back to, and they used to sit as private
+         statics wedged between unsafe addon reads where nothing could reach them. -->
+    <Compile Include="..\Scrooge\PricingVoice.cs" Link="Linked\PricingVoice.cs" />
+    <!-- The pricing spine, minus the game (08-02): segment -> lane -> community ->
+         velocity -> rails -> Decide -> clamp, one composition for the pinch and
+         the ledger's relist preview both. -->
+    <Compile Include="..\Scrooge\LaneEvaluation.cs" Link="Linked\LaneEvaluation.cs" />
+    <Compile Include="..\Scrooge\RowMemoir.cs" Link="Linked\RowMemoir.cs" />
+    <!-- The rich detail pane (item 9): the four-score arithmetic in words, and
+         the receipt trail's selection, ordering and stamps. -->
+    <Compile Include="..\Scrooge\BoardDetail.cs" Link="Linked\BoardDetail.cs" />
+    <Compile Include="..\Scrooge\RegimeSegment.cs" Link="Linked\RegimeSegment.cs" />
+    <Compile Include="..\Scrooge\StandingMemory.cs" Link="Linked\StandingMemory.cs" />
+    <Compile Include="..\Scrooge\RunLifecycle.cs" Link="Linked\RunLifecycle.cs" />
+    <Compile Include="..\Scrooge\MarketEvents.cs" Link="Linked\MarketEvents.cs" />
+    <Compile Include="..\Scrooge\DecisionReceipts.cs" Link="Linked\DecisionReceipts.cs" />
+    <Compile Include="..\Scrooge\ReceiptGrading.cs" Link="Linked\ReceiptGrading.cs" />
+    <!-- The dashboard's refresh cadence (stability sweep, 2026-08-16). Linked because
+         "how often does this tab hit SQLite" is a rule, and it was previously spelled
+         four different ways inside ImGui draw methods where nothing could reach it. -->
+    <Compile Include="..\Scrooge\Windows\TabCache.cs" Link="Linked\TabCache.cs" />
+    <!-- The table_info reads every migration opens with, written once. -->
+    <Compile Include="..\Scrooge\SchemaGuards.cs" Link="Linked\SchemaGuards.cs" />
+    <Compile Include="..\Scrooge\GilStorageBootstrap.cs" Link="Linked\GilStorageBootstrap.cs" />
+    <Compile Include="..\Scrooge\MarketMemorySchema.cs" Link="Linked\MarketMemorySchema.cs" />
+    <Compile Include="..\Scrooge\RoutingReceiptSchema.cs" Link="Linked\RoutingReceiptSchema.cs" />
+    <!-- V46 (08-16): the ruling's link to the receipt it ruled against. Its own file
+         for the same reason every other table's widenings have one - one table, one
+         schema class, testable against real SQL. -->
+    <Compile Include="..\Scrooge\RoutingOverrideSchema.cs" Link="Linked\RoutingOverrideSchema.cs" />
+    <!-- Every relative duration the plugin speaks (polish pass, 2026-08-16). Four
+         formatters in four files, four grammars that genuinely disagree - linked
+         because the strings are the contract and the disagreements are pinned. -->
+    <Compile Include="..\Scrooge\Durations.cs" Link="Linked\Durations.cs" />
+    <Compile Include="..\Scrooge\RipenessSensors.cs" Link="Linked\RipenessSensors.cs" />
+    <Compile Include="..\Scrooge\FitCheck.cs" Link="Linked\FitCheck.cs" />
+    <Compile Include="..\Scrooge\RoundPlan.cs" Link="Linked\RoundPlan.cs" />
+    <Compile Include="..\Scrooge\BellPlan.cs" Link="Linked\BellPlan.cs" />
+    <!-- Invariant B (unit 5 addendum): the act half executes exactly what was ruled -
+         the hinge's commit snapshot and the one declared exception to it. -->
+    <Compile Include="..\Scrooge\BellCommit.cs" Link="Linked\BellCommit.cs" />
+    <Compile Include="..\Scrooge\GatePlan.cs" Link="Linked\GatePlan.cs" />
+    <!-- The ruled ledger's launch strip (stage 2a): the per-run stage skips, the
+         one launch control's refusal reason, and the completion banner's tally. -->
+    <Compile Include="..\Scrooge\LaunchStrip.cs" Link="Linked\LaunchStrip.cs" />
+    <Compile Include="..\Scrooge\FlowPlan.cs" Link="Linked\FlowPlan.cs" />
+    <Compile Include="..\Scrooge\StageRail.cs" Link="Linked\StageRail.cs" />
+    <!-- The run-pace learning model (windows item 12, 2026-08-16). It was two
+         hand-written EMA blends inside the Ledger window's end-of-run method with
+         the 0.7/0.3 weights spelled twice; linked so the arithmetic that decides
+         every quoted ETA is pinned rather than eyeballed. -->
+    <Compile Include="..\Scrooge\PaceBank.cs" Link="Linked\PaceBank.cs" />
+    <!-- Unit 5: the Accountant's pure half - where an entry point lands, what the
+         right pane is showing, and whether the hinge's Continue may be pressed. -->
+    <Compile Include="..\Scrooge\AccountantPlan.cs" Link="Linked\AccountantPlan.cs" />
+    <!-- SF-P1 (2026-08-15): what the IDLE Rounds screen says - the plan verticalized
+         into stage rows, the one waiting-decisions count, and the last round's tally
+         (with the struct that makes it survive the idle boundary). -->
+    <Compile Include="..\Scrooge\IdlePlan.cs" Link="Linked\IdlePlan.cs" />
+    <!-- Task 2 (2026-08-15): the triage walk's pure layer. The pages a hinge arrival
+         composes into, and the tribunal case a Bag Call draws - including every
+         sentence the case speaks, which is the surface the live shake red-pens. -->
+    <Compile Include="..\Scrooge\TriageWalk.cs" Link="Linked\TriageWalk.cs" />
+    <Compile Include="..\Scrooge\TriageCase.cs" Link="Linked\TriageCase.cs" />
+    <!-- Task 3's seam: the board speaks RoutingExit, the walk speaks BoardPile, and
+         every translation between them (plus the provenance and referral rules the
+         case's honesty rests on) is pinned here rather than written inside an ImGui
+         method where nothing can reach it. -->
+    <Compile Include="..\Scrooge\TriageBridge.cs" Link="Linked\TriageBridge.cs" />
+    <Compile Include="..\Scrooge\PortPlan.cs" Link="Linked\PortPlan.cs" />
+    <Compile Include="..\Scrooge\StandingBook.cs" Link="Linked\StandingBook.cs" />
+    <!-- The weekly venture-burn measure: the bracketed window and its coverage gate. -->
+    <Compile Include="..\Scrooge\VentureBurn.cs" Link="Linked\VentureBurn.cs" />
+    <!-- V42 (08-15): the venture stamp. The category derivation and the stamped-only
+         seals-to-gil rate that replaced the retired VentureTokensPerVenture knob, plus
+         the migration that widened the table - linked because "NULL is never imputed"
+         is a rule about arithmetic and a rule about columns, and both are pinnable. -->
+    <Compile Include="..\Scrooge\VentureStamp.cs" Link="Linked\VentureStamp.cs" />
+    <Compile Include="..\Scrooge\VentureReturnsSchema.cs" Link="Linked\VentureReturnsSchema.cs" />
+    <!-- V43 (08-15): the seals' other exit. The coffer_pulls table and the bag-count
+         move that arms its capture - linked because "unreadable is not zero" is the
+         rule standing between a zone change and a phantom pull, and it is pinnable
+         without a game. Nothing reads these rows until 3.1 (let the data bake). -->
+    <Compile Include="..\Scrooge\CofferPullSchema.cs" Link="Linked\CofferPullSchema.cs" />
+    <Compile Include="..\Scrooge\CofferPullPairing.cs" Link="Linked\CofferPullPairing.cs" />
+    <Compile Include="..\Scrooge\MeltPrior.cs" Link="Linked\MeltPrior.cs" />
+    <Compile Include="..\Scrooge\StandingBookSchema.cs" Link="Linked\StandingBookSchema.cs" />
+    <Compile Include="..\Scrooge\SaleHistorySchema.cs" Link="Linked\SaleHistorySchema.cs" />
+    <!-- V39: recon's banked decision per (item, quality), plus the ONE definition
+         of fresh that both the recon filter and the cached post read. -->
+    <Compile Include="..\Scrooge\DecisionCache.cs" Link="Linked\DecisionCache.cs" />
+    <!-- Unit 3: the gate that decides whether the act leg spends a banked decision
+         or pays the board again, and the panel veto's arithmetic behind its seam. -->
+    <Compile Include="..\Scrooge\CachedPost.cs" Link="Linked\CachedPost.cs" />
+    <!-- V31: the pull-for-X ruling that survives the retainer->bag crossing. -->
+    <Compile Include="..\Scrooge\PullIntentSchema.cs" Link="Linked\PullIntentSchema.cs" />
+    <!-- V32: answered contests grade the flags (upheld / overruled / dismissed). -->
+    <Compile Include="..\Scrooge\ContestReceiptSchema.cs" Link="Linked\ContestReceiptSchema.cs" />
+    <!-- The V29 community-history round-trip: the DC evidence the list score
+         reads, banked so a reload stops costing it. -->
+    <Compile Include="..\Scrooge\CommunityHistorySchema.cs" Link="Linked\CommunityHistorySchema.cs" />
+    <Compile Include="..\Scrooge\Spine.cs" Link="Linked\Spine.cs" />
+    <!-- The 07-26 grace/reach/transcript trio: every decision pure, every sensor Dalamud. -->
+    <Compile Include="..\Scrooge\BellReach.cs" Link="Linked\BellReach.cs" />
+    <Compile Include="..\Scrooge\RunLogCarry.cs" Link="Linked\RunLogCarry.cs" />
+    <!-- V40 (unit 4): the Round's header + banked transcript, the supersede rule, the
+         Look checkpoint and the resume line. The store is linked as well as the pure
+         decisions - the cap and the eviction are worth proving against real SQL. -->
+    <Compile Include="..\Scrooge\RoundLog.cs" Link="Linked\RoundLog.cs" />
+    <!-- The transcript's row grammar and its two translations (review ruling S12): the
+         log row types never touched ImGui, and parking them in the Ledger window was
+         the only reason the flatten/restore mapping - and the per-row write stamp the
+         per-stage durations derive from - could not be pinned here. -->
+    <Compile Include="..\Scrooge\RunLogEntries.cs" Link="Linked\RunLogEntries.cs" />
+    <Compile Include="..\Scrooge\WalletHalt.cs" Link="Linked\WalletHalt.cs" />
+    <!-- The halt's twin at PLAN time: the same wallet read, asked before the errand. -->
+    <Compile Include="..\Scrooge\SealFit.cs" Link="Linked\SealFit.cs" />
+    <Compile Include="..\Scrooge\VendorRider.cs" Link="Linked\VendorRider.cs" />
+    <Compile Include="..\Scrooge\CofferLogic.cs" Link="Linked\CofferLogic.cs" />
+    <!-- The melt scale's price ladder: the V27 table, the worklist, and the
+         valuation SQL that reads them (local -> community -> deliberate zero). -->
+    <Compile Include="..\Scrooge\MeltYieldPrices.cs" Link="Linked\MeltYieldPrices.cs" />
+    <Compile Include="..\Scrooge\DesynthYield.cs" Link="Linked\DesynthYield.cs" />
+    <Compile Include="..\Scrooge\DesynthYieldStore.cs" Link="Linked\DesynthYieldStore.cs" />
   </ItemGroup>
 
 </Project>

@@ -30,6 +30,11 @@ internal static class ScroogeColors
   internal static readonly Vector4 TagGreen  = new(0.45f, 0.85f, 0.45f, 1f);
   internal static readonly Vector4 TagFlag   = new(0.85f, 0.65f, 0.30f, 1f); // protected/flagged items
 
+  /// <summary>The count of protected items standing under a destructive press - a
+  /// softer red than <see cref="Spent"/>, because it warns about a click rather than
+  /// reporting gil that already left.</summary>
+  internal static readonly Vector4 Protected = new(1.00f, 0.45f, 0.45f, 1f);
+
   /// <summary>Earned for zero-or-positive deltas, Spent for negative.</summary>
   internal static Vector4 ForDelta(long delta) => delta >= 0 ? Earned : Spent;
 }

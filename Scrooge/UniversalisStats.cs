@@ -34,7 +34,7 @@ internal static class UniversalisStats
   private static CancellationTokenSource? _cts;
   private static Task? _worker;
 
-  /// <summary>Seconds between fetch rounds — lets a UI sweep accumulate one batch.</summary>
+  /// <summary>Seconds between fetch rounds — lets a UI round accumulate one batch.</summary>
   private const double DebounceSeconds = 1.5;
   /// <summary>Back-off after a failed fetch — no hammering an unreachable API.</summary>
   private const int BackoffSeconds = 300;
@@ -42,10 +42,26 @@ internal static class UniversalisStats
   /// <summary>Bumped when fetched data lands — open windows re-evaluate on change.</summary>
   internal static int Version { get; private set; }
 
-  /// <summary>Items queued or in flight — the UI's "checking N items" count.</summary>
+  /// <summary>Items queued or in flight — the UI's "checking N lookups" count.</summary>
   internal static int PendingCount
   {
     get { lock (Lock) return Queue.Count + InFlight.Count; }
+  }
+
+  /// <summary>Seconds until a failed round's back-off lifts. 0 when healthy.</summary>
+  internal static int BackoffRemainingSeconds
+  {
+    get
+    {
+      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      lock (Lock) return (int)Math.Max(0, _backoffUntil - now);
+    }
+  }
+
+  /// <summary>An almanac ask is still out for this item — the row's fetch tell. Read-only.</summary>
+  internal static bool IsPending(uint itemId)
+  {
+    lock (Lock) return Queue.Contains(itemId) || InFlight.Contains(itemId);
   }
 
   internal static void Initialize() => _cts = new CancellationTokenSource();
@@ -80,7 +96,7 @@ internal static class UniversalisStats
       if (!Cache.TryGetValue(itemId, out var row)
           || now - row.FetchedAt > (long)cfg.UniversalisCacheTtlHours * 3600)
       {
-        Enqueue(itemId, now);
+        Enqueue(itemId);
         return null;
       }
 
@@ -99,9 +115,10 @@ internal static class UniversalisStats
   /// <summary>Home world id, or null when the player isn't loaded yet.</summary>
   private static uint? HomeWorldId()
   {
-    if (!ECommons.GameHelpers.Player.Available)
+    if (!ECommons.GameHelpers.Player.Available
+        || ECommons.GameHelpers.Player.Object is not { } player)
       return null;
-    var world = ECommons.GameHelpers.Player.Object.HomeWorld.RowId;
+    var world = player.HomeWorld.RowId;
     return world != 0 ? world : null;
   }
 
@@ -133,10 +150,14 @@ internal static class UniversalisStats
     }
   }
 
-  /// <summary>Queues one item for fetch. Caller holds Lock.</summary>
-  private static void Enqueue(uint itemId, long now)
+  /// <summary>
+  /// Queues one item for fetch. Caller holds Lock. Back-off delays the WORKER,
+  /// never the queue — an ask made while Universalis is down waits its turn
+  /// instead of vanishing (the 08-06 silent-drop class).
+  /// </summary>
+  private static void Enqueue(uint itemId)
   {
-    if (now < _backoffUntil || InFlight.Contains(itemId))
+    if (InFlight.Contains(itemId))
       return;
 
     Queue.Add(itemId);
@@ -159,6 +180,17 @@ internal static class UniversalisStats
     while (!token.IsCancellationRequested)
     {
       await Task.Delay(TimeSpan.FromSeconds(DebounceSeconds), token).ConfigureAwait(false);
+
+      // A failed round parks the worker, not the queue: sleep out the back-off
+      // with the ids still banked, then fetch as normal.
+      long wait;
+      lock (Lock)
+        wait = _backoffUntil - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+      if (wait > 0)
+      {
+        await Task.Delay(TimeSpan.FromSeconds(Math.Min(wait, BackoffSeconds)), token).ConfigureAwait(false);
+        continue;
+      }
 
       uint world;
       List<uint> ids;
@@ -186,9 +218,17 @@ internal static class UniversalisStats
       }
       catch (Exception ex)
       {
+        // The ids go BACK IN LINE — dropped-at-dequeue plus a failure used to
+        // orphan the whole batch until some future re-score happened to re-ask.
         lock (Lock)
+        {
           _backoffUntil = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + BackoffSeconds;
-        Svc.Log.Debug($"[Universalis] fetch failed ({ids.Count} items), backing off {BackoffSeconds}s: {ex.Message}");
+          foreach (var id in ids)
+            Queue.Add(id);
+        }
+        // Warning, not Debug: a failed round is exactly the moment the black
+        // box needs to say something out loud.
+        Svc.Log.Warning($"[Universalis] fetch failed ({ids.Count} items) — re-queued, retrying in {BackoffSeconds}s: {ex.Message}");
       }
 
       if (stats is not null)
@@ -206,7 +246,7 @@ internal static class UniversalisStats
   /// <summary>
   /// Lands one fetch round: SQLite upsert + memory cache + Version tick.
   /// Requested ids missing from the response are cached as "known nothing"
-  /// so they don't re-queue every sweep. Framework thread.
+  /// so they don't re-queue every round. Framework thread.
   /// </summary>
   private static void Land(uint world, List<uint> requested, List<UniversalisStat> stats)
   {
