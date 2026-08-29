@@ -205,6 +205,9 @@ internal static class RoutingInputService
     {
       if (s.Attempts <= 0) continue;
       if (!sheet.TryGetRow(s.SourceItemId, out var row)) continue;
+      // Gear only: fish yields are trash (ruled 2026-08-28) and must not
+      // drag down the band average gear is scored against.
+      if (row.EquipSlotCategory.RowId == 0) continue;
       observations.Add(new MeltObservation((int)row.LevelItem.RowId, s.Attempts, s.YieldValue));
     }
     return MeltPriorTable.Build(observations);
@@ -234,10 +237,14 @@ internal static class RoutingInputService
     DesynthSkillupColor? color = null;
     var isDesynthable = item.Desynth != 0;
     var repairClass = (byte)item.ClassJobRepair.RowId;
-    if (isEquipment && repairClass != 0 && isDesynthable)
+    // Any desynthable with a repair class grades — fish carry CUL and grant
+    // skill the same as gear (the old isEquipment gate structurally zeroed
+    // skillup worth out of every fish's melt score).
+    if (repairClass != 0 && isDesynthable)
       color = DesynthSkillup.Classify(
         GameSafe.GetDesynthLevel(repairClass),
-        (int)item.LevelItem.RowId);
+        (int)item.LevelItem.RowId,
+        GameSafe.MaxDesynthLevel());
 
     // Universalis almanac — marketable items only (untradable gear has no
     // market to ask about). A cache miss queues an async fetch; this batch
@@ -327,7 +334,9 @@ internal static class RoutingInputService
       // The prior rides along for EVERY desynthable item; the rules engine is the
       // one place that decides it only speaks where item history is silent, so the
       // precedence lives at one seam instead of two.
-      MeltBandPrior = isDesynthable ? batch.MeltPriors?.For((int)item.LevelItem.RowId) : null,
+      // Equipment only: the band table is gear knowledge, and the rules
+      // engine refuses a fish-borrowed prior anyway - don't attach one.
+      MeltBandPrior = isEquipment && isDesynthable ? batch.MeltPriors?.For((int)item.LevelItem.RowId) : null,
       SealValue = GcSeals.For(itemId),
       MarketVelocity = market?.Velocity,
       MarketLastSaleDays = market?.LastSaleDaysAgo,

@@ -125,6 +125,18 @@ internal static class Sitrep
       + $"standing listings {(Plugin.StandingOrchestrator.IsRunning ? "RUNNING" : "idle")}, "
       + $"recon {(Plugin.PinchHost.ReconRunning ? "RUNNING" : "idle")}");
 
+    // The skillup ladder at a glance (fast-follow, 2026-08-28): every class's
+    // raw skill beside the ladder top the Green cap branch fires at - the
+    // in-game verify for the cap fix, and the CUL training readout.
+    Section(sb, "desynth skill", () =>
+    {
+      var top = GameSafe.MaxDesynthLevel();
+      var skills = string.Join(", ", DesynthInventoryScanner.ClassJobAbbrev
+        .OrderBy(kv => kv.Key)
+        .Select(kv => $"{kv.Value} {GameSafe.GetDesynthLevel(kv.Key):0.##}"));
+      return $"ladder top {top}; {skills}";
+    });
+
     Section(sb, "db", () =>
     {
       var c = counts.Value;

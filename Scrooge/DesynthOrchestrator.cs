@@ -251,7 +251,12 @@ internal sealed class DesynthOrchestrator : IDisposable
       return;
     }
 
-    _run.Start(items.Count, RunValueUnit.None, DateTime.UtcNow, $"Desynth {items.Count} items");
+    // One act = ONE unit; a stack drains act by act (the slot re-check below).
+    // Every total counts ACTS, not slots - 3 fish in one slot are 3 desynths,
+    // and a slot-count total lies to the progress bar, the ETA, and the
+    // desynth_runs row (fast-follow, 2026-08-28).
+    var totalActs = items.Sum(i => Math.Max(1, i.Quantity));
+    _run.Start(totalActs, RunValueUnit.None, DateTime.UtcNow, $"Desynth {totalActs} items");
     Plugin.CurrentRun = new RunData { Mode = RunMode.Desynth };
 
     // Mode inference: any red/yellow row tags Skillup; otherwise Burn. Imperfect
@@ -264,7 +269,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     try
     {
       Plugin.CurrentRun.DesynthRunId =
-        Plugin.DesynthYieldStore?.StartRun(modeLabel, items.Count, DateTimeOffset.UtcNow);
+        Plugin.DesynthYieldStore?.StartRun(modeLabel, totalActs, DateTimeOffset.UtcNow);
     }
     catch (Exception ex)
     {
@@ -284,7 +289,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     _itemsUntilNextLongPause = NextPauseInterval();
 
     Plugin.Ledger.StartNewRun();
-    Plugin.Ledger.SetTotalItems(items.Count);
+    Plugin.Ledger.SetTotalItems(totalActs);
 
     // The TaskManager's own timeout must never RACE a task's internal deadline:
     // on 07-22 both sat at 10s, TimeLimitMS won by milliseconds, and its queue
@@ -379,13 +384,15 @@ internal sealed class DesynthOrchestrator : IDisposable
     _queue = new Queue<DesynthItem>(leftovers);
     // The continuation round revises the total in place - the lifecycle must learn
     // it too, or its ETA keeps quoting against the round that already drained.
-    _run.SetTotal(_processed + leftovers.Count, RunValueUnit.None, DateTime.UtcNow);
-    Plugin.Ledger.SetTotalItems(_processed + leftovers.Count);
+    // Acts, not slots: _processed already counts acts, so the leftovers must too.
+    var remainingActs = _processed + leftovers.Sum(i => Math.Max(1, i.Quantity));
+    _run.SetTotal(remainingActs, RunValueUnit.None, DateTime.UtcNow);
+    Plugin.Ledger.SetTotalItems(remainingActs);
     if (Plugin.CurrentRun?.DesynthRunId is long continuedRunId)
     {
       try
       {
-        Plugin.DesynthYieldStore?.UpdateTotalItems(continuedRunId, _processed + leftovers.Count);
+        Plugin.DesynthYieldStore?.UpdateTotalItems(continuedRunId, remainingActs);
       }
       catch (Exception ex)
       {

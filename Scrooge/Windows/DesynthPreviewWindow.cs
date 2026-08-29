@@ -194,15 +194,22 @@ internal sealed class DesynthPreviewWindow : Window
   private void DrawControlsRow()
   {
     int checkedCount = 0;
+    int checkedActs = 0;
     int protectedChecked = 0;
     foreach (var it in _items)
     {
       if (!it.Selected) continue;
       checkedCount++;
+      checkedActs += Math.Max(1, it.Quantity);
       if (it.IsProtected) protectedChecked++;
     }
 
-    ImGui.Text($"{checkedCount} selected");
+    // Rows are what you select; acts are what runs. When a stack makes the two
+    // differ, say both - "Run Desynth (3)" over one selected stack is the same
+    // counter that lied to the progress bar (fast-follow, 2026-08-28).
+    ImGui.Text(checkedActs != checkedCount
+      ? $"{checkedCount} selected — {checkedActs} desynths"
+      : $"{checkedCount} selected");
     if (protectedChecked > 0)
     {
       ImGui.SameLine();
@@ -234,7 +241,7 @@ internal sealed class DesynthPreviewWindow : Window
     ImGui.Separator();
 
     ImGui.BeginDisabled(checkedCount == 0);
-    if (ImGui.Button($"Run Desynth ({checkedCount})"))
+    if (ImGui.Button($"Run Desynth ({checkedActs})"))
       OnRunClicked();
     ImGui.EndDisabled();
 

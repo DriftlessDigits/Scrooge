@@ -16,8 +16,9 @@ namespace Scrooge;
 /// </summary>
 internal static class DesynthInventoryScanner
 {
-  // The DoH class job ids that can desynthesize. Mirror of CRP..CUL contiguous block.
-  private static readonly Dictionary<byte, string> ClassJobAbbrev = new()
+  // The DoH class job ids that can desynthesize. Mirror of CRP..CUL contiguous
+  // block. Internal: the sitrep's desynth-skill line reads the same map.
+  internal static readonly Dictionary<byte, string> ClassJobAbbrev = new()
   {
     [8]  = "CRP",
     [9]  = "BSM",
@@ -97,9 +98,9 @@ internal static class DesynthInventoryScanner
       byte classJob = (byte)luminaItem.ClassJobRepair.RowId;
       string abbrev = ClassJobAbbrev.TryGetValue(classJob, out var a) ? a : "ALL";
 
-      int playerLevel = GameSafe.GetDesynthLevel(classJob);
+      float playerLevel = GameSafe.GetDesynthLevel(classJob);
       int itemLevel = (int)luminaItem.LevelItem.RowId;
-      var color = DesynthSkillup.Classify(playerLevel, itemLevel);
+      var color = DesynthSkillup.Classify(playerLevel, itemLevel, GameSafe.MaxDesynthLevel());
 
       // Untradable / Unique items require the in-game "Desynthesize
       // unique/untradable item" checkbox to be ticked before the dialog's

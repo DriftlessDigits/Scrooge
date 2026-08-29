@@ -51,9 +51,10 @@ internal static class RouteTagMap
   /// </summary>
   internal static Result Evaluate(RoutingItemInputs item, RoutingBatch batch)
   {
-    // Equipment only — the desynth/GC exits are gear exits. Non-gear
-    // (mats, consumables) carries no tag.
-    if (!item.IsEquipment || item.IsBanned || item.IsAlwaysVendor)
+    // Equipment and desynthables — fish entered the contest 2026-08-28 (they
+    // are the main way to train CUL desynth). Plain non-gear (mats,
+    // consumables) still carries no tag.
+    if (!(item.IsEquipment || item.IsDesynthable) || item.IsBanned || item.IsAlwaysVendor)
       return new Result(Verdict.None, "");
 
     var verdict = RoutingRules.Evaluate(item, batch);

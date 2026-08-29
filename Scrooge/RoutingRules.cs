@@ -258,7 +258,14 @@ internal static class RoutingRules
       ? $"Turn in: {gs:N0} seals (~{gcScore:N0} gil at {sealRate:0.##} gil/seal{rateTag}).{seal.Narration}"
       : "";
 
-    var meltScore = item.MeltValuePerAttempt;
+    // A non-equipment desynthable (fish, furnishings) melts ONLY for a skill
+    // up (ruled 2026-08-28: "fish melt for shit"; "if a housing item gives me
+    // a skill up, we should include it as an option just like anything else").
+    // Without a color on offer the melt door is closed - measured yield
+    // included - and the skillup block below is the one way back in.
+    var skillupIsTheOnlyMeltCase = !item.IsEquipment && !item.DesynthSkillupEligible;
+
+    var meltScore = skillupIsTheOnlyMeltCase ? null : item.MeltValuePerAttempt;
     var meltGrade = meltScore is null ? MeltGrade.None : MeltGrade.Measured;
     var meltReason = meltScore is long mv ? $"Desynth: yields ~{mv:N0} gil/attempt from your ledger." : "";
 
@@ -274,7 +281,9 @@ internal static class RoutingRules
     // The narration is load-bearing. A band estimate that renders like item
     // history invites Drift to act on a measurement nobody made, so it names the
     // band, the sample, and the absence out loud.
-    if (meltScore is null && item.IsDesynthable && item.MeltBandPrior is { } prior)
+    // Equipment only: the band average is GEAR knowledge - a fish reading it
+    // would borrow yields it doesn't have (same ruling as above).
+    if (meltScore is null && item.IsEquipment && item.IsDesynthable && item.MeltBandPrior is { } prior)
     {
       meltScore = prior.ValuePerAttempt;
       meltGrade = MeltGrade.Prior;
@@ -298,6 +307,9 @@ internal static class RoutingRules
         // yield at all - measured or estimated. Say what it actually is.
         meltGrade = MeltGrade.Skillup;
         meltReason = $"Skillup: {item.DesynthColor?.ToString().ToLowerInvariant()} desynth at ilvl {item.Ilvl} — worth {worth:N0} gil to you (skillups are scarce).";
+        // The outbid clause is appended AFTER the List ladder seats its witness
+        // (below) - it must quote the operand List actually carried, which is
+        // not known yet here.
       }
     }
 
@@ -411,6 +423,26 @@ internal static class RoutingRules
         vendorScore = null;
         vendorReason = "";
       }
+    }
+
+    // THE OUTBID CLAUSE names the SEATED witness (ruled 2026-08-29, the
+    // Ceremonial Earring receipt: the tape seated List at ~70,000 while this
+    // sentence quoted the unseated Look at 99,499 - one row, two "what List is
+    // worth" numbers). The contest operand is the List score the cell shows;
+    // when the seat is not the Look, the ask still rides as a labeled aside in
+    // recon's own grammar - "what it settles for" and "what you'd ask" answer
+    // different questions. Only spoken when the outbid is numerically true;
+    // a floor-forfeited List had no witness to outbid and stays unquoted.
+    if (meltGrade == MeltGrade.Skillup && meltScore is long meltWorth
+        && listScore is long seated && meltWorth > seated)
+    {
+      meltReason += lookScoredList
+        ? $" Outbids your Look at {seated:N0}."
+        : tapeScoredList
+          ? $" Outbids what it settles for, ~{seated:N0} ({item.LocalTapeSampleCount} sales)."
+          : $" Outbids your own sale at {seated:N0}.";
+      if (!lookScoredList && item.LookAsk is long aside && aside != seated)
+        meltReason += $" Listed, you'd ask {aside:N0}.";
     }
 
     // Rule 4 winner check: List wins outright only when a LIVE sale beats every
@@ -552,8 +584,8 @@ internal static class RoutingRules
     // about" is false once recon has priced the item off our live board. A Look
     // that scored and lost falls through to rule 8 with its loss on the record,
     // instead of this branch narrating "no price on record" over a banked one.
-    if (item.IsEquipment && ownSaleSilent && !tapeScoredList && !lookScoredList
-        && !floorForfeitsList
+    if ((item.IsEquipment || item.IsDesynthable) && ownSaleSilent && !tapeScoredList
+        && !lookScoredList && !floorForfeitsList
         && meltScore is null && gcScore is null)
     {
       // Untradable gear can't be listed at all — with no melt or seal

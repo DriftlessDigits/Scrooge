@@ -16,15 +16,43 @@ internal static unsafe class GameSafe
 {
   /// <summary>
   /// Player's desynthesis skill for the given DoH class job (standard FFXIV
-  /// ids, e.g. 8 = CRP ... 15 = CUL). 0 when PlayerState is unavailable —
-  /// callers classify against 0, which reads as Red (skillup) and never
-  /// gates anything. Moved from DesynthSkillup so that file stays pure.
+  /// ids, e.g. 8 = CRP ... 15 = CUL), RAW — the game grants skill in
+  /// hundredths and the SimpleTweaks-mirror color cascade compares the float
+  /// (a truncated 118 vs a 118 item would call the whole [118, 119) band Red).
+  /// 0 when PlayerState is unavailable — callers classify against 0, which
+  /// reads as Red (skillup) and never gates anything.
   /// </summary>
-  internal static int GetDesynthLevel(byte classJobId)
+  internal static float GetDesynthLevel(byte classJobId)
   {
     var ps = FFXIVClientStructs.FFXIV.Client.Game.UI.PlayerState.Instance();
-    if (ps == null) return 0;
-    return (int)ps->GetDesynthesisLevel(classJobId);
+    if (ps == null) return 0f;
+    return ps->GetDesynthesisLevel(classJobId);
+  }
+
+  /// <summary>
+  /// The desynth ladder's top: the highest LevelItem among desynthable items
+  /// (Desynth &gt; 0) in the sheet — a skill at or past it can never gain again,
+  /// which is the color cascade's Green cap branch. Resolved once per load
+  /// (patch data); 0 when the sheet is unavailable, which disables the cap
+  /// branch rather than painting everything Green.
+  /// </summary>
+  private static int? _maxDesynthLevel;
+
+  internal static int MaxDesynthLevel()
+  {
+    if (_maxDesynthLevel is { } cached) return cached;
+    var max = 0;
+    try
+    {
+      foreach (var item in ECommons.DalamudServices.Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>())
+      {
+        if (item.Desynth > 0 && (int)item.LevelItem.RowId > max)
+          max = (int)item.LevelItem.RowId;
+      }
+    }
+    catch { /* sheet unavailable — leave 0, retry next call */ }
+    if (max > 0) _maxDesynthLevel = max;
+    return max;
   }
 
   /// <summary>Player gil, or null when InventoryManager isn't available (zoning/startup).</summary>

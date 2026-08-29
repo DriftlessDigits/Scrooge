@@ -571,7 +571,10 @@ internal sealed class LedgerCache
 
           var itemId = slot->ItemId;
           if (!itemSheet.TryGetRow(itemId, out var row)) continue;
-          if (row.EquipSlotCategory.RowId == 0) continue; // gear only
+          // Gear and desynthables. Fish entered the contest 2026-08-28 (the
+          // main way to train CUL desynth) — a non-equipment item with
+          // Desynth > 0 routes like gear; plain mats still sit out.
+          if (row.EquipSlotCategory.RowId == 0 && row.Desynth == 0) continue;
 
           var isHq = (slot->Flags & InventoryItem.ItemFlags.HighQuality) != 0;
 
