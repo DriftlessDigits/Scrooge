@@ -11,5 +11,5 @@
   "InternalName": "Scrooge",
   "IconUrl": "https://raw.githubusercontent.com/DriftlessDigits/DalamudPluginRepo/main/plugins/Scrooge/images/icon.png",
   "ImageUrls": [],
-  "Changelog": "Desynth tune-up. Skill-up colors now match the game exactly - including capped skills reading green, so a maxed class never inflates a melt score. Fish and furnishings join routing like any other desynthable, but only ever melt for a skill-up, never for material value. Stack desynths count every attempt in progress bars and totals (\"2 selected - 7 desynths\"). The sitrep gains a desynth skill readout for all eight classes. And when a skill-up outbids the market, the melt reason names the exact price it beat."
+  "Changelog": "Melt reaches the whole pile. Items routed to melt that the desynthesis window hides behind its category filter now appear in the preview as their own rows, tagged hidden; check them and the run cycles the filter, melts exactly what you checked, and puts the filter back. The button counts everything it will spend. Materiel Container pulls now bank whichever way the game orders the bag change and the chat line, and a pull you kept instead of selling can be marked as such. Seat numbers read as price rank - matching the cheapest ask still counts as first."
 }

@@ -15,17 +15,16 @@ public class UndercutPostureTests
     UndercutMode mode = UndercutMode.FixedAmount,
     int amount = 1,
     bool undercutSelf = false,
-    float maxUndercutPct = 100f,
     bool increaseCapEnabled = false,
     float maxIncreasePct = 50f,
     float ceilingMult = 3f)
-    => UndercutPosture.Compose(mode, amount, undercutSelf, maxUndercutPct,
+    => UndercutPosture.Compose(mode, amount, undercutSelf,
         increaseCapEnabled, maxIncreasePct, ceilingMult);
 
   [Fact]
   public void TheShippedDefaults_ComposeToTheDocumentedShape()
   {
-    Assert.Equal("mode=FixedAmount;amt=1;self=0;maxcut=100;inccap=0;incpct=50;ceil=3",
+    Assert.Equal("mode=FixedAmount;amt=1;self=0;inccap=0;incpct=50;ceil=3",
       Compose());
   }
 
@@ -36,7 +35,7 @@ public class UndercutPostureTests
     var keys = new[]
     {
       UndercutPosture.ModeKey, UndercutPosture.AmountKey, UndercutPosture.SelfKey,
-      UndercutPosture.MaxCutKey, UndercutPosture.IncreaseCapKey,
+      UndercutPosture.IncreaseCapKey,
       UndercutPosture.IncreasePctKey, UndercutPosture.CeilingKey,
     };
 
@@ -78,10 +77,10 @@ public class UndercutPostureTests
   [Fact]
   public void Percentages_BankAsPercent_WithTrailingZeroesTrimmed()
   {
-    // 100.0f and 100f are one stance; a tag that spelled them differently would read
+    // 50.0f and 50f are one stance; a tag that spelled them differently would read
     // as a stance that moved.
-    Assert.Equal(Compose(maxUndercutPct: 100f), Compose(maxUndercutPct: 100.0f));
-    Assert.Contains("maxcut=12.5", Compose(maxUndercutPct: 12.5f));
+    Assert.Equal(Compose(maxIncreasePct: 50f), Compose(maxIncreasePct: 50.0f));
+    Assert.Contains("incpct=12.5", Compose(maxIncreasePct: 12.5f));
     Assert.Contains("ceil=2.5", Compose(ceilingMult: 2.5f));
   }
 
@@ -89,10 +88,10 @@ public class UndercutPostureTests
   public void TheTagIsOneLine_NoSeparatorCollidesWithTheGrammar()
   {
     var tag = Compose(mode: UndercutMode.Humanized, amount: 7, undercutSelf: true,
-      maxUndercutPct: 33.3f, increaseCapEnabled: true, maxIncreasePct: 12f, ceilingMult: 4f);
+      increaseCapEnabled: true, maxIncreasePct: 12f, ceilingMult: 4f);
 
     Assert.DoesNotContain("\n", tag);
-    Assert.Equal(7, tag.Split(';').Length);
+    Assert.Equal(6, tag.Split(';').Length);
     foreach (var field in tag.Split(';'))
       Assert.Equal(2, field.Split('=').Length);
   }

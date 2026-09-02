@@ -47,24 +47,6 @@ public sealed class Configuration : IPluginConfiguration
   public int UndercutAmount { get; set; } = 1;
 
   /// <summary>
-  /// THE CRASHER-GUARD (ruled 2026-08-21): how deep under the anchor a write may go
-  /// before Scrooge stops and asks "competition or crasher?"
-  ///
-  /// <para>A WARNING, not a clamp and not a skip. It guards the FINAL price, on every
-  /// path and in every mode - the number about to be written, whatever produced it.
-  /// When it trips, the write does not happen automatically: the row surfaces carrying
-  /// the proposed price, and the player's confirm posts THAT number verbatim.</para>
-  ///
-  /// <para>It used to skip the item silently, and it used to claim it only guarded the
-  /// first-pass anchor path. Both were wrong. If the lane's competition call is right,
-  /// follow the price - a config number second-guessing a correct read is the machine
-  /// overriding evidence. The guard's real job is the one thing the lane genuinely
-  /// cannot settle alone: whether the row in front is a competitor or a crasher, which
-  /// is a question for the person who can look at the board.</para>
-  /// </summary>
-  public float MaxUndercutPercentage { get; set; } = 100.0f;
-
-  /// <summary>
   /// THE QUEUE-CONFIDENCE RAIL. An upward reprice is a move BACKWARD in the queue -
   /// we are putting people in front of us on purpose - and the farther back one
   /// decision puts us, the more confidence it has to be able to show. This clamp
@@ -133,7 +115,7 @@ public sealed class Configuration : IPluginConfiguration
   /// Minimum settled sales needed to build a lane. Below this the lane
   /// abstains: hold-and-flag instead of pricing off an unvalidated board.
   /// </summary>
-  public int LaneMinHistorySamples { get; set; } = 3;
+  public int LaneMinHistorySamples { get; set; } = RoutingDefaults.MinHistorySamples;
 
   /// <summary>
   /// Recency half-life (days) for lane weighting. SEED value - resolver v0
@@ -172,16 +154,25 @@ public sealed class Configuration : IPluginConfiguration
   /// <summary>Delay before opening the MB price list. Too low = prices fail to load.</summary>
   public int GetMBPricesDelayMS { get; set; } = 5000;
 
-  /// <summary>How long to keep the MB open when fetching prices.</summary>
-  public int MarketBoardKeepOpenMS { get; set; } = 3000;
+  // MarketBoardKeepOpenMS the CONFIG KEY is GONE (3.1 sweep, ruled 08-23 at the
+  // registry reconcile: "move those gaps onto the ladder, then delist this row").
+  // Pre-ladder it was the whole board wait and tuning it mattered; post-ladder it
+  // was only window 0 of four escalating retries plus three side jobs. With the
+  // standing reprice folded onto the ladder (08-29) no flat tuning decision
+  // remained, so the knob became the constant below. Old JSON values deserialize
+  // into nothing.
+
+  /// <summary>
+  /// The board-read ladder's first window, the PostPinch hotkey's flat re-read
+  /// wait, and recon's inter-item beat. A slow server escalates through the
+  /// ladder's retry windows instead of needing this tuned up.
+  /// </summary>
+  public const int MarketBoardKeepOpenMS = 3000;
 
   // --- Desynth automation ---
 
-  /// <summary>DEAD - REMOVE IN 3.1 (ruled 2026-08-23). Gated only the launcher
-  /// button on the game's Desynthesis list (rounds and the wizard opened the
-  /// preview regardless), and no other overlay button offers an opt-out. The
-  /// gate is out of DesynthLauncher; this field is unread.</summary>
-  public bool EnableDesynthPreview { get; set; } = true;
+  // EnableDesynthPreview is GONE (3.1 sweep) - the launcher toggle was killed
+  // 08-23 and the field sat unread.
 
   /// <summary>
   /// Inject randomized 3–8s pauses every 8–15 items during a desynth run.
@@ -267,11 +258,12 @@ public sealed class Configuration : IPluginConfiguration
 
   // --- Gil Tracking ---
 
-  /// <summary>
-  /// When enabled, captures sale history, listing snapshots, and gil balances
-  /// during pinch runs. Adds ~1.5s per retainer to view sale history.
-  /// </summary>
-  public bool EnableGilTracking { get; set; } = true;
+  // EnableGilTracking is GONE (3.1: "you installed Scrooge, you get Scrooge").
+  // The master toggle half-gated the corpus (receipt true-up ungated, executed
+  // stamps and never-cleared closes gated - trued receipts never stamped with
+  // tracking off) and starved the board-freshness gate's clock (the full-pinch
+  // stamp lived behind it). The recorder is always-on; old configs' saved value
+  // deserializes into nothing.
 
   /// <summary>
   /// Number of days before a last sale price is considered stale.
@@ -284,11 +276,18 @@ public sealed class Configuration : IPluginConfiguration
   // worth floor) ---
 
   /// <summary>
-  /// Placeholder seals-to-gil conversion rate for scoring the GC exit.
-  /// Replaced by the empirical gil-per-venture number once venture-return
-  /// tracking ships — until then this is an honest rough cut.
+  /// Placeholder seals-to-gil conversion rate for scoring the GC exit -
+  /// consulted ONLY until ten stamped venture returns exist, then the measured
+  /// rate takes over (RoutingInputs). Seeded at 10 (Drift's ruling, 2026-08-29):
+  /// a round number seated just above the first real measurement - 8 gil/seal,
+  /// VentureStamp over a 30-day window, first printed by the sitrep's provenance
+  /// line. The original 25 was a pre-evidence guess that, at full seal curve,
+  /// priced a 2,000-seal turn-in at 50,000 gil and let GC win nearly every
+  /// fresh-install contest; a brief seed of 3 the same day was a back-solve from
+  /// a receipt that wrongly assumed the seal curve linear - it is smoothstep.
+  /// Measurement replaces it per player.
   /// </summary>
-  public int SealToGilRate { get; set; } = 25;
+  public int SealToGilRate { get; set; } = 10;
 
   // THE SEAL S-CURVE (Drift, 2026-08-05, replacing the 07-25 runway step).
   // Seal value is a smooth S on venture token STOCK: full at/below FullBelow,
@@ -297,31 +296,26 @@ public sealed class Configuration : IPluginConfiguration
   // and shaped so the stockpile self-centers: above the pivot seals cheapen
   // and turn-in slows; below it the loop reverses. See SealRunway.cs.
 
-  public int SealCurveFullBelow { get; set; } = 1_000;
+  public int SealCurveFullBelow { get; set; } = RoutingDefaults.SealCurveFullBelow;
 
-  public int SealCurveZeroAbove { get; set; } = 3_000;
+  public int SealCurveZeroAbove { get; set; } = RoutingDefaults.SealCurveZeroAbove;
 
   /// <summary>
   /// Ambiguity band, percent. When the winning exit's gil score and the
   /// runner-up land within this band, the item goes to Review with both
   /// reasons instead of a confident guess.
   /// </summary>
-  public int RoutingReviewBandPct { get; set; } = 15;
+  public int RoutingReviewBandPct { get; set; } = RoutingDefaults.ReviewBandPct;
 
   // Venture tilt bands (BP4 Q5) — configurable defaults, not product rules.
   // Above Full: GC competes on pure value. Below Full: borderline calls tilt
   // to churn.
 
-  public int VentureBandFull { get; set; } = 1250;
+  public int VentureBandFull { get; set; } = RoutingDefaults.VentureBandFull;
 
-  // DEAD - REMOVE IN 3.1 (ruled 2026-08-23, with their RoutingConfig snapshot
-  // twins). Paint-only since the S-curve took the decisions; the dashboard's
-  // color ramp now derives from the curve midpoint (orange under half, red
-  // under a quarter - GilWindow.Ventures), so nothing reads these.
-  public int VentureBandLow { get; set; } = 750;
-
-  public int VentureBandPanic { get; set; } = 500;
-
+  // VentureBandLow/Panic are GONE (3.1 sweep, with their RoutingConfig snapshot
+  // twins) - paint-only since the S-curve took the decisions; the dashboard's
+  // ramp derives from the curve midpoint (GilWindow.Ventures).
   // VentureBandCruise ("around 2k is cruisin") retired 2026-08-05 with the
   // saturation tilt - the seal S-curve's center is the 2k now. Venture panic
   // retired with it in the cleanup pass: the S-curve owns the whole stock
@@ -333,8 +327,8 @@ public sealed class Configuration : IPluginConfiguration
   // this and competes in the ordinary value comparison; red is rarer than
   // yellow, so it is worth more. A sale comfortably above the worth wins the
   // market; below it, the melter wins; near it, Review.
-  public int SkillupWorthYellow { get; set; } = 50_000;
-  public int SkillupWorthRed { get; set; } = 100_000;
+  public int SkillupWorthYellow { get; set; } = RoutingDefaults.SkillupWorthYellow;
+  public int SkillupWorthRed { get; set; } = RoutingDefaults.SkillupWorthRed;
 
   // Slow-mover pressure is GONE (cleanup pass). It was the one advisor-era
   // feature that moved real listing prices on its own ladder, and "keep it
@@ -396,18 +390,11 @@ public sealed class Configuration : IPluginConfiguration
 
   // --- Text-to-speech ---
 
-  public bool TTSWhenAllDone { get; set; } = false;
-
-  public string TTSWhenAllDoneMsg { get; set; } = "Finished auto pinching all retainers";
-
-  public bool TTSWhenEachDone { get; set; } = false;
-
-  public string TTSWhenEachDoneMsg { get; set; } = "Auto Pinch done";
-
-  public int TTSVolume { get; set; } = 20;
-
-  /// <summary>Auto-set to true on platforms where System.Speech is unavailable.</summary>
-  public bool DontUseTTS { get; set; } = false;
+  // TTS is RETIRED (ruled 2026-08-29): inherited upstream, never used at this
+  // table, and its Each announcement bunched at run end (Speak enqueued back,
+  // item steps inserted front). The six keys (TTSWhenAllDone/Msg,
+  // TTSWhenEachDone/Msg, TTSVolume, DontUseTTS) deserialize into nothing;
+  // System.Speech left the csproj with them.
 
   /// <summary>
   /// Set of retainer names that are enabled for auto pinch.

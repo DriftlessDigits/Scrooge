@@ -59,13 +59,10 @@ internal static class VendorSaleBook
 
     Communicator.PrintVendorSold(itemName, vendorPrice, qty);
 
-    if (Plugin.Configuration.EnableGilTracking)
-    {
-      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-      GilStorage.InsertTransaction(now, "earned", "vendor_sale", totalGil,
-        itemId, itemName, GilTracker.GetItemCategory(itemId),
-        qty, vendorPrice, isHq, "", "NPC Vendor");
-    }
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    GilStorage.InsertTransaction(now, "earned", "vendor_sale", totalGil,
+      itemId, itemName, GilTracker.GetItemCategory(itemId),
+      qty, vendorPrice, isHq, "", "NPC Vendor");
 
     // The item's Vendor exit executed and nobody overrode it — the stamp
     // assent-clears-dissent (v2.17) reads.

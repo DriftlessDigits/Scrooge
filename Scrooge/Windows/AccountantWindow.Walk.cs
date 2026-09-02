@@ -349,10 +349,15 @@ internal sealed partial class AccountantWindow
     // THE SAME SPLIT AS BOARD DECISIONS (F2): the table takes what its rows need,
     // the detail pane fills the rest - because the pane is now where a rider's
     // disagreement gets ruled, it must be present, not a page away.
+    // WHAT THE ROWS NEED counts the group headers too: DrawRidersTable draws one
+    // destination-heading ROW per non-empty pile, at the same table row height as
+    // a data row (measured 2026-08-29 - a 29-ride board across four piles clipped
+    // its GC group behind the internal scroll while the pane sat at minimum).
     var available = ImGui.GetContentRegionAvail().Y;
     var spacing = ImGui.GetStyle().ItemSpacing.Y;
     var rowHeight = ImGui.GetTextLineHeightWithSpacing() + ImGui.GetStyle().CellPadding.Y * 2f;
-    var wanted = rowHeight * (rides.Count + 2) + spacing;
+    var groups = rides.Select(r => r.Destination).Distinct().Count();
+    var wanted = rowHeight * (rides.Count + groups + 2) + spacing;
     var ceiling = Math.Max(TableMinHeight, available - PaneMinHeight - spacing);
     var tableHeight = Math.Clamp(wanted, TableMinHeight, ceiling);
 

@@ -135,17 +135,6 @@ public static class Communicator
   }
 
   /// <summary>
-  /// The crasher-guard's chat line. A WARNING since 2026-08-21, not a skip notice:
-  /// nothing was ignored, the write is waiting on the player. The operands are printed
-  /// here even though the run log speaks the same sentence - chat is where a player
-  /// watching the pinch scroll by sees it first.
-  /// </summary>
-  public static void PrintDeepCutWarning(string itemName, int cutPct, long oldPrice, long proposed)
-    => PrintItemError(itemName,
-      $"Cutting {cutPct}% under the anchor - {oldPrice:N0} down to {proposed:N0}. "
-      + "Competition or crasher? Confirm to follow the price.");
-
-  /// <summary>
   /// The one floor verdict in chat. Names the binding floor and both operands - the
   /// honest ask that lost and the number it lost to - because "below the floor" with
   /// no numbers sends the player looking through three settings for which one fired.

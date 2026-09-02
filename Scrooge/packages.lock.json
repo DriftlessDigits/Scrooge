@@ -25,12 +25,6 @@
           "SQLitePCLRaw.core": "2.1.12"
         }
       },
-      "System.Speech": {
-        "type": "Direct",
-        "requested": "[10.0.3, )",
-        "resolved": "10.0.3",
-        "contentHash": "1n6Sn16yLtonZSK7tGzKiGnanuCs38kiE0EIbssNoC6+S8Bx2iih0jNcvU9KxNeRYwMQYXlQUVAUhrkYS+CSHQ=="
-      },
       "Microsoft.Data.Sqlite.Core": {
         "type": "Transitive",
         "resolved": "10.0.11",

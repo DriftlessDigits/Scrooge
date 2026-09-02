@@ -97,8 +97,6 @@ internal sealed class GilTrackEventListener : IDisposable
         $"(snapshot diff: {gap.Value.SnapshotDiff:N0}g, tracked net: {gap.Value.TrackedNet:N0}g)");
     }
 
-    if (!Plugin.Configuration.EnableGilTracking) return;
-
     var cfcId = Content.ContentFinderConditionRowId;
     var intendedUse = Content.TerritoryIntendedUse;
     var isExcluded = intendedUse.HasValue && DutyExclusions.Contains(intendedUse.Value);
@@ -150,7 +148,6 @@ internal sealed class GilTrackEventListener : IDisposable
   /// </summary>
   private unsafe void OnRetainerListSetup(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     if (GameSafe.PlayerGil() is not long playerGil) return;
 
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -188,7 +185,7 @@ internal sealed class GilTrackEventListener : IDisposable
   {
     try
     {
-      if (!Plugin.Configuration.EnableGilTracking || _mbPurchaseCount == 0) return;
+      if (_mbPurchaseCount == 0) return;
       if (GameSafe.PlayerGil() is not long currentGil || _mbOpenGil is not long mbOpenGil) return;
 
       var spent = mbOpenGil - currentGil;
@@ -214,8 +211,6 @@ internal sealed class GilTrackEventListener : IDisposable
 
   private void OnChatMessage(IHandleableChatMessage chatMessage)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
-
     var typeId = (int)chatMessage.LogKind;
     var message = chatMessage.Message;
 
@@ -354,7 +349,6 @@ internal sealed class GilTrackEventListener : IDisposable
 
   private void OnQuestRewardSetup(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     _questSnapshotGil = GameSafe.PlayerGil();
     _questBlock?.Dispose();
     _questBlock = GilTrackingState.Block("quest_reward");
@@ -363,12 +357,8 @@ internal sealed class GilTrackEventListener : IDisposable
 
   private unsafe void OnQuestRewardFinalize(AddonEvent type, AddonArgs args)
   {
-    // Release the block even if tracking was toggled off mid-quest —
-    // the early return below must not strand it.
     try
     {
-      if (!Plugin.Configuration.EnableGilTracking) return;
-
       var questName = "";
       try
       {
@@ -400,7 +390,6 @@ internal sealed class GilTrackEventListener : IDisposable
 
   private void OnFateRewardPreSetup(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     _fateSnapshotGil = GameSafe.PlayerGil();
     _fateBlock?.Dispose();
     _fateBlock = GilTrackingState.Block("fate_reward");
@@ -409,12 +398,8 @@ internal sealed class GilTrackEventListener : IDisposable
 
   private unsafe void OnFateRewardPostSetup(AddonEvent type, AddonArgs args)
   {
-    // Same shape as OnQuestRewardFinalize: the config early-return must not
-    // strand the block.
     try
     {
-      if (!Plugin.Configuration.EnableGilTracking) return;
-
       var fateName = "";
       try
       {

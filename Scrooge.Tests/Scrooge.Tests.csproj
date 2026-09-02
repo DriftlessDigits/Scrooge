@@ -74,6 +74,10 @@
     <Compile Include="..\Scrooge\BoardMirror.cs" Link="Linked\BoardMirror.cs" />
     <Compile Include="..\Scrooge\QueueDoctrine.cs" Link="Linked\QueueDoctrine.cs" />
     <Compile Include="..\Scrooge\DesynthSkillupColor.cs" Link="Linked\DesynthSkillupColor.cs" />
+    <!-- Phase B of the Rattan Sofa arc (08-30): the melt run's category walk.
+         Which filter categories the run owes a visit is a rule about bags, not
+         about the game - linked so the armoury four can never sneak in. -->
+    <Compile Include="..\Scrooge\MeltWalk.cs" Link="Linked\MeltWalk.cs" />
     <!-- How gil is written for the layers with no window - the spine composes its
          own prose, and the separators it uses are what the voice tests pin. -->
     <Compile Include="..\Scrooge\MoneyText.cs" Link="Linked\MoneyText.cs" />
@@ -168,6 +172,7 @@
          without a game. Nothing reads these rows until 3.1 (let the data bake). -->
     <Compile Include="..\Scrooge\CofferPullSchema.cs" Link="Linked\CofferPullSchema.cs" />
     <Compile Include="..\Scrooge\CofferPullPairing.cs" Link="Linked\CofferPullPairing.cs" />
+    <Compile Include="..\Scrooge\CofferPullMatch.cs" Link="Linked\CofferPullMatch.cs" />
     <Compile Include="..\Scrooge\MeltPrior.cs" Link="Linked\MeltPrior.cs" />
     <Compile Include="..\Scrooge\StandingBookSchema.cs" Link="Linked\StandingBookSchema.cs" />
     <Compile Include="..\Scrooge\SaleHistorySchema.cs" Link="Linked\SaleHistorySchema.cs" />

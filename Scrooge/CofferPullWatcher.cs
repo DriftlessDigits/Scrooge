@@ -30,9 +30,12 @@ namespace Scrooge;
 /// plugin's own orchestrator opens, and can therefore report - these boxes are opened
 /// by hand from the inventory: right-click, use. There is no dialog whose lifecycle
 /// the plugin can hang a listener on. So the count of the watched containers is polled
-/// on Framework update, and a DECREASE is the "a box was just used" signal. It arms a
-/// short window; the next "You obtain" chat line with an ItemPayload inside that window
-/// is the pull. One capture per arm - one box, one reward.</para>
+/// on Framework update, and a DECREASE is the "a box was just used" signal. The signal
+/// and the reward - the "You obtain" chat line with an ItemPayload - are the two edges
+/// of one pull, and the game delivers them in EITHER order (live receipt 2026-09-01:
+/// 6ms poll-first on one box, 13ms chat-first on the next). <see cref="CofferPullMatch"/>
+/// holds each edge for a short window and banks on whichever arrives second. One
+/// capture per pair - one box, one reward.</para>
 ///
 /// <para><b>Scope is structural, not procedural.</b> The only thing that can arm this
 /// watcher is one of the watched container ids going down in the bags. Ordinary
@@ -67,8 +70,7 @@ internal sealed class CofferPullWatcher : IDisposable
   /// </summary>
   private readonly Dictionary<uint, int> _baseline = [];
 
-  private DateTime _armedUntil = DateTime.MinValue;
-  private uint _armedContainer;
+  private readonly CofferPullMatch _match = new(ArmWindow);
 
   // Dedup: the same box+pull inside one minute is the same event re-heard, not a
   // second box (the VentureReturnTracker rule, same reason).
@@ -164,9 +166,8 @@ internal sealed class CofferPullWatcher : IDisposable
 
       case CofferCountMove.Arm:
         _baseline[containerId] = reading!.Value;
-        _armedContainer = containerId;
-        _armedUntil = DateTime.UtcNow + ArmWindow;
         Svc.Log.Debug($"[Coffers] container {containerId} count fell to {reading} - armed for the pull");
+        Bank(_match.Arm(containerId, DateTime.UtcNow), "chat line arrived first");
         return;
 
       default:
@@ -176,11 +177,11 @@ internal sealed class CofferPullWatcher : IDisposable
 
   private void OnChatMessage(IHandleableChatMessage chatMessage)
   {
-    // Disarmed is the resting state, and every unwatched coffer in the game exits here.
-    if (DateTime.UtcNow > _armedUntil) return;
-
     try
     {
+      // Every unwatched coffer in the game exits on the prefix test; the ones that
+      // pass are held one window by the matcher and expire unbanked unless a watched
+      // count falls around them.
       var text = chatMessage.Message.TextValue;
       if (!text.StartsWith("You obtain", StringComparison.OrdinalIgnoreCase))
         return;
@@ -195,22 +196,26 @@ internal sealed class CofferPullWatcher : IDisposable
       var qtyMatch = QuantityPattern.Match(text);
       var quantity = qtyMatch.Success && int.TryParse(qtyMatch.Groups[1].Value, out var n) && n > 0 ? n : 1;
 
-      var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-      var key = (_armedContainer, itemPayload.ItemId, quantity, now / 60);
-      if (_lastCapture == key) return;
-      _lastCapture = key;
-
-      var container = _armedContainer;
-      _armedUntil = DateTime.MinValue;
-      _armedContainer = 0;
-
-      GilStorage.InsertCofferPull(now, container, itemPayload.ItemId, quantity, itemPayload.IsHQ);
-      Svc.Log.Info($"[Coffers] container {container}: {quantity}x {itemPayload.ItemId}" +
-        $"{(itemPayload.IsHQ ? " HQ" : "")} captured from chat");
+      Bank(_match.Obtain(itemPayload.ItemId, quantity, itemPayload.IsHQ, DateTime.UtcNow), "arm came first");
     }
     catch (Exception ex)
     {
       Svc.Log.Warning($"[Coffers] capture failed: {ex.Message}");
     }
+  }
+
+  /// <summary>Writes a closed pair, once. Null is the matcher still waiting on its other edge.</summary>
+  private void Bank(CofferPull? paired, string order)
+  {
+    if (paired is not { } pull) return;
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    var key = (pull.Container, pull.ItemId, pull.Quantity, now / 60);
+    if (_lastCapture == key) return;
+    _lastCapture = key;
+
+    GilStorage.InsertCofferPull(now, pull.Container, pull.ItemId, pull.Quantity, pull.IsHq);
+    Svc.Log.Info($"[Coffers] container {pull.Container}: {pull.Quantity}x {pull.ItemId}" +
+      $"{(pull.IsHq ? " HQ" : "")} captured from chat ({order})");
   }
 }

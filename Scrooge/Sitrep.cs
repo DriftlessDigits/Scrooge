@@ -50,8 +50,7 @@ internal static class Sitrep
     Section(sb, "config", () =>
     {
       var c = Plugin.Configuration;
-      return $"gil tracking {(c.EnableGilTracking ? "ON" : "OFF")}, "
-           + $"ledger {(c.EnableLedger ? "ON" : "OFF")}, skillup worth {c.SkillupWorthYellow:N0}/{c.SkillupWorthRed:N0}, "
+      return $"ledger {(c.EnableLedger ? "ON" : "OFF")}, skillup worth {c.SkillupWorthYellow:N0}/{c.SkillupWorthRed:N0}, "
            + $"desynth base {c.DesynthPerActionBaseMs}ms, server ceiling {c.ServerRoundTripCeilingMs}ms";
     });
 
@@ -60,12 +59,23 @@ internal static class Sitrep
     // the knobs that decide where an item goes. Every "why did it melt that" paste
     // arrived without the numbers that answer it: what a seal is worth, where the
     // curve cheapens it, how close two exits must be to become a Review, and what
-    // floor the List exit has to clear. One line, the knobs only - the live seal
-    // rate rides the venture line below, where the stock it reads already is.
+    // floor the List exit has to clear. One line - and the seal rate is THE LIVE
+    // ONE routing will use, with its provenance. The old line printed the config
+    // placeholder with a fixed "(placeholder)" tag while RoutingInputs had long
+    // since switched to the measured venture rate: a diagnostic misstating the
+    // operand routing runs on is the disease this dump exists to cure (caught
+    // 2026-08-29 - GC receipts priced at a measured ~3 gil/seal while the sitrep
+    // swore 25-placeholder).
     Section(sb, "routing", () =>
     {
       var c = Plugin.Configuration;
-      return $"seal rate {c.SealToGilRate} gil (placeholder; measured wins when it exists), "
+      int? measured = null;
+      try { measured = VentureReturns.EmpiricalSealToGilRate(); }
+      catch { /* storage unavailable - the fallback wording below is then true */ }
+      var sealRate = measured is int m
+        ? $"seal rate {m} gil/seal (measured from venture returns; config fallback {c.SealToGilRate})"
+        : $"seal rate {c.SealToGilRate} gil (placeholder; nothing measured yet)";
+      return sealRate + ", "
            + $"seal curve full<={c.SealCurveFullBelow:N0} zero>={c.SealCurveZeroAbove:N0} tokens, "
            + $"review band {c.RoutingReviewBandPct}%, "
            + $"floor {c.PriceFloorMode} (minimum {c.MinimumListingPrice:N0}), "

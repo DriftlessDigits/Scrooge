@@ -159,4 +159,61 @@ internal static class ConfigWidgets
     value = Enum.Parse<T>(names[index]);
     return true;
   }
+
+  /// <summary>
+  /// THE CURATED KEY LIST for the hotkey combos (3.1 sweep): the raw VirtualKey
+  /// enum is ~190 members deep in mouse buttons, IME codes and OEM keys nobody
+  /// binds a pinch to. Modifiers lead (the natural hold-keys), then the keys a
+  /// hand actually reaches: letters, digits, F-keys, space.
+  /// </summary>
+  private static readonly Dalamud.Game.ClientState.Keys.VirtualKey[] HotkeyChoices = BuildHotkeyChoices();
+
+  private static Dalamud.Game.ClientState.Keys.VirtualKey[] BuildHotkeyChoices()
+  {
+    var keys = new System.Collections.Generic.List<Dalamud.Game.ClientState.Keys.VirtualKey>
+    {
+      Dalamud.Game.ClientState.Keys.VirtualKey.SHIFT,
+      Dalamud.Game.ClientState.Keys.VirtualKey.CONTROL,
+      Dalamud.Game.ClientState.Keys.VirtualKey.MENU,
+      Dalamud.Game.ClientState.Keys.VirtualKey.SPACE,
+    };
+    for (var k = Dalamud.Game.ClientState.Keys.VirtualKey.A; k <= Dalamud.Game.ClientState.Keys.VirtualKey.Z; k++)
+      keys.Add(k);
+    for (var k = Dalamud.Game.ClientState.Keys.VirtualKey.KEY_0; k <= Dalamud.Game.ClientState.Keys.VirtualKey.KEY_9; k++)
+      keys.Add(k);
+    for (var k = Dalamud.Game.ClientState.Keys.VirtualKey.F1; k <= Dalamud.Game.ClientState.Keys.VirtualKey.F12; k++)
+      keys.Add(k);
+    return [.. keys];
+  }
+
+  /// <summary>"MENU" means nothing at a keyboard; "KEY_3" is house style for nobody.</summary>
+  private static string KeyDisplay(Dalamud.Game.ClientState.Keys.VirtualKey key) => key switch
+  {
+    Dalamud.Game.ClientState.Keys.VirtualKey.MENU => "ALT",
+    Dalamud.Game.ClientState.Keys.VirtualKey.SPACE => "SPACE",
+    var k => k.ToString().Replace("KEY_", ""),
+  };
+
+  /// <summary>
+  /// A dropdown over the curated hotkey list. A stored value OUTSIDE the list is
+  /// prepended rather than hidden - curating the choices must never eat a saved
+  /// binding (the config would still hold it; the combo would just lie).
+  /// </summary>
+  internal static bool KeyCombo(string label, ref Dalamud.Game.ClientState.Keys.VirtualKey value)
+  {
+    var choices = HotkeyChoices;
+    var index = Array.IndexOf(choices, value);
+    if (index < 0)
+    {
+      choices = [value, .. HotkeyChoices];
+      index = 0;
+    }
+    var display = Array.ConvertAll(choices, KeyDisplay);
+
+    if (!ImGui.Combo(label, ref index, display, display.Length))
+      return false;
+
+    value = choices[index];
+    return true;
+  }
 }

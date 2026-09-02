@@ -61,7 +61,6 @@ internal sealed class ExchangeTracker : IDisposable
 
   private void OnOpen(AddonEvent type, AddonArgs args)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     if (_active) return; // ignore nested openings — one snapshot per session
     if (!AddonSources.TryGetValue(args.AddonName, out var source)) return;
     if (GameSafe.PlayerGil() is not long openGil) return; // no baseline — skip this session

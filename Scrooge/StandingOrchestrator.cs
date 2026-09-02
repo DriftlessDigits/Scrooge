@@ -155,16 +155,9 @@ internal sealed class StandingOrchestrator : IDisposable
     // without a real action stamped here, every chained step no-ops.
     item.QueuedAction = StandingAction.Reprice;
     item.BypassPriceGuards = true;
+    // The deep-cut confirm flow (ConfirmedPrice) died in the 3.1 sweep - every
+    // reprice press runs the full spine against the live board.
     var priorResult = item.Result;
-
-    // THE CONFIRM WRITES WHAT WAS PROPOSED (the crasher-guard ruling, 2026-08-21). A
-    // deep-cut warning banked the exact price it was about to write, and the press is
-    // the player answering "competition or crasher?" about THAT number - so the
-    // pipeline posts it rather than re-deriving one. A cap-blocked row carries no such
-    // agreement (the clamp already wrote a price), so it keeps the full re-price.
-    item.ConfirmedPrice = priorResult == PricingResult.UndercutTooDeep
-      ? item.RejectedPrice
-      : null;
     // The ask BEFORE this reprice - captured here because the pipeline overwrites
     // CurrentListingPrice as it works, and the standing book needs the operand the
     // move started from (the same read-after-clobber class the narrators hit).
@@ -247,23 +240,16 @@ internal sealed class StandingOrchestrator : IDisposable
     _taskManager.DelayNext(500);
     _taskManager.Enqueue(() => SellListRowSteps.Skipped(item) ? true : RetainerPanelActions.ClickAdjustPrice(), $"RepriceAdjust_{item.ItemName}");
     _taskManager.DelayNext(100);
-    _taskManager.Enqueue(() => SellListRowSteps.Skipped(item) ? true : pricing.Board.ClickComparePrice(), $"RepriceCompare_{item.ItemName}");
-    _taskManager.DelayNext(Plugin.Configuration.MarketBoardKeepOpenMS);
-
-    // The MB response lands via an async event that fills item.FinalPrice -
-    // a flat keep-open delay lost that race once (Carbuncle Chair, Pending).
-    // Wait for the price (or a sentinel result) with a hard deadline, then
-    // let SetNewPrice run either way - its history/own-sales fallbacks handle
-    // a truly silent market.
-    var mbDeadline = DateTime.MinValue;
-    _taskManager.Enqueue(() =>
-    {
-      if (SellListRowSteps.Skipped(item)) return true;
-      if (item.FinalPrice is > 0 || item.Result != PricingResult.Pending) return true;
-      if (mbDeadline == DateTime.MinValue)
-        mbDeadline = DateTime.UtcNow.AddMilliseconds(7000);
-      return DateTime.UtcNow >= mbDeadline;
-    }, $"RepriceAwaitMb_{item.ItemName}");
+    // The shared board read (BoardReadLadder): ask, then hold for the WHOLE board
+    // across the escalating windows. This leg used to flat-wait KeepOpen and then
+    // hand-roll a 7s response await with no completeness check - the last
+    // price-DECIDING door off the ladder (the gap BoardReadLadder's header named).
+    // The ladder reads CurrentItem, which line ~183 stamps to this item, and its
+    // skip check IS this item's Result (the reprice skip sets Skipped). One
+    // behavior change, deliberate: a board that never answers now HOLDS the item
+    // with a standing flag (MbTimedOut, pinch law) instead of fallback-pricing
+    // off history - same door, same fate.
+    pricing.Board.EnqueueBoardRead("Reprice", item.ItemName);
     _taskManager.Enqueue(() => SellListRowSteps.Skipped(item) ? true : pricing.SetNewPrice(), $"RepriceSetPrice_{item.ItemName}");
 
     // Cleanup: check result and update triage, chain next reprice if any

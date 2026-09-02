@@ -29,8 +29,7 @@ internal static class GameNavigation
 
       Plugin.Ledger?.SetCurrentRetainer(retainerName);
       Communicator.PrintRetainerName(retainerName);
-      if (Plugin.Configuration.EnableGilTracking)
-        GilTracker.SetRetainer(retainerName);
+      GilTracker.SetRetainer(retainerName);
 
       ECommons.Automation.Callback.Fire(addon, true, 2, index);
 

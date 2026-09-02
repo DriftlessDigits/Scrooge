@@ -182,8 +182,7 @@ internal sealed class PinchRunExecutor : IDisposable
       _pricing.ClearState();
       Plugin.CurrentRun = new RunData { Mode = RunMode.Pinch };
       Plugin.Ledger.StartNewRun();
-      if (Plugin.Configuration.EnableGilTracking)
-        GilTracker.StartRun();
+      GilTracker.StartRun();
 
       // Vendor rider (WALK unit 3): snapshot the unanimous Pull & Vendor rows now,
       // grouped by retainer, and drain each retainer's set inside its own visit
@@ -229,15 +228,11 @@ internal sealed class PinchRunExecutor : IDisposable
 
       _taskManager.Enqueue(RemoveTalkAddonListeners);
       _taskManager.Enqueue(() => { _rider.Cleanup(); return true; }, "RiderCleanup");
-      if (Plugin.Configuration.TTSWhenAllDone)
-        _taskManager.Enqueue(() => TtsAnnouncer.Speak(Plugin.Configuration.TTSWhenAllDoneMsg), "SpeakTTSAll");
-
       _taskManager.Enqueue(() => {
         Plugin.Ledger.EndRun();
         var pinched = Plugin.CurrentRun;
         Plugin.CurrentRun = null;
-        if (Plugin.Configuration.EnableGilTracking)
-          GilTracker.FinalizeRun();
+        GilTracker.FinalizeRun();
         // No flash here (ruled 08-15): the completion handler owns the taskbar -
         // it flashes standalone runs and stays quiet when the round will chain.
         // The board was just re-read end to end - this is the ground truth the
@@ -265,20 +260,17 @@ internal sealed class PinchRunExecutor : IDisposable
     _taskManager.DelayNext(500);
 
     // Gil tracking: set retainer context and snapshot all listings from the sell list
-    if (Plugin.Configuration.EnableGilTracking)
-    {
-      _taskManager.Enqueue(() => {
-        var name = GameSafe.ActiveRetainerName();
-        if (name == null)
-        {
-          Svc.Log.Warning("[GilTrack] Couldn't read active retainer — skipping listing snapshot");
-          return true;
-        }
-        GilTracker.SetRetainer(name);
-        GilTracker.SnapshotListings();
+    _taskManager.Enqueue(() => {
+      var name = GameSafe.ActiveRetainerName();
+      if (name == null)
+      {
+        Svc.Log.Warning("[GilTrack] Couldn't read active retainer — skipping listing snapshot");
         return true;
-      }, $"SnapshotListings{index}");
-    }
+      }
+      GilTracker.SetRetainer(name);
+      GilTracker.SnapshotListings();
+      return true;
+    }, $"SnapshotListings{index}");
 
     _taskManager.Enqueue(() => EnqueueAllRetainerItems(InsertSingleItem, true), $"EnqueueAllRetainerItems{index}");
     _taskManager.DelayNext(500);
@@ -294,13 +286,10 @@ internal sealed class PinchRunExecutor : IDisposable
     _taskManager.DelayNext(100);
 
     // Gil tracking: view sale history to capture sales via hook
-    if (Plugin.Configuration.EnableGilTracking)
-    {
-      _taskManager.Enqueue(GameNavigation.ClickSaleHistory, $"ClickSaleHistory{index}");
-      _taskManager.DelayNext(1500); // wait for server response + hook to fire
-      _taskManager.Enqueue(GameNavigation.CloseSaleHistory, $"CloseSaleHistory{index}");
-      _taskManager.DelayNext(100);
-    }
+    _taskManager.Enqueue(GameNavigation.ClickSaleHistory, $"ClickSaleHistory{index}");
+    _taskManager.DelayNext(1500); // wait for server response + hook to fire
+    _taskManager.Enqueue(GameNavigation.CloseSaleHistory, $"CloseSaleHistory{index}");
+    _taskManager.DelayNext(100);
 
     _taskManager.Enqueue(GameNavigation.CloseRetainer, $"CloseRetainer{index}");
     _taskManager.DelayNext(100);
@@ -336,34 +325,27 @@ internal sealed class PinchRunExecutor : IDisposable
     Plugin.Ledger.SetCurrentRetainer(retainerName);
 
     // Gil tracking: start run, set retainer, snapshot
-    if (Plugin.Configuration.EnableGilTracking)
-    {
-      GilTracker.StartRun(retainerName);
-      GilTracker.SetRetainer(retainerName);
-      _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
-    }
+    GilTracker.StartRun(retainerName);
+    GilTracker.SetRetainer(retainerName);
+    _taskManager.Enqueue(() => { GilTracker.SnapshotListings(); return true; }, "SnapshotListings");
 
     EnqueueAllRetainerItems(EnqueueSingleItem, false);
 
     // Gil tracking: close sell list → view sale history → reopen sell list
-    if (Plugin.Configuration.EnableGilTracking)
-    {
-      _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "GilTrack_CloseSellList");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(GameNavigation.ClickSaleHistory, "GilTrack_ClickSaleHistory");
-      _taskManager.DelayNext(1500);
-      _taskManager.Enqueue(GameNavigation.CloseSaleHistory, "GilTrack_CloseSaleHistory");
-      _taskManager.DelayNext(100);
-      _taskManager.Enqueue(GameNavigation.ClickSellItems, "GilTrack_ReopenSellList");
-      _taskManager.DelayNext(100);
-    }
+    _taskManager.Enqueue(GameNavigation.CloseRetainerSellList, "GilTrack_CloseSellList");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(GameNavigation.ClickSaleHistory, "GilTrack_ClickSaleHistory");
+    _taskManager.DelayNext(1500);
+    _taskManager.Enqueue(GameNavigation.CloseSaleHistory, "GilTrack_CloseSaleHistory");
+    _taskManager.DelayNext(100);
+    _taskManager.Enqueue(GameNavigation.ClickSellItems, "GilTrack_ReopenSellList");
+    _taskManager.DelayNext(100);
 
     _taskManager.Enqueue(() => {
       Plugin.Ledger.EndRun();
       var pinched = Plugin.CurrentRun;
       Plugin.CurrentRun = null;
-      if (Plugin.Configuration.EnableGilTracking)
-        GilTracker.FinalizeRun();
+      GilTracker.FinalizeRun();
       // No flash here (ruled 08-15) - the completion handler owns the taskbar.
       RunFlow.ReportDone(RunKind.Pinch, pinched);
       return true;
@@ -425,9 +407,6 @@ internal sealed class PinchRunExecutor : IDisposable
           enqueueFunc(i);
         }
       }
-      if (Plugin.Configuration.TTSWhenEachDone)
-        _taskManager.Enqueue(() => TtsAnnouncer.Speak(Plugin.Configuration.TTSWhenEachDoneMsg), "SpeakTTSEach");
-
       return true;
     }
     else
@@ -503,7 +482,7 @@ internal sealed class PinchRunExecutor : IDisposable
     if (Plugin.Configuration.EnablePostPinchkey && Plugin.KeyState[Plugin.Configuration.PostPinchKey])
     {
       _taskManager.Enqueue(_pricing.Board.ClickComparePrice, $"ClickComparePricePosted");
-      _taskManager.DelayNext(_applyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+      _taskManager.DelayNext(_applyJitter(Configuration.MarketBoardKeepOpenMS));
       _taskManager.Enqueue(_pricing.SetNewPrice, $"SetNewPricePosted");
     }
   }

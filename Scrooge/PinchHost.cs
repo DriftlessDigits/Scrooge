@@ -66,8 +66,6 @@ internal sealed class PinchHost : IDisposable
     _reconOrchestrator = new ReconRunOrchestrator(
       _taskManager, _pricing, ApplyJitter, _pinch.SkipRetainerDialog, _pinch.RemoveTalkAddonListeners);
 
-    // TTS is Windows-only; detect at startup and disable gracefully on other platforms.
-    TtsAnnouncer.Probe();
   }
 
   public void Dispose()

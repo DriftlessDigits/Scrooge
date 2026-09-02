@@ -117,7 +117,10 @@ internal sealed record LaneConfig
 /// nothing can re-layer into a tooltip either.</para>
 ///
 /// <para>Seats are 1-BASED and count foreign rows only: seat 1 is the front of the
-/// line. <see cref="Seat"/> 0 means the walk wrote no price (a hold);
+/// line. A seat is PRICE RANK, not queue position - rows asking the same price share
+/// the seat, so a matched ask is still seat 1 (ruled 2026-09-01: "I'm fine being tied
+/// as the cheapest; the point of the seat is to track when we aren't the cheapest").
+/// <see cref="Seat"/> 0 means the walk wrote no price (a hold);
 /// <see cref="PriorSeat"/> 0 means the item was not standing on the board at all.
 /// A prior seat greater than <see cref="Sellers"/> is the back of the line.</para>
 /// </summary>

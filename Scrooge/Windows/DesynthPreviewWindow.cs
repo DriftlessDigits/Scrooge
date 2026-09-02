@@ -15,8 +15,8 @@ namespace Scrooge.Windows;
 /// AgentSalvage.ItemList. Lets the player tweak selection before handing off
 /// to <see cref="DesynthOrchestrator"/>.
 ///
-/// Mirrors HawkWindow's lifecycle: opened on demand by DesynthLauncher, closes
-/// itself when the user clicks Run or when the SalvageItemSelector addon closes.
+/// Opened on demand by DesynthLauncher; closes itself when the user clicks Run
+/// or when the SalvageItemSelector addon closes.
 /// </summary>
 internal sealed class DesynthPreviewWindow : Window
 {
@@ -46,6 +46,12 @@ internal sealed class DesynthPreviewWindow : Window
   {
     Plugin.Accountant.Refresh();
     _items = DesynthInventoryScanner.Scan();
+    // THE HIDDEN HALF OF THE PILE (decision walk, 2026-08-30): pile rows the
+    // window's filter is hiding render here as real, checkable rows - the
+    // checkbox is the contract, and the run's category walk melts the checked
+    // ones. Read from the bags directly, so no filter is touched at scan time.
+    _items.AddRange(DesynthInventoryScanner.ScanHiddenPile(
+      Plugin.Accountant.MeltPileVariants(), _items));
     // Inside a Round the Accountant is the host and this window stays down - the scan
     // still happens, because the hosted body reads exactly this list.
     IsOpen = !(Plugin.Accountant.RoundActive || Plugin.Accountant.RoundHeld);
@@ -160,14 +166,16 @@ internal sealed class DesynthPreviewWindow : Window
     _meltPile = Plugin.Accountant.MeltPileVariants();
     if (_meltPile.Count > 0)
     {
-      var visible = _items.Count(i => _meltPile.Contains((i.ItemId, i.IsHq)));
+      var present = _items.Count(i => _meltPile.Contains((i.ItemId, i.IsHq)));
       // V25: the banner says WHY the pile is a pile. "Routed here" restates the
       // window the reader is already standing in; what he does not know is what the
-      // router decided, and that is one clause.
+      // router decided, and that is one clause. The old "(N visible under the
+      // current filter)" parenthetical retired with the decision walk (08-30):
+      // hidden pile rows now render below as checkable rows, each wearing its
+      // own tag - the rows say it better than a count could.
       ImGui.TextColored(ScroogeColors.Amber,
-        $"{_meltPile.Count} routed to melt - yields beat their other exits"
-        + (visible < _meltPile.Count ? $" ({visible} visible under the current filter)." : "."));
-      if (visible > 0)
+        $"{_meltPile.Count} routed to melt - yields beat their other exits.");
+      if (present > 0)
       {
         ImGui.SameLine();
         if (ImGui.SmallButton("Select Desynth Pile"))
@@ -388,6 +396,16 @@ internal sealed class DesynthPreviewWindow : Window
         ImGui.Text("desynth");
         ImGui.PopStyleColor();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("In the router's desynth pile");
+        ImGui.SameLine();
+      }
+      if (item.Hidden)
+      {
+        ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Protected);
+        ImGui.Text("hidden");
+        ImGui.PopStyleColor();
+        if (ImGui.IsItemHovered())
+          ImGui.SetTooltip("Not under the game window's current filter - if checked, "
+            + "the run cycles the filter to melt it, then puts the filter back.");
         ImGui.SameLine();
       }
       ImGui.Text(Format.Hq(item.Name, item.IsHq));

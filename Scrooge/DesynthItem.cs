@@ -65,6 +65,14 @@ internal sealed class DesynthItem
   /// <summary>UI-state: checkbox state in the preview window.</summary>
   public bool Selected { get; set; }
 
+  /// <summary>
+  /// True for a pile row that is NOT in the salvage agent's current list - it
+  /// lives in the bag category the window's filter is hiding (decision walk,
+  /// 2026-08-30). Rendered checkable like any row; the run holds checked hidden
+  /// rows aside and the category walk melts them after switching the filter.
+  /// </summary>
+  public bool Hidden { get; init; }
+
   /// <summary>True if any protection flag is set (gearset / SB100 / materia).</summary>
   public bool IsProtected => IsInGearset || IsSpiritbond100 || HasMateria;
 }

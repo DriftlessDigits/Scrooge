@@ -85,8 +85,6 @@ internal static class RoutingInputService
         RoutingReviewBandPct = cfg.RoutingReviewBandPct,
         CommunityMinSamples = cfg.LaneMinHistorySamples,
         VentureBandFull = cfg.VentureBandFull,
-        VentureBandLow = cfg.VentureBandLow,
-        VentureBandPanic = cfg.VentureBandPanic,
         SealCurveFullBelow = cfg.SealCurveFullBelow,
         SealCurveZeroAbove = cfg.SealCurveZeroAbove,
         SkillupWorthYellow = cfg.SkillupWorthYellow,

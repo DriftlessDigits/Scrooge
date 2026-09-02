@@ -315,6 +315,51 @@ internal static class RunLogVoice
     => new($"Vendor: Sold {quantity} for {Gil(gil)}. {Sentence(reason)}", "");
 
   /// <summary>
+  /// THE MELT RUN'S REACHABILITY LINE (the Rattan Sofa defect, 2026-08-29). The
+  /// desynthesis window shows ONE category at a time and the run can only melt
+  /// what the window shows - so three routed-Melt furnishings sat invisible under
+  /// the Equipment/Items filter while the run reported plain success, round after
+  /// round. "You said melt was an exit when it wasn't" (Drift). The summary now
+  /// names the gap and sends the player to the window's own filter - the cure
+  /// rides the sentence, per the floor clause's precedent.
+  ///
+  /// <para>Null when the window covers the pile (equal, or MORE - a hand-widened
+  /// selection hides nothing), because a line printed on every clean run is one
+  /// the reader learns to skip past.</para>
+  /// </summary>
+  internal static string? MeltUnreachable(int routed, int reachable)
+  {
+    var missing = routed - reachable;
+    if (missing <= 0)
+      return null;
+    var verb = missing == 1 ? "isn't" : "aren't";
+    // Re-worded with the decision walk (08-30). The run walks every bag
+    // category itself now, and the preview renders the hidden rows, so a pile
+    // item this line fires for is in NO bag at all - retainer stock is the
+    // known case (melt has no lane to it), and the old "cycle the filter"
+    // advice would send the player hunting a category that cannot help.
+    return $"{missing} of the {routed} routed to melt {verb} in your bags - "
+         + "the melt can only reach bag items. If they're in retainer stock, "
+         + "pull them to your bags first.";
+  }
+
+  /// <summary>
+  /// Phase B (2026-08-30): the run cycles the filter itself. The pickup line
+  /// states the decision and its operands - which category it switched to and
+  /// how many pile items it found there. Null when the category held nothing:
+  /// a walk that finds nothing says nothing, and the residual
+  /// <see cref="MeltUnreachable"/> line at run end is the honest report for a
+  /// pile still out of reach.
+  /// </summary>
+  internal static string? MeltWalkPickup(int count, string categoryLabel)
+  {
+    if (count <= 0)
+      return null;
+    var noun = count == 1 ? "item" : "items";
+    return $"Cycled the filter to {categoryLabel} - {count} more {noun} from the melt pile.";
+  }
+
+  /// <summary>
   /// THE RECURRING SECOND SENTENCES, in one place. Every one of these used to be an
   /// interpolated fragment at its own call site - "below the minimum listing price
   /// (75 gil)", "history too thin to build a lane" - which is how a house voice
@@ -387,17 +432,6 @@ internal static class RunLogVoice
     /// </summary>
     internal static string SoldUnderFloor(EffectiveFloor floor)
       => $"The ask sits under {FloorClause(floor)}.";
-
-    /// <summary>
-    /// THE CRASHER-GUARD ASKS A QUESTION (ruled 2026-08-21). It used to state a rule
-    /// - "the cut is deeper than your 60% limit" - and then silently skip the item,
-    /// which is the machine overriding a correct competition read with a config
-    /// number. If the call is right, follow the price; the guard's job is to make the
-    /// player look at a suspected crasher, not to answer for him.
-    /// </summary>
-    internal static string CutTooDeep(int cutPct, long oldPrice, long proposed)
-      => $"Cutting {cutPct}% under the anchor - {Gil(oldPrice)} down to {Gil(proposed)}. "
-       + "Competition or crasher? Confirm to follow the price.";
 
     /// <summary>
     /// The cached post's provenance. Spelled out in words rather than the "23m old"

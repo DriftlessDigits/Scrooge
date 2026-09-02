@@ -52,4 +52,21 @@ internal static class CofferPullSchema
       cmd.ExecuteNonQuery();
     }
   }
+
+  /// <summary>
+  /// V49: the pull gets a fate. <c>kept_at</c> (unix seconds, NULL = not kept)
+  /// stamps the one outcome the machine cannot observe: the player learned the
+  /// mount or minion instead of selling it.
+  ///
+  /// <para>2026-09-01, the night the book got its first four rows, two of them were
+  /// minions the player did not have and claimed. A kept pull never produces a sale
+  /// row, and a reader that joins pulls to sales would score it zero - wrong, the
+  /// seals bought something wanted. SOLD is derivable (a retainer sale of the item
+  /// after the pull) and HELD is derivable (still in the bags or listed); KEPT is the
+  /// fact only the player knows, so it is a stamp, never an inference from a bag
+  /// slot going empty. Valued, when 3.1 reads it, at the board's ask when it left -
+  /// a board read, not a prediction.</para>
+  /// </summary>
+  internal static void ApplyV49(SqliteConnection connection)
+    => SchemaGuards.EnsureColumns(connection, "coffer_pulls", "kept_at INTEGER");
 }

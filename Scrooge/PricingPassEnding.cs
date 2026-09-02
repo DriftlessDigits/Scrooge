@@ -85,7 +85,7 @@ internal static class PricingPassEnding
     if (listingValue > 0)
     {
       Plugin.Ledger.AddListingValue(listingValue * listingQuantity);
-      if (!isHawkRun && Plugin.Configuration.EnableGilTracking && itemPayload != null)
+      if (!isHawkRun && itemPayload != null)
         GilTracker.RecordFinalPrice(itemPayload.ItemId, listingValue, listingQuantity);
 
       // The receipt's decided_price true-up (A12, walk #2): listingValue is
@@ -122,7 +122,7 @@ internal static class PricingPassEnding
     // skipped/held (the observation was made, record it - ruling 3). Guarded on a
     // real captured board so cache hits (no MB query) and empty passes no-op.
     // Must run BEFORE ClearHistory wipes the captured board.
-    if (Plugin.Configuration.EnableGilTracking && mbHandler.BoardItemId != 0)
+    if (mbHandler.BoardItemId != 0)
     {
       try
       {

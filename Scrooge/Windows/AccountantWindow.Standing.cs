@@ -36,9 +36,9 @@ internal sealed partial class AccountantWindow
   /// from, so "the call changed" means exactly what the player saw change.
   ///
   /// <para>The natural pile rather than the raw <see cref="PricingResult"/> on purpose:
-  /// CapBlocked and UndercutTooDeep are two reasons for one instruction ("reprice
-  /// this"), and re-asking because the reason behind an unchanged instruction moved
-  /// would be the board asking a question it has not actually got.</para>
+  /// two results can be two reasons for one instruction ("reprice this"), and
+  /// re-asking because the reason behind an unchanged instruction moved would be
+  /// the board asking a question it has not actually got.</para>
   /// </summary>
   private static BoardPile CallClassOf(PricingItem item)
     => BoardPiles.ForStanding(item.Result);
@@ -671,12 +671,6 @@ internal sealed partial class AccountantWindow
       // for rows persisted before the operand was kept.
       PricingResult.CapBlocked =>
         $"Cap ({item.CurrentListingPrice:N0} -> {(item.RejectedPrice ?? item.MbPrice):N0} blocked, {item.PriceChangePercent:F0}%)",
-      // THE CRASHER-GUARD'S QUESTION (ruled 2026-08-21). Not a blocked row - a row
-      // waiting on a press, carrying the price the confirm will write verbatim.
-      PricingResult.UndercutTooDeep =>
-        $"Cutting {Math.Abs(item.PriceChangePercent ?? 0):F0}% under the anchor - "
-        + $"{item.CurrentListingPrice:N0} down to {(item.RejectedPrice ?? item.MbPrice):N0}. "
-        + "Competition or crasher? Confirm to follow the price.",
       // THE FALLBACK ARM CARRIES THE OPERANDS THE ROW ALREADY HAS (08-22). With no
       // lane evidence banked the row said "Held (not enough sales)" and nothing else
       // - a verdict with no numbers on a board where every other row shows its

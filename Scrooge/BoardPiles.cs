@@ -141,7 +141,7 @@ internal static class BoardPiles
   /// </summary>
   internal static BoardPile ForStanding(PricingResult result) => result switch
   {
-    PricingResult.CapBlocked or PricingResult.UndercutTooDeep => BoardPile.Reprice,
+    PricingResult.CapBlocked => BoardPile.Reprice,
     PricingResult.LaneHeld => BoardPile.Defer,
     PricingResult.BelowFloor => BoardPile.PullAndVendor,
     PricingResult.NoData => BoardPile.Review,

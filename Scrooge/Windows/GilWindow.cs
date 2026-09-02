@@ -244,23 +244,12 @@ internal sealed partial class GilWindow: Window
     var snap = _cachedSnapshot;
     if (snap == null)
     {
-      // THE CURE HAS TO BE THE REAL ONE (08-22). "Run a pinch" is permanently false
-      // with gil tracking switched off: no run of any kind writes a snapshot until
-      // the switch is back on, so the advice sent the player round a loop that could
-      // never close. Two states, two sentences.
-      if (!Plugin.Configuration.EnableGilTracking)
-        ImGui.TextDisabled("No data yet — gil tracking is off in settings, so nothing is being recorded.");
-      else
-        ImGui.TextDisabled("No data yet — run a pinch to start tracking.");
+      // The recorder is always-on (3.1: "you installed Scrooge, you get
+      // Scrooge"), so an empty dashboard has exactly one honest cure. The
+      // tracking-off sentences (08-22/08-23) retired with the toggle.
+      ImGui.TextDisabled("No data yet — run a pinch to start tracking.");
       return;
     }
-
-    // THE OTHER HALF OF THE 08-22 CURE (registry reconcile, 2026-08-23): the empty
-    // dashboard got its honest sentence, but a dashboard WITH data and the recorder
-    // off kept rendering the gold headline as if it were live. Frozen numbers must
-    // say they are frozen.
-    if (!Plugin.Configuration.EnableGilTracking)
-      ImGui.TextDisabled("Gil tracking is off - these numbers stopped updating.");
 
     // Headline: total worth, gold, slightly larger
     ImGui.SetWindowFontScale(1.3f);

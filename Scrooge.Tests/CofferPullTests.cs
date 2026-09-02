@@ -132,6 +132,29 @@ public class CofferPullTests
   }
 
   [Fact]
+  public void ApplyV49_GivesThePullAFate()
+  {
+    // 2026-09-01, the night the book got its first four rows: two of them were
+    // minions the player learned. A kept pull never produces a sale row, and the
+    // one fact the machine cannot see - "I kept it" - gets a stamp instead of a
+    // guess inferred from the bags.
+    using var conn = OpenBare();
+    CofferPullSchema.ApplyV43(conn);
+    Assert.DoesNotContain("kept_at", Columns(conn));
+    CofferPullSchema.ApplyV49(conn);
+    Assert.Contains("kept_at", Columns(conn));
+  }
+
+  [Fact]
+  public void ApplyV49_IsIdempotent()
+  {
+    using var conn = OpenBare();
+    CofferPullSchema.ApplyV43(conn);
+    CofferPullSchema.ApplyV49(conn);
+    Assert.Null(Record.Exception(() => CofferPullSchema.ApplyV49(conn)));
+  }
+
+  [Fact]
   public void ApplyV43_RunsOnABareDbWithNothingElseInIt()
   {
     // Unlike the V42 column widening, this table depends on no prior table - a fresh

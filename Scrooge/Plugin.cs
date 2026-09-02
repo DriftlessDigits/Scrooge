@@ -49,8 +49,6 @@ public sealed class Plugin : IDalamudPlugin
 
   internal static GilWindow GilDashboard { get; private set; } = null!;
 
-  internal static HawkWindow HawkWindow { get; private set; } = null!;
-
   /// <summary>The Accountant: the Round wizard, and the board's one host (Rounds unit 5). Was the Ledger window.</summary>
   internal static AccountantWindow Accountant { get; private set; } = null!;
 
@@ -190,9 +188,6 @@ public sealed class Plugin : IDalamudPlugin
 
     GilDashboard = new GilWindow();
     WindowSystem.AddWindow(GilDashboard);
-
-    HawkWindow = new HawkWindow();
-    WindowSystem.AddWindow(HawkWindow);
 
     Accountant = new AccountantWindow();
     WindowSystem.AddWindow(Accountant);
@@ -399,7 +394,7 @@ public sealed class Plugin : IDalamudPlugin
   /// <summary>
   /// Adds Scrooge context menu options:
   /// - Retainer sell list: Ban/Unban (available any time)
-  /// - Inventory items: Full Hawk menu (when HawkWindow is open)
+  /// - Inventory items: Ban / Always Vendor and their removals (available any time)
   /// </summary>
   private unsafe void OnContextMenuOpened(IMenuOpenedArgs args)
   {
@@ -465,15 +460,12 @@ public sealed class Plugin : IDalamudPlugin
       return;
 
     // --- One menu, no hidden preconditions (ruled 2026-08-23) ---
-    // The full menu used to demand the Hawk window be open, with a ban-only
-    // fallback at the retainer - and when the 08-15 bell-bar trim took the Hawk
-    // Wares button (OpenHawkView's only caller), Always Vendor became
-    // UNREACHABLE: the gesture the config tab described needed a window nothing
-    // could open. The item rules are config-list edits; they never needed the
-    // window. Only Select for Sale stays Hawk-gated - selection is meaningless
-    // without the surface it selects on.
+    // The item rules are config-list edits; they never needed a window. The one
+    // Hawk-gated gesture (Select for Sale) died with the manual pick-and-list
+    // surface (probation closed, ruled 2026-08-29) - Ban and Always Vendor
+    // survive it untouched.
 
-    // Base ID for Lumina lookups (vendor price, etc.) and HawkWindow selection
+    // Base ID for Lumina lookups (vendor price, etc.)
     var baseItemId = item.IsHq && itemId >= 1_000_000 ? itemId - 1_000_000 : itemId;
 
     var isBannedHawk = Configuration.BannedItemIds.Contains(itemId);
@@ -491,7 +483,6 @@ public sealed class Plugin : IDalamudPlugin
         {
           Configuration.BannedItemIds.Remove(itemId);
           Configuration.Save();
-          if (HawkWindow.IsOpen) HawkWindow.RefreshInventory();
         },
       });
       return;
@@ -509,38 +500,12 @@ public sealed class Plugin : IDalamudPlugin
         {
           Configuration.AlwaysVendorItemIds.Remove(itemId);
           Configuration.Save();
-          if (HawkWindow.IsOpen) HawkWindow.RefreshInventory();
         },
       });
       return;
     }
 
     // --- State: Normal (not banned, not always-vendor) ---
-
-    // Select / Deselect - the one Hawk-gated pair (see the ruling above)
-    if (HawkWindow.IsOpen)
-    {
-      if (HawkWindow.IsItemSelected(baseItemId, item.IsHq))
-      {
-        args.AddMenuItem(new MenuItem
-        {
-          Name = "Remove from Sale",
-          PrefixChar = 'S',
-          PrefixColor = 539,
-          OnClicked = _ => HawkWindow.SetItemSelected(baseItemId, item.IsHq, false),
-        });
-      }
-      else
-      {
-        args.AddMenuItem(new MenuItem
-        {
-          Name = "Select for Sale",
-          PrefixChar = 'S',
-          PrefixColor = 45, // green
-          OnClicked = _ => HawkWindow.SetItemSelected(baseItemId, item.IsHq, true),
-        });
-      }
-    }
 
     // Always Vendor — only show for vendorable items
     var vendorPrice = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>().GetRow(baseItemId).PriceLow;
@@ -556,7 +521,6 @@ public sealed class Plugin : IDalamudPlugin
           Configuration.AlwaysVendorItemIds.Add(itemId);
           Configuration.BannedItemIds.Remove(itemId); // mutual exclusivity
           Configuration.Save();
-          if (HawkWindow.IsOpen) HawkWindow.RefreshInventory();
         },
       });
     }
@@ -572,7 +536,6 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.BannedItemIds.Add(itemId);
         Configuration.AlwaysVendorItemIds.Remove(itemId); // mutual exclusivity
         Configuration.Save();
-        if (HawkWindow.IsOpen) HawkWindow.RefreshInventory();
       },
     });
   }

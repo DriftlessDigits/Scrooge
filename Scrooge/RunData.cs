@@ -252,7 +252,6 @@ internal class RunData
   {
     PricingResult.BelowFloor => true,
     PricingResult.CapBlocked => true,
-    PricingResult.UndercutTooDeep => true,
     PricingResult.LaneHeld => true,
     PricingResult.NoData => true,
     _ => false,

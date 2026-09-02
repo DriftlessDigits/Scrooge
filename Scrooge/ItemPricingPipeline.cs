@@ -296,41 +296,9 @@ internal sealed class ItemPricingPipeline : IDisposable
       // produce a tape-derived price. Refusing costs one unlisted item and the next
       // run picks it up; the alternative is posting an NQ answer on an HQ listing and
       // never knowing.
-      // THE CONFIRMED PROPOSAL (the crasher-guard ruling, 2026-08-21). A deep-cut
-      // warning banked the price it was about to write; the player pressed confirm on
-      // THAT number, so that number is what goes on the board. Re-deriving it here
-      // would let a fresh board read answer a question he was never asked - the same
-      // shape as the cached post below, and for the same reason: the decision has
-      // already been made, and the only honest thing left is to execute it.
-      //
-      // Single-shot. Cleared as it is adopted so nothing can ride it twice.
-      var ridingConfirmed = false;
-      if (currentItem?.ConfirmedPrice is int confirmedPrice && confirmedPrice > 0)
-      {
-        // THE FLOOR OUTRANKS THE CONFIRM (final pass, 08-23). The confirm answered
-        // the deep-cut QUESTION - crasher or competition - and that answer stands.
-        // But the floor is legality, not judgment, and it can move between the
-        // warning and the press; the cached post re-asks it at this same moment
-        // for exactly that hazard (CachedPostGate), and this door was the one
-        // asymmetry. A confirmed number under today's floor is dropped and the
-        // spine runs its ordinary course against the fresh board - the floor law
-        // inside it then speaks with today's operands.
-        var floorNow = GuardsNow(currentItem.ItemId).EffectiveFloor;
-        if (floorNow > 0 && confirmedPrice < floorNow)
-        {
-          currentItem.ConfirmedPrice = null;
-          Svc.Log.Warning($"[Bell] Confirmed proposal dropped: {confirmedPrice:N0} sits under "
-            + $"today's {floorNow:N0} floor - repricing off the live board instead.");
-        }
-        else
-        {
-          ridingConfirmed = true;
-          currentItem.ConfirmedPrice = null;
-          currentItem.FinalPrice = confirmedPrice;
-          currentItem.Result = PricingResult.Pending;
-        }
-      }
-
+      // The confirmed-proposal door died with the deep-cut guard (3.1 sweep) -
+      // its only producer was the guard's warn row, delisted 08-23 and removed
+      // here with its whole species (UndercutTooDeep, ConfirmedPrice).
       var ridingCache = false;
       if (currentItem?.CachedPost is { RidesCache: true } cached
           && !cached.Matches(currentItem.ItemId, currentItem.IsHq))
@@ -398,10 +366,7 @@ internal sealed class ItemPricingPipeline : IDisposable
           // EmptyBoard or a thin-history hold and overwrite the banked answer with a
           // strictly worse one. The point of the cache is that this arithmetic was
           // never the expensive part; the board was.
-          && !ridingCache
-          // A confirmed proposal is the player's answer, already given. The spine
-          // would overwrite it with a number nobody agreed to.
-          && !ridingConfirmed)
+          && !ridingCache)
       {
         var laneCfg = new LaneConfig
         {
@@ -591,7 +556,6 @@ internal sealed class ItemPricingPipeline : IDisposable
               Plugin.Configuration.UndercutMode,
               Plugin.Configuration.UndercutAmount,
               Plugin.Configuration.UndercutSelf,
-              Plugin.Configuration.MaxUndercutPercentage,
               Plugin.Configuration.EnableMaxPriceIncreaseCap,
               Plugin.Configuration.MaxPriceIncreasePercentage,
               Plugin.Configuration.UpwardRepriceMultiplier));
@@ -779,8 +743,8 @@ internal sealed class ItemPricingPipeline : IDisposable
   /// Returns true = confirm (price applied or kept), false = cancel (error/skip).
   /// </summary>
   /// <remarks>
-  /// CapBlocked and UndercutTooDeep return true (confirm) because the addon value
-  /// was never changed — confirming just keeps the old price (no-op).
+  /// CapBlocked returns true (confirm) because the addon value was never
+  /// changed — confirming just keeps the old price (no-op).
   /// </remarks>
   private unsafe bool ApplyPriceDecision(
     AddonRetainerSell* retainerSell, PricingItem? currentItem,
@@ -820,8 +784,10 @@ internal sealed class ItemPricingPipeline : IDisposable
         // were false positives), and it blocked downward deepens too. The lane
         // ceiling carries the 3x discipline with an absolute reference now.
 
-        if (cutPercentage >= -Plugin.Configuration.MaxUndercutPercentage
-            || currentItem?.BypassPriceGuards == true)
+        // The deep-cut guard died in the 3.1 sweep (delisted 08-23, inert at its
+        // 100 default - the lane owns crasher defense: company test,
+        // nonsense-half, floor). Every proposed cut writes; the cap below still
+        // governs raises.
         {
           if (IsPinchRun && Plugin.Configuration.EnableMaxPriceIncreaseCap
               && cutPercentage > Plugin.Configuration.MaxPriceIncreasePercentage
@@ -874,27 +840,6 @@ internal sealed class ItemPricingPipeline : IDisposable
             else Plugin.Ledger?.IncrementAdjusted();
             if (currentItem != null) currentItem.Result = PricingResult.Applied;
             LogLaneOutcome(currentItem, cleanName);
-          }
-        }
-        else
-        {
-          // THE CRASHER-GUARD IS A WARNING NOW (ruled 2026-08-21). It used to skip the
-          // item outright, which is the machine overruling a competition read it has
-          // no better evidence about: if the lane's call is right, follow the price.
-          // The write does not happen automatically - the row surfaces carrying this
-          // proposal, and the player's press executes it verbatim (see
-          // PricingItem.ConfirmedPrice). Nothing about the ask is clamped.
-          var cutPct = (int)Math.Round(Math.Abs(cutPercentage));
-          Communicator.PrintDeepCutWarning(itemName, cutPct, oldPrice, newPrice.Value);
-          Plugin.Ledger?.AddEntry(ItemOutcome.Warned, PricingVoice.VoiceName(currentItem, cleanName),
-            RunLogVoice.Warn(
-              RunLogVoice.Reasons.CutTooDeep(cutPct, oldPrice, newPrice.Value),
-              currentItem?.Lane?.Census ?? default, currentItem?.Lane?.Evidence));
-          if (currentItem != null)
-          {
-            currentItem.Result = PricingResult.UndercutTooDeep;
-            currentItem.PriceChangePercent = cutPercentage;
-            currentItem.RejectedPrice = newPrice.Value; // the proposal awaiting a press
           }
         }
       }
@@ -1138,7 +1083,7 @@ internal sealed class ItemPricingPipeline : IDisposable
     // words - overriding it here would trade one honest label for another and lose
     // which evidence ran out.
     var outcome = held && currentItem.Result is PricingResult.BelowFloor
-        or PricingResult.CapBlocked or PricingResult.UndercutTooDeep
+        or PricingResult.CapBlocked
       ? currentItem.Result.ToString()
       : decision.Outcome.ToString();
 

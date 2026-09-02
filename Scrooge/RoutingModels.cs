@@ -3,25 +3,45 @@ using System.Collections.Generic;
 namespace Scrooge;
 
 /// <summary>
+/// THE ONE HOME for the routing knobs' factory defaults (3.1 sweep). The
+/// Configuration properties (the player's pegs) and the RoutingConfig record
+/// (the pure per-batch snapshot) both initialize from these consts, so the two
+/// sides cannot drift apart - the LocalSaleStaleDays fossil below is the
+/// hazard class this removes: a record default nobody copied, behaving
+/// correctly only by omission.
+/// </summary>
+internal static class RoutingDefaults
+{
+  internal const int ReviewBandPct = 15;
+  internal const int MinHistorySamples = 3;
+  internal const int VentureBandFull = 1250;
+  internal const int SealCurveFullBelow = 1_000;
+  internal const int SealCurveZeroAbove = 3_000;
+  internal const int SkillupWorthYellow = 50_000;
+  internal const int SkillupWorthRed = 100_000;
+}
+
+/// <summary>
 /// The routing thresholds as plain data, snapshotted once per batch from
 /// Configuration by RoutingInputService.BeginBatch. The rules engine and the
 /// listing gate read ONLY this — it is what keeps them pure functions a test
-/// project can drive without Dalamud. Defaults mirror Configuration's.
+/// project can drive without Dalamud. Defaults come from
+/// <see cref="RoutingDefaults"/>, the same consts Configuration initializes
+/// from.
 /// </summary>
 internal sealed record RoutingConfig
 {
-  public int RoutingReviewBandPct { get; init; } = 15;
+  public int RoutingReviewBandPct { get; init; } = RoutingDefaults.ReviewBandPct;
   /// <summary>Minimum DC-scope settled sales before community evidence counts (snapshot of LaneMinHistorySamples — same bar the lane uses).</summary>
-  public int CommunityMinSamples { get; init; } = 3;
+  public int CommunityMinSamples { get; init; } = RoutingDefaults.MinHistorySamples;
   // LocalSaleStaleDays used to sit here as an init property with a default of 14 that
   // BeginBatch never copied - so the record default ALWAYS ran, against a field that
   // did not exist on Configuration at all. It behaved correctly by accident, which is
   // the worst kind of fossil: a knob-shaped thing nobody could set, defended by nothing
   // but the omission that made it work. Promoted to an honest named constant on the
   // rule that reads it (RoutingRules.LocalSaleSeniorityDays, 3b-8 / RULED B1.5b).
-  public int VentureBandFull { get; init; } = 1250;
-  public int VentureBandLow { get; init; } = 750;
-  public int VentureBandPanic { get; init; } = 500;
+  public int VentureBandFull { get; init; } = RoutingDefaults.VentureBandFull;
+  // VentureBandLow/Panic are GONE (3.1 sweep) - paint-only fossils.
   // VentureBandCruise ("around 2k is cruisin") retired with the saturation
   // tilt (2026-08-05): the seal S-curve's continuous devaluation covers
   // everything the projection tie-break did - and its 2k lives on as the
@@ -33,9 +53,9 @@ internal sealed record RoutingConfig
   /// dial was always tokens, and the goal is a thermostat that keeps the
   /// stockpile hovering near the center. See <see cref="SealRunway"/>.
   /// </summary>
-  public int SealCurveFullBelow { get; init; } = 1_000;
+  public int SealCurveFullBelow { get; init; } = RoutingDefaults.SealCurveFullBelow;
   /// <summary>The curve's melt line - see <see cref="SealCurveFullBelow"/>.</summary>
-  public int SealCurveZeroAbove { get; init; } = 3_000;
+  public int SealCurveZeroAbove { get; init; } = RoutingDefaults.SealCurveZeroAbove;
   /// <summary>
   /// What a skillup is WORTH in gil (Drift's iteration 07-18: price the skillup,
   /// don't gate it). A skillup-eligible item's desynth candidate scores at least
@@ -44,8 +64,8 @@ internal sealed record RoutingConfig
   /// near-worth sales land in Review like any honest coin flip. Red is rarer
   /// than yellow, so it is worth more.
   /// </summary>
-  public int SkillupWorthYellow { get; init; } = 50_000;
-  public int SkillupWorthRed { get; init; } = 100_000;
+  public int SkillupWorthYellow { get; init; } = RoutingDefaults.SkillupWorthYellow;
+  public int SkillupWorthRed { get; init; } = RoutingDefaults.SkillupWorthRed;
 
   /// <summary>
   /// THE ONE FLOOR LAW at the router's door (ruled 2026-08-21). The rules engine asks

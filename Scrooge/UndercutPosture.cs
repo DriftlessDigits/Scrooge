@@ -39,13 +39,11 @@ internal static class UndercutPosture
   internal const string AmountKey = "amt";
   internal const string SelfKey = "self";
   /// <summary>
-  /// The crasher-guard's threshold as it stood when the price was written. The KEY and
-  /// its value are unchanged and must stay unchanged (append-only corpus contract) -
-  /// but its meaning shifted on 2026-08-21: it was the percentage past which a write
-  /// was silently SKIPPED, and it is now the percentage past which a write stops and
-  /// WARNS. Rows banked either side of that ruling carry the same number under the same
-  /// key; the 4.0 report card reading them has to know it is a warning threshold in the
-  /// later ones, not a skip threshold.
+  /// RETIRED KEY (3.1 sweep) - the crasher-guard's threshold, banked while the
+  /// knob existed. Rows written before the sweep carry it (append-only corpus
+  /// contract: their meaning shifted skip-&gt;warn on 2026-08-21 and the 4.0
+  /// report card has to know which era a row is from); new rows omit the pair -
+  /// a stance can't move on a knob that no longer exists.
   /// </summary>
   internal const string MaxCutKey = "maxcut";
   internal const string IncreaseCapKey = "inccap";
@@ -68,13 +66,12 @@ internal static class UndercutPosture
   /// spelling without changing stance would read as a stance that moved.</para>
   /// </summary>
   internal static string Compose(UndercutMode mode, int amount, bool undercutSelf,
-    float maxUndercutPct, bool increaseCapEnabled, float maxIncreasePct, float ceilingMult)
+    bool increaseCapEnabled, float maxIncreasePct, float ceilingMult)
   {
     var sb = new StringBuilder();
     Pair(sb, ModeKey, LegacyUndercutMode.Fold(mode).ToString());
     Pair(sb, AmountKey, amount.ToString(CultureInfo.InvariantCulture));
     Pair(sb, SelfKey, undercutSelf ? "1" : "0");
-    Pair(sb, MaxCutKey, Number(maxUndercutPct));
     Pair(sb, IncreaseCapKey, increaseCapEnabled ? "1" : "0");
     Pair(sb, IncreasePctKey, Number(maxIncreasePct));
     Pair(sb, CeilingKey, Number(ceilingMult));

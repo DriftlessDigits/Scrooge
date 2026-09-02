@@ -24,9 +24,10 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// Conservative free-slot floor before we'll start a run. Each desynth can
   /// produce multiple yield types, and a player who runs out of inventory
   /// mid-run gets a stuck dialog and a half-completed run. Bail before we
-  /// start rather than mid-run.
+  /// start rather than mid-run. ONE floor shared with the coffer rider (3.1
+  /// sweep) - the two guards protect against the same hazard and must agree.
   /// </summary>
-  private const int MinFreeInventorySlots = 5;
+  private const int MinFreeInventorySlots = CofferLogic.MinFreeInventorySlots;
 
   /// <summary>
   /// The melt's declared expected state (spine). Two facets, in report order:
@@ -50,6 +51,14 @@ internal sealed class DesynthOrchestrator : IDisposable
   private readonly Random _random = new();
 
   private Queue<DesynthItem>? _queue;
+
+  /// <summary>
+  /// The reachability sentence computed at StartRun (routed pile vs the window's
+  /// filtered view), spoken beside the EndRun summary. Null = the window covered
+  /// the pile and the summary stays clean. See the check in StartRun for why the
+  /// compare cannot happen at end time.
+  /// </summary>
+  private string? _unreachableLine;
   private int _processed;
   private int _itemsUntilNextLongPause;
 
@@ -73,6 +82,39 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// <summary>_processed at the start of the current round; a continuation
   /// round that makes no progress ends the run loudly instead of rescanning.</summary>
   private int _roundStartProcessed;
+
+  // --- The category walk (Phase B of the Rattan Sofa arc, 2026-08-30) ---
+  // The window shows one category at a time and acts fire by list index, so a
+  // routed pile wider than the starting view is melted by WALKING the bag
+  // categories: switch SelectedCategory, refresh, rescan, melt the pile rows
+  // found there, restore the player's filter at run end. Which categories are
+  // owed is MeltWalk's (pure, pinned); everything here is the game half.
+
+  /// <summary>The routed pile snapshotted at StartRun. After the walk switches
+  /// the filter, the auto-continue leftovers rescan narrows to these variants -
+  /// Select All intent covered the category the player was looking at, and a
+  /// walked category's other eligibles were never selected by anyone.</summary>
+  private HashSet<(uint ItemId, bool IsHq)> _walkPile = new();
+
+  /// <summary>
+  /// SELECTED hidden rows held aside for the walk (decision walk, 2026-08-30):
+  /// the preview renders pile rows the filter hides, the player checks or
+  /// unchecks them there, and the checked ones arrive here. Each walk leg moves
+  /// the rows its switched category can resolve into the live queue. The walk
+  /// is driven by this selection - never by a rescan match - so an unchecked
+  /// hidden row is a decision the run respects, not a gap it reports.
+  /// </summary>
+  private readonly List<DesynthItem> _held = new();
+
+  /// <summary>Bag categories still owed a visit; null = walk not armed
+  /// (no hidden rows were selected).</summary>
+  private Queue<int>? _walkCategories;
+
+  /// <summary>The player's filter at the first switch, restored at run end.</summary>
+  private int? _originalCategory;
+
+  /// <summary>True once the run has switched the filter at least once.</summary>
+  private bool _walkStarted;
 
   /// <summary>
   /// Per-run monotonic counter incremented at the head of every act (including
@@ -185,6 +227,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     var now = DateTime.UtcNow;
     if (stalled) _run.Stall(now); else _run.Cancel(now);
     _queue = null;
+    RestoreWalkCategory();
     Plugin.Ledger.CancelRun();
     // The dying melt's facts, taken before the teardown - a melt that died halfway
     // still put real materials in the bags, and its run id is how the bell learns it
@@ -251,6 +294,64 @@ internal sealed class DesynthOrchestrator : IDisposable
       return;
     }
 
+    // THE REACHABILITY CHECK, taken at start while both reads are fresh (the
+    // Rattan Sofa defect, 2026-08-29): the desynthesis window shows ONE category
+    // at a time and the run can only melt what the window shows - so a routed
+    // pile wider than the window melted partially while the summary claimed
+    // success, round after round. Computed HERE (the board cache still holds
+    // this run's pile and the window scan is this run's view) and SPOKEN at
+    // EndRun beside the summary; an end-time compare would count the items just
+    // melted as hidden, because the cache re-reads only after the run reports.
+    _unreachableLine = null;
+    _walkPile = new HashSet<(uint, bool)>();
+    _walkCategories = null;
+    _originalCategory = null;
+    _walkStarted = false;
+    _held.Clear();
+    try
+    {
+      // THE REACHABILITY CHECK, narrowed by the decision walk (08-30): the
+      // preview now renders hidden pile rows from a bag scan and the run walks
+      // the categories itself, so this line fires only for pile variants in NO
+      // bag at all - retainer stock (melt has no lane to it) or a mid-round
+      // vanish. Unchecked hidden rows are decisions, never counted here.
+      var pile = Plugin.Accountant.MeltPileVariants();
+      if (pile.Count > 0)
+      {
+        var visible = DesynthInventoryScanner.Scan();
+        var hiddenRows = DesynthInventoryScanner.ScanHiddenPile(pile, visible);
+        var reachable = 0;
+        foreach (var v in pile)
+          if (visible.Exists(i => i.ItemId == v.ItemId && i.IsHq == v.IsHq)
+              || hiddenRows.Exists(i => i.ItemId == v.ItemId && i.IsHq == v.IsHq))
+            reachable++;
+        _unreachableLine = RunLogVoice.MeltUnreachable(pile.Count, reachable);
+        _walkPile = pile;
+      }
+    }
+    catch (Exception ex)
+    {
+      Svc.Log.Warning(ex, "Melt reachability check failed - the run proceeds without it");
+    }
+
+    // SELECTED HIDDEN ROWS ARM THE WALK: they wait in _held while the visible
+    // queue drains, then the walk legs switch the filter and resolve them. The
+    // checkbox was the contract - nothing outside this selection is ever taken
+    // from a walked category.
+    var startingQueue = new List<DesynthItem>();
+    foreach (var item in items)
+    {
+      if (item.Hidden) _held.Add(item);
+      else startingQueue.Add(item);
+    }
+    if (_held.Count > 0)
+    {
+      var agent = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentSalvage.Instance();
+      if (agent != null)
+        _walkCategories = new Queue<int>(
+          MeltWalk.CategoriesToVisit((int)agent->SelectedCategory));
+    }
+
     // One act = ONE unit; a stack drains act by act (the slot re-check below).
     // Every total counts ACTS, not slots - 3 fish in one slot are 3 desynths,
     // and a slot-count total lies to the progress bar, the ETA, and the
@@ -281,7 +382,7 @@ internal sealed class DesynthOrchestrator : IDisposable
     // Set a synthetic "retainer" name so per-item rows render. Without this,
     // the run log shows summary lines but no per-item entries.
     Plugin.Ledger.SetCurrentRetainer("Desynth");
-    _queue = new Queue<DesynthItem>(items);
+    _queue = new Queue<DesynthItem>(startingQueue);
     _processed = 0;
     _autoContinue = allEligibleSelected;
     _attempted.Clear();
@@ -355,17 +456,24 @@ internal sealed class DesynthOrchestrator : IDisposable
   /// </summary>
   private bool? TryContinueOrEnd()
   {
+    // Once the walk has switched the filter, "eligible" narrows to the pile:
+    // Select All intent covered the category the player was LOOKING AT, and a
+    // walked category's other eligibles were never selected by anyone.
     var leftovers = DesynthInventoryScanner.Scan()
-      .FindAll(i => !i.IsProtected && !_attempted.Contains((i.Container, i.SlotIndex)));
+      .FindAll(i => !i.IsProtected
+                 && !_attempted.Contains((i.Container, i.SlotIndex))
+                 && (!_walkStarted || _walkPile.Contains((i.ItemId, i.IsHq))));
 
     if (leftovers.Count == 0)
     {
+      if (TryStartWalkLeg()) return true;
       EndRun();
       return true;
     }
 
     if (!_autoContinue)
     {
+      if (TryStartWalkLeg()) return true;
       Svc.Chat.Print(
         $"[Scrooge] Desynth run complete — {leftovers.Count} more eligible item(s) still in the window.");
       EndRun();
@@ -404,6 +512,105 @@ internal sealed class DesynthOrchestrator : IDisposable
 
     _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
     return true;
+  }
+
+  // --- The category walk's legs (Phase B) ---
+
+  /// <summary>
+  /// Starts the next walk leg if held rows remain: switch the agent's filter to
+  /// the next bag category, refresh its list, and schedule the pickup. Returns
+  /// false when nothing is held or the categories are exhausted - and on
+  /// exhaustion any rows still held get their skip line (they resolved under no
+  /// category: consumed mid-run, or the world moved), so the run never ends
+  /// silently over a checked row it did not melt.
+  /// </summary>
+  private unsafe bool TryStartWalkLeg()
+  {
+    if (_held.Count == 0)
+      return false;
+
+    if (_walkCategories == null || _walkCategories.Count == 0)
+    {
+      foreach (var item in _held)
+        Svc.Chat.Print($"[Scrooge] Skipped \"{item.Name}\" — no longer in list.");
+      _held.Clear();
+      return false;
+    }
+
+    var agent = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentSalvage.Instance();
+    if (agent == null)
+    {
+      _walkCategories = null;
+      return false;
+    }
+
+    var category = _walkCategories.Dequeue();
+    if (!_walkStarted)
+    {
+      _originalCategory = (int)agent->SelectedCategory;
+      _walkStarted = true;
+    }
+
+    agent->SelectedCategory =
+      (FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentSalvage.SalvageItemCategory)category;
+    agent->ItemListRefresh(agent->IsSalvageResultAddonOpen);
+
+    // Give the addon a beat to repaint off the rebuilt agent list before the
+    // pickup reads it - act indices come from that list.
+    _taskManager.DelayNext(Jitter(600, 200));
+    _taskManager.Enqueue(() => WalkPickup(category), "DesynthWalkPickup");
+    return true;
+  }
+
+  /// <summary>
+  /// The pickup half of a walk leg: move the held rows the freshly switched
+  /// category can resolve into the live queue and melt them through the normal
+  /// chain. Rows the category cannot resolve stay held for the next leg. Totals
+  /// need no revision - held rows were counted into the run's acts at StartRun,
+  /// because the player's press covered them.
+  /// </summary>
+  private bool? WalkPickup(int category)
+  {
+    if (!IsRunning) return true;
+
+    var resolved = new List<DesynthItem>();
+    for (int i = _held.Count - 1; i >= 0; i--)
+    {
+      if (FindAgentIndex(_held[i]) < 0) continue;
+      resolved.Add(_held[i]);
+      _held.RemoveAt(i);
+    }
+
+    if (RunLogVoice.MeltWalkPickup(resolved.Count, MeltWalk.CategoryLabel(category)) is string line)
+      Svc.Chat.Print($"[Scrooge] {line}");
+
+    if (resolved.Count > 0)
+    {
+      _queue = new Queue<DesynthItem>(resolved);
+      _roundStartProcessed = _processed;
+    }
+
+    // An empty pickup falls straight back through the drained-queue funnel,
+    // which starts the next leg or ends the run.
+    _taskManager.Enqueue(ProcessNext, "DesynthProcessNext");
+    return true;
+  }
+
+  /// <summary>
+  /// Puts the filter back where the player had it. Leave-as-found: the run
+  /// changed the window's state for its own errand; the errand is over.
+  /// Safe on any exit path - a no-op unless a walk actually switched.
+  /// </summary>
+  private unsafe void RestoreWalkCategory()
+  {
+    if (_originalCategory is not int category) return;
+    _originalCategory = null;
+    var agent = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentSalvage.Instance();
+    if (agent == null) return;
+    if ((int)agent->SelectedCategory == category) return;
+    agent->SelectedCategory =
+      (FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentSalvage.SalvageItemCategory)category;
+    agent->ItemListRefresh(agent->IsSalvageResultAddonOpen);
   }
 
   // --- Agent / addon helpers ---
@@ -696,8 +903,17 @@ internal sealed class DesynthOrchestrator : IDisposable
     }
     Plugin.CurrentRun = null;
     _queue = null;
+    RestoreWalkCategory();
     // No flash here (ruled 08-15) - the completion handler owns the taskbar.
     Svc.Chat.Print($"[Scrooge] Desynthed {_processed} items.");
+    // The reachability gap, beside the summary it corrects (fail loud even on
+    // success - a clean-sounding melt that left routed items behind is the lie
+    // the Rattan Sofa sat inside for two rounds).
+    if (_unreachableLine is string unreachable)
+    {
+      Svc.Chat.PrintError($"[Scrooge] {unreachable}");
+      _unreachableLine = null;
+    }
     // The melt consumed bag gear and produced yields - both sides of the Ledger's
     // bag picture moved, so it re-reads before the next stage is offered.
     RunFlow.ReportDone(RunKind.Melt, melt);

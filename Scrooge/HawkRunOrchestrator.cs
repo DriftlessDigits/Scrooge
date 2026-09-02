@@ -202,7 +202,6 @@ internal sealed class HawkRunOrchestrator : IDisposable
   /// </summary>
   private void HawkZombieRound(bool fullyObserved)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     if (_observedInventoryIds is not { } observed || _visitedRetainers == null) return;
 
     var inputs = RunLifecycle.HawkRoundInputs(fullyObserved, observed);
@@ -221,26 +220,10 @@ internal sealed class HawkRunOrchestrator : IDisposable
     }
   }
 
-  /// <summary>
-  /// Finds the first retainer with open sell slots, navigates to their
-  /// "Sell items in your inventory on the market" view, then opens the HawkWindow.
-  ///
-  /// <para>DOOR-LESS since the bell-bar trim (08-15): the Hawk Wares button was
-  /// its only caller. On probation, not dead - Drift is living without the manual
-  /// pick-and-list surface for a while before ruling whether it (HawkWindow's
-  /// manual view, the context-menu integration, this entry) gets deleted.</para>
-  /// </summary>
-  internal unsafe void OpenHawkView()
-  {
-    if (_taskManager.IsBusy)
-      return;
-
-    EnqueueNavigateToSellView(totalAvailableSlots => {
-      Plugin.HawkWindow.SetAvailableSlots(totalAvailableSlots);
-      Plugin.HawkWindow.RefreshInventory();
-      Plugin.HawkWindow.IsOpen = true;
-    });
-  }
+  // OpenHawkView is GONE (probation closed, ruled 2026-08-29): door-less since
+  // the 08-15 bell-bar trim took its only caller, and two weeks of play - the
+  // whole 3.0 ship and verification - never missed it. The manual pick-and-list
+  // surface (HawkWindow, Select for Sale, this entry) deleted together.
 
   /// <summary>
   /// The Ledger's one-click entry: already in a retainer's sell view -> start the

@@ -192,13 +192,6 @@ public sealed class ConfigWindow : Window
                          "The seat is already chosen — this is only the size of the pinch.");
     }
 
-    // THE CRASHER-GUARD is delisted (ruled 2026-08-23). The lane owns crasher defense
-    // now - the company test and nonsense-half conviction step over bait before a seat
-    // is ever picked, and the floor refuses a crash to nothing - so the guard's only
-    // remaining trigger was interrupting a correct write after a genuine market move.
-    // MaxUndercutPercentage stays in Configuration at its inert default (100 = the
-    // question never fires) until the guard is removed outright in 3.1.
-
     // --- Max Price Increase Cap ---
     var enableMaxIncrease = Plugin.Configuration.EnableMaxPriceIncreaseCap;
     if (ImGui.Checkbox("Max Price Increase Cap", ref enableMaxIncrease))
@@ -621,25 +614,10 @@ public sealed class ConfigWindow : Window
                        "uncached item costs the difference. Lower it only if your runs never miss\n" +
                        "a read.");
 
-    float currentMBKeepOpenDelay = Plugin.Configuration.MarketBoardKeepOpenMS / 1000f;
-    if (ConfigWidgets.LabeledFloat("Keep Open Time (s):", "###sliderMBKeepOpen", ref currentMBKeepOpenDelay, 0.1f, 10f, 150, "%.1f"))
-    {
-      Plugin.Configuration.MarketBoardKeepOpenMS = (int)(currentMBKeepOpenDelay * 1000);
-      Plugin.Configuration.Save();
-    }
-    // THE LADDER OUTGREW THIS TOOLTIP (registry reconcile, 2026-08-23). The old text
-    // warned that a short wait truncates the read - pre-ladder truth. Today this is
-    // only the FIRST window of BoardReadLadder's four (retries hardcoded 3s/5s/10s,
-    // waits re-arm while pages land), so the knob's remaining tuning value is the two
-    // flat-wait gap paths the ladder doesn't cover (PinchRunExecutor post-pinch
-    // re-read, StandingOrchestrator reprice wait - named at BoardReadLadder.cs:16-17)
-    // plus recon's inter-item beat. 3.1: move those gaps onto the ladder, then delist
-    // this row the way the deep-cut guard went.
-    ConfigWidgets.Hint("How long to wait for prices on the first try.\n\n" +
-                       "Ships at 3.0s. If prices are still coming in when time runs out, Scrooge\n" +
-                       "just waits a bit longer, then tries again at 3, 5, and 10 seconds before\n" +
-                       "giving up - so a slow server costs time, not a bad read.\n\n" +
-                       "Also sets the pause between items during a recon run.");
+    // Keep Open Time DELISTED (3.1 sweep, per its own 08-23 note: "move those gaps
+    // onto the ladder, then delist this row"). It was BoardReadLadder window 0 plus
+    // side-job beats; the reprice gap folded onto the ladder 08-29 and no flat
+    // tuning decision remained. Constant: Configuration.MarketBoardKeepOpenMS.
 
     SectionHeader("Humanization");
     ImGui.TextDisabled("Randomness in the waits, so the timing doesn't look scripted.");
@@ -690,14 +668,14 @@ public sealed class ConfigWindow : Window
       Plugin.Configuration.EnableDtrToday = dtrOn;
       Plugin.Configuration.Save();
     }
-    // THE BAR HAS PRECONDITIONS (registry reconcile, 2026-08-23): it is a snapshot
-    // delta off Gil Tracking's daily buckets, so it needs EnableGilTracking on, and
-    // it hides itself without today's snapshot plus one earlier day to compare
-    // against - a fresh install shows nothing for a day and the checkbox looks broken.
+    // THE BAR HAS PRECONDITIONS (registry reconcile, 2026-08-23; tracking-on clause
+    // dropped with the master toggle, 3.1): it is a snapshot delta off the daily
+    // buckets, and it hides itself without today's snapshot plus one earlier day to
+    // compare against - a fresh install shows nothing for a day and the checkbox
+    // looks broken.
     ConfigWidgets.Hint("Puts today's gil change in the server info bar. Click it to open the dashboard.\n\n" +
                        "'Today' is your local calendar day. The number only moves when a run records\n" +
-                       "your gil, so it needs Gil Tracking switched on - and it stays hidden until it\n" +
-                       "has an earlier day to compare against.");
+                       "your gil, and it stays hidden until it has an earlier day to compare against.");
     ImGui.Spacing();
 
     SectionHeader("Chat");
@@ -805,32 +783,17 @@ public sealed class ConfigWindow : Window
     ImGui.TextDisabled("Scrooge's memory of your money.");
     ImGui.Spacing();
 
-    var enableGil = Plugin.Configuration.EnableGilTracking;
-    if (ImGui.Checkbox("Gil Tracking", ref enableGil))
-    {
-      Plugin.Configuration.EnableGilTracking = enableGil;
-      Plugin.Configuration.Save();
-    }
-    // A PASSIVE RECORDER, NOT A RUN FEATURE (registry reconcile, 2026-08-23). The old
-    // text said "during pinch runs" - runs are a minority of the capture sites now
-    // (zone/logout/bell snapshots, purchases, quest/FATE/duty rewards, shop trades,
-    // chat-parsed sales). The one thing OFF never touches is the settled-sales tape:
-    // MarketBoardHandler banks every board packet ungated, so lane pricing survives.
-    // What OFF really costs: last_sale_prices freezes (own-sales fallback and
-    // melt/desynth valuations drift onto aging evidence), DtrToday starves, the
-    // dashboard silently goes stale. The 1.5s claim is exact (hardcoded 1500ms).
-    ConfigWidgets.Hint("Keeps a record of your money: what your retainers sell, what you spend and\n" +
-                       "earn everywhere else, how long your listings sit, and what your retainers\n" +
-                       "are holding.\n\n" +
-                       "Most of it records quietly in the background - quests, duties, market\n" +
-                       "purchases, shop trips. A pinch adds about a second and a half per retainer\n" +
-                       "to read that retainer's sale history.\n\n" +
-                       "Switching it off stops all of that: the dashboard keeps showing the last\n" +
-                       "numbers it had, the server bar's daily total goes quiet, pricing slowly\n" +
-                       "loses touch with what your own items sold for, and every round re-checks\n" +
-                       "prices no matter how fresh they are (this is what records when a price check\n" +
-                       "finished). Board prices are unaffected - those are read fresh every time.\n\n" +
-                       "The Gil Dashboard shows it all (button below, or /giltrack).");
+    // THE MASTER TOGGLE IS GONE (3.1: "you installed Scrooge, you get Scrooge").
+    // The recorder is always-on - the half-gates it created (trued receipts never
+    // stamped executed, the freshness gate's stamp starving, the frozen dashboard)
+    // died with it. What remains on this tab is reading and resetting the record.
+    ImGui.TextWrapped("Scrooge keeps a record of your money: what your retainers sell, what you " +
+                      "spend and earn everywhere else, how long your listings sit, and what your " +
+                      "retainers are holding. Most of it records quietly in the background; a " +
+                      "pinch adds about a second and a half per retainer to read that retainer's " +
+                      "sale history.");
+    ImGui.Spacing();
+    ImGui.TextDisabled("The Gil Dashboard shows it all (button below, or /giltrack).");
 
     #if DEBUG
     // THE MOST DESTRUCTIVE CONTROL IN THE PLUGIN (guarded 2026-08-23): it drops every
@@ -894,8 +857,12 @@ public sealed class ConfigWindow : Window
             // Names changed - update the stored list
             Plugin.Configuration.LastKnownRetainerNames = [.. retainerNameArray];
 
-            // Remove enabled status for retainers that no longer exist
-            Plugin.Configuration.EnabledRetainerNames.RemoveWhere(name => !currentNames.Contains(name) && name != Configuration.ALL_DISABLED_SENTINEL);
+            // NO PRUNE of EnabledRetainerNames here: this bell only shows ONE
+            // character's roster, and the set is account-flat - a name missing
+            // from THIS roster may be another character's retainer, and pruning
+            // it silently reset that character to all-enabled. A stale name
+            // (retired/renamed retainer) is inert - it just never matches.
+            // Real pruning needs per-character rosters (3.1 income arm).
 
             Plugin.Configuration.Save();
             namesUpdated = true;
@@ -1023,7 +990,7 @@ public sealed class ConfigWindow : Window
 
       var postPinchKey = Plugin.Configuration.PostPinchKey;
       ImGui.SetNextItemWidth(150);
-      if (ConfigWidgets.EnumCombo("##postPinchKeyCombo", ref postPinchKey, false))
+      if (ConfigWidgets.KeyCombo("##postPinchKeyCombo", ref postPinchKey))
       {
         Plugin.Configuration.PostPinchKey = postPinchKey;
         Plugin.Configuration.Save();
@@ -1057,7 +1024,7 @@ public sealed class ConfigWindow : Window
 
       var pinchKey = Plugin.Configuration.PinchKey;
       ImGui.SetNextItemWidth(150);
-      if (ConfigWidgets.EnumCombo("##pinchKeyCombo", ref pinchKey, false))
+      if (ConfigWidgets.KeyCombo("##pinchKeyCombo", ref pinchKey))
       {
         Plugin.Configuration.PinchKey = pinchKey;
         Plugin.Configuration.Save();
@@ -1069,70 +1036,8 @@ public sealed class ConfigWindow : Window
     ImGui.EndGroup();
 
 
-    if (!Plugin.Configuration.DontUseTTS)
-    {
-      ImGui.Separator();
-      SectionHeader("Text-To-Speech");
-
-      ImGui.BeginGroup();
-      bool ttsall = Plugin.Configuration.TTSWhenAllDone;
-      if (ImGui.Checkbox("All", ref ttsall))
-      {
-        Plugin.Configuration.TTSWhenAllDone = ttsall;
-        Plugin.Configuration.Save();
-      }
-      ImGui.SameLine();
-      string ttsallmsg = Plugin.Configuration.TTSWhenAllDoneMsg;
-      ImGui.SetNextItemWidth(500);
-      if (ImGui.InputText("##ttsallmsg", ref ttsallmsg, 256, ImGuiInputTextFlags.AutoSelectAll | ImGuiInputTextFlags.EnterReturnsTrue))
-      {
-        Plugin.Configuration.TTSWhenAllDoneMsg = ttsallmsg;
-        Plugin.Configuration.Save();
-      }
-      ImGui.EndGroup();
-      // TTS is inherited upstream code, unused here; fix-or-retire is a 3.1 decision
-      // (registry reconcile, 2026-08-23). Text-only truths landed meanwhile: Enter
-      // commits the field (EnterReturnsTrue - click-away discards), pinch runs only.
-      ConfigWidgets.Hint("Speak a phrase out loud when a pinch has finished every retainer.\n\n" +
-                         "Only pinch runs speak - inside a Round this fires when the pinch stage\n" +
-                         "ends, not when the Round does.\n\n" +
-                         "Type your own phrase in the box and press Enter to save it - clicking\n" +
-                         "away discards the edit.");
-
-      ImGui.BeginGroup();
-      bool ttseach = Plugin.Configuration.TTSWhenEachDone;
-      if (ImGui.Checkbox("Each", ref ttseach))
-      {
-        Plugin.Configuration.TTSWhenEachDone = ttseach;
-        Plugin.Configuration.Save();
-      }
-      ImGui.SameLine();
-      string ttseachmsg = Plugin.Configuration.TTSWhenEachDoneMsg;
-      ImGui.SetNextItemWidth(500);
-      if (ImGui.InputText("##ttseachmsg", ref ttseachmsg, 256, ImGuiInputTextFlags.AutoSelectAll | ImGuiInputTextFlags.EnterReturnsTrue))
-      {
-        Plugin.Configuration.TTSWhenEachDoneMsg = ttseachmsg;
-        Plugin.Configuration.Save();
-      }
-      ImGui.EndGroup();
-      // Known defect, banked for the 3.1 fix-or-retire ruling: in a multi-retainer
-      // pinch the Speak is Enqueued to the back while item steps are Inserted at the
-      // front, so "Each" fires N times in a row at the END of the run instead of per
-      // retainer. The tooltip says so rather than promising the intent.
-      ConfigWidgets.Hint("Speak a phrase out loud as retainers finish. Type your own phrase and\n" +
-                         "press Enter to save it - clicking away discards the edit.\n\n" +
-                         "Known quirk: in a multi-retainer pinch the announcements currently\n" +
-                         "bunch up at the end of the run instead of following each retainer.");
-
-      int volume = Plugin.Configuration.TTSVolume;
-      if (ConfigWidgets.LabeledSlider("TTS Volume:", "##ttsVolumeAmount", ref volume, 1, 99, 150, suffix: "%"))
-      {
-        Plugin.Configuration.TTSVolume = volume;
-        Plugin.Configuration.Save();
-      }
-      ConfigWidgets.Hint("How loud the spoken lines are (1-99), as a share of the voice's own\n" +
-                         "volume. Your Windows volume still applies on top.");
-    }
+    // The Text-To-Speech section is RETIRED with the feature (ruled 2026-08-29)
+    // - see the retired-key comment in Configuration.cs for the era semantics.
   }
 
   /// <summary>
@@ -1191,9 +1096,6 @@ public sealed class ConfigWindow : Window
       {
         vendorIds.Remove(vendorToRemove.Value);
         Plugin.Configuration.Save();
-        // Every context-menu mutation refreshes the Hawk window; the tab's exit
-        // door owes the same courtesy, or an open Hawk keeps the stale row.
-        Plugin.HawkWindow.RefreshInventory();
       }
     }
 
@@ -1207,10 +1109,10 @@ public sealed class ConfigWindow : Window
     ImGui.Separator();
 
     ImGui.TextDisabled("Scrooge leaves these alone.");
-    ConfigWidgets.Hint("They don't appear in the Hawk window, they're never listed or melted, and a\n" +
-                       "price pass walks past one that's already listed without touching it.\n\n" +
+    ConfigWidgets.Hint("They're never listed, melted, or turned in, and a price pass walks past one\n" +
+                       "that's already listed without touching it.\n\n" +
                        "To add one, right-click it in your bag or on a retainer's sell list and choose\n" +
-                       "Ban from Scrooge, or use the Ban button on a Hawk row.");
+                       "Ban from Scrooge.");
     ImGui.Spacing();
 
     if (bannedIds.Count == 0)
@@ -1237,7 +1139,6 @@ public sealed class ConfigWindow : Window
       {
         bannedIds.Remove(banToRemove.Value);
         Plugin.Configuration.Save();
-        Plugin.HawkWindow.RefreshInventory();
       }
     }
   }
@@ -1278,10 +1179,8 @@ public sealed class ConfigWindow : Window
     // the clock is the completion stamp of the last all-retainer pinch that
     // FINISHED - single-retainer pinches, recons, hawks, and aborted runs never
     // stamp, and the stamp lands at run end. The hover says so in player words.
-    // THE GATE'S CLOCK LIVES IN THE GIL TRACKER (same pass): the stamp is only
-    // written by GilTracker.FinalizeRun behind EnableGilTracking - tracking off
-    // means every round re-checks forever. Documented by ruling; killing the
-    // master toggle outright is the 3.1 seed.
+    // The stamp's writer (GilTracker.FinalizeRun) is ungated since the master
+    // toggle died (3.1) - the gate's clock always ticks now.
     var repinchFloor = Plugin.Configuration.RepinchFloorHours;
     ImGui.SetNextItemWidth(150);
     if (ImGui.SliderInt("Skip the price check if newer than (hours)", ref repinchFloor, 1, 12))
@@ -1354,7 +1253,7 @@ public sealed class ConfigWindow : Window
     // THE LAUNCHER TOGGLE IS GONE (same ruling): it only ever hid the preview
     // button on that list - rounds and the wizard showed the preview
     // regardless - and no other overlay button in the plugin offers an
-    // opt-out. EnableDesynthPreview sits inert until 3.1 removes it.
+    // opt-out. Its field left in the 3.1 sweep.
     SectionHeader("Desynthesis");
     ImGui.TextDisabled("Scrooge melts the pile for you; the pace is yours to set.");
     ImGui.Spacing();

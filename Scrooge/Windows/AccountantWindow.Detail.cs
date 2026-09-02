@@ -437,14 +437,7 @@ internal sealed partial class AccountantWindow
       if (note.Length > 0) reason += $" {note}";
     }
 
-    // ALARM-RED for the crasher-guard's press-time warning (ruled 2026-08-21), the
-    // same colour the desynth preview counts protected items in. Every other reason
-    // is a report; this one is a question the player has to answer before a write
-    // happens, and it is the only row on this pane that earns the alarm.
-    var alarm = item.Result is PricingResult.UndercutTooDeep;
-    if (alarm) ImGui.PushStyleColor(ImGuiCol.Text, ScroogeColors.Protected);
     ImGui.TextWrapped(reason);
-    if (alarm) ImGui.PopStyleColor();
   }
 
   // ---- The moves, part one: the four-score math ----
@@ -626,7 +619,7 @@ internal sealed partial class AccountantWindow
     // they do has changed, and none of them runs anything.
     _actions.TryGetValue(item, out var currentVerb);
     var current = currentVerb.Action;
-    var canReprice = item.Result is PricingResult.CapBlocked or PricingResult.UndercutTooDeep;
+    var canReprice = item.Result is PricingResult.CapBlocked;
     var key = $"{item.ItemId}_{item.IsHq}_{item.RetainerName}";
     var pile = EffectiveStandingPile(item);
 

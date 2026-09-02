@@ -30,7 +30,7 @@ public class MigrationClimbTests : IDisposable
 {
   /// <summary>The ladder's top rung. Bump when a migration lands - the climb tests
   /// asserting this is what catches a rung added without a stamp.</summary>
-  private const int CurrentVersion = 48;
+  private const int CurrentVersion = 49;
 
   /// <summary>The schema version v2.6.2.0 stamped (read from the tag's bootstrap).</summary>
   private const int V262Version = 12;

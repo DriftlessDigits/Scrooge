@@ -101,13 +101,13 @@ internal static partial class GilStorage
   /// baked (ruled 08-15). It exists here rather than being added later so a 3.1
   /// reader inherits a shape that was pinned the day the rows started arriving.</para>
   /// </summary>
-  internal static List<(long OpenedAt, uint ContainerItemId, uint PulledItemId, int Quantity, bool IsHq)>
+  internal static List<(long OpenedAt, uint ContainerItemId, uint PulledItemId, int Quantity, bool IsHq, long? KeptAt)>
       GetCofferPulls(int sinceDays)
   {
-    var rows = new List<(long, uint, uint, int, bool)>();
+    var rows = new List<(long, uint, uint, int, bool, long?)>();
     var cutoff = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - sinceDays * 86400L;
     using var cmd = new SqliteCommand(
-      @"SELECT opened_at, container_item_id, pulled_item_id, quantity, is_hq
+      @"SELECT opened_at, container_item_id, pulled_item_id, quantity, is_hq, kept_at
         FROM coffer_pulls WHERE opened_at >= @cutoff
         ORDER BY opened_at DESC",
       _connection);
@@ -115,7 +115,8 @@ internal static partial class GilStorage
     using var reader = cmd.ExecuteReader();
     while (reader.Read())
       rows.Add((reader.GetInt64(0), (uint)reader.GetInt64(1), (uint)reader.GetInt64(2),
-        reader.GetInt32(3), reader.GetInt32(4) != 0));
+        reader.GetInt32(3), reader.GetInt32(4) != 0,
+        reader.IsDBNull(5) ? null : reader.GetInt64(5)));
     return rows;
   }
 

@@ -64,7 +64,6 @@ internal static class StandingBookFeed
 
   private static void Add(OwnWrite write)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     lock (_pending) _pending.Add(write);
   }
 

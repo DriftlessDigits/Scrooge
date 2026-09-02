@@ -74,21 +74,9 @@ public class StandingReAskTests
     var verb = new StagedVerb(StandingAction.Reprice, BoardPile.Reprice);
 
     // Every PricingResult that maps to Reprice is one call. The lane's price is not an
-    // operand of Survives at all - it is not in the signature.
-    foreach (var result in new[]
-      { PricingResult.CapBlocked, PricingResult.UndercutTooDeep })
-      Assert.True(StandingReAsk.Survives(verb, BoardPiles.ForStanding(result)));
-  }
-
-  [Fact]
-  public void TheReasonMayChangeWhileTheCallDoesNot()
-  {
-    // CapBlocked -> UndercutTooDeep is a different REASON for one instruction. The
-    // human was told "reprice this" and he answered it; re-asking because the
-    // machinery's internal reason moved would be a question the board has not got.
-    var verb = new StagedVerb(StandingAction.Reprice, BoardPiles.ForStanding(PricingResult.CapBlocked));
-
-    Assert.True(StandingReAsk.Survives(verb, BoardPiles.ForStanding(PricingResult.UndercutTooDeep)));
+    // operand of Survives at all - it is not in the signature. (UndercutTooDeep
+    // shared this pile until the 3.1 sweep removed the species.)
+    Assert.True(StandingReAsk.Survives(verb, BoardPiles.ForStanding(PricingResult.CapBlocked)));
   }
 
   // ---- The note -------------------------------------------------------------

@@ -20,7 +20,6 @@ public class ListingAccountingTests
   [Theory]
   [InlineData(PricingResult.LaneHeld)]
   [InlineData(PricingResult.CapBlocked)]
-  [InlineData(PricingResult.UndercutTooDeep)]
   [InlineData(PricingResult.BelowFloor)]
   [InlineData(PricingResult.NoData)]
   [InlineData(PricingResult.Banned)]

@@ -471,7 +471,6 @@ public class BoardPilesTests
   public void StandingResult_MapsToPile()
   {
     Assert.Equal(BoardPile.Reprice, BoardPiles.ForStanding(PricingResult.CapBlocked));
-    Assert.Equal(BoardPile.Reprice, BoardPiles.ForStanding(PricingResult.UndercutTooDeep));
     // The pinch-side lane_held rehome: keeping the ask IS the act, so it
     // defers (labeling only) rather than sitting in a settled roll-up.
     Assert.Equal(BoardPile.Defer, BoardPiles.ForStanding(PricingResult.LaneHeld));

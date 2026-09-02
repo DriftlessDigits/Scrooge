@@ -54,7 +54,6 @@ internal sealed class ChatCatchallTracker : IDisposable
 
   private void OnChatMessage(IHandleableChatMessage message)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     if (!ValidChatTypes.Contains((int)message.LogKind)) return;
     if (GilTrackingState.IsBlocked) return;
 

@@ -88,7 +88,6 @@ internal static class ListingAccounting
   {
     PricingResult.BelowFloor => true,
     PricingResult.CapBlocked => true,
-    PricingResult.UndercutTooDeep => true,
     PricingResult.LaneHeld => true,
     PricingResult.NoData => true,
     PricingResult.Banned => true,

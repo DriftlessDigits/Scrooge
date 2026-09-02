@@ -23,7 +23,7 @@ internal static class RoutingReceiptStamp
   /// </summary>
   internal static void Executed(uint itemId, bool isHq, string action)
   {
-    if (!Plugin.Configuration.EnableGilTracking || itemId == 0) return;
+    if (itemId == 0) return;
     try { GilStorage.MarkRoutingReceiptExecuted(itemId, isHq, action); }
     catch (Exception ex) { Svc.Log.Warning($"[Receipt] {action} stamp failed for {itemId}: {ex.Message}"); }
   }
@@ -37,7 +37,7 @@ internal static class RoutingReceiptStamp
   /// </summary>
   internal static void NeverCleared(uint itemId, bool isHq)
   {
-    if (!Plugin.Configuration.EnableGilTracking || itemId == 0) return;
+    if (itemId == 0) return;
     try { GilStorage.CloseReceiptsNeverCleared(itemId, isHq); }
     catch (Exception ex) { Svc.Log.Warning($"[Receipt] never-cleared close failed for {itemId}: {ex.Message}"); }
   }

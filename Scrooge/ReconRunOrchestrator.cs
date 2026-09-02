@@ -420,7 +420,7 @@ internal sealed class ReconRunOrchestrator : IDisposable
     _taskManager.Enqueue(_pricing.SetNewPrice, $"ReconSpine_{item.Name}");
     // A jittered beat before the next panel opens, on top of the two 100ms steps
     // above - the same cadence discipline every click in the plugin gets.
-    _taskManager.DelayNext(_applyJitter(Plugin.Configuration.MarketBoardKeepOpenMS));
+    _taskManager.DelayNext(_applyJitter(Configuration.MarketBoardKeepOpenMS));
     _taskManager.Enqueue(() => {
       _run.RecordProgress(1, 0, DateTime.UtcNow);
       return true;

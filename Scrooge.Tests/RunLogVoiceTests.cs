@@ -780,22 +780,7 @@ public class RunLogHoverBankingTests
     Assert.DoesNotContain("75/ea", line);
   }
 
-  [Fact]
-  public void TheCrasherGuardAsksAQuestion_AndCarriesBothPrices()
-  {
-    var line = RunLogVoice.Reasons.CutTooDeep(62, 680, 260);
-    Assert.Equal("Cutting 62% under the anchor - 680 down to 260. "
-      + "Competition or crasher? Confirm to follow the price.", line);
-  }
-
-  [Fact]
-  public void AWarningIsNotASkip_ItGetsItsOwnVerb()
-  {
-    // A skip says the round decided. It did not - it asked, and the write is waiting.
-    var voice = RunLogVoice.Warn(RunLogVoice.Reasons.CutTooDeep(62, 680, 260));
-    Assert.StartsWith("Warn: Cutting 62% under the anchor", voice.Line);
-    Assert.DoesNotContain("Skip", voice.Line);
-  }
+  // The crasher-guard voice tests died with the guard (3.1 sweep).
 
   [Fact]
   public void TheVendorFallbackNamesTheFloorItSoldUnder()
@@ -846,5 +831,79 @@ public class RunLogHoverBankingTests
     // answered must not be summarized as "not enough sales".
     var silent = new[] { RunLogVoice.Skip(null, RunLogVoice.Reasons.BoardSilent).Line };
     Assert.DoesNotContain("sales", RunLogVoice.HeldRollup(silent));
+  }
+
+  // ==========================================================================
+  // The melt run's reachability line (the Rattan Sofa defect, 2026-08-29):
+  // three routed-Melt items sat invisible under the desynthesis window's
+  // category filter and the run reported plain success, round after round.
+  // The summary must name the gap when the pile outnumbers the window.
+  // ==========================================================================
+
+  [Fact]
+  public void MeltUnreachable_SilentWhenTheWindowShowsTheWholePile()
+  {
+    Assert.Null(RunLogVoice.MeltUnreachable(routed: 16, reachable: 16));
+    Assert.Null(RunLogVoice.MeltUnreachable(routed: 0, reachable: 0));
+    // The window showing MORE than the pile (hand-added selections) hides nothing.
+    Assert.Null(RunLogVoice.MeltUnreachable(routed: 3, reachable: 5));
+  }
+
+  [Fact]
+  public void MeltUnreachable_NamesTheMissingCountAndTheBagsOnlyReach()
+  {
+    // Re-worded with the decision walk (08-30): the walk covers every bag
+    // category now, so a pile item this line fires for is in NO bag - retainer
+    // stock is the known case, and "cycle the filter" would be wrong advice.
+    var line = RunLogVoice.MeltUnreachable(routed: 16, reachable: 13);
+    Assert.NotNull(line);
+    Assert.Contains("3 of the 16", line);
+    Assert.Contains("bags", line);
+    // The cure rides the sentence: pull retainer-held stock to the bags.
+    Assert.Contains("retainer", line);
+    Assert.DoesNotContain("filter", line);
+  }
+
+  [Fact]
+  public void MeltUnreachable_SpeaksSingularForOneMissingItem()
+  {
+    var line = RunLogVoice.MeltUnreachable(routed: 4, reachable: 3);
+    Assert.NotNull(line);
+    Assert.Contains("1 of the 4", line);
+    Assert.DoesNotContain("items aren't", line);
+  }
+
+  // ==========================================================================
+  // Phase B (2026-08-30): the run cycles the filter ITSELF and picks up the
+  // hidden pile items. The pickup line states the decision and its operands -
+  // which category, how many - per the dark-mode rule.
+  // ==========================================================================
+
+  [Fact]
+  public void MeltWalkPickup_NamesTheCategoryAndTheCount()
+  {
+    var line = RunLogVoice.MeltWalkPickup(3, "Housing");
+    Assert.NotNull(line);
+    Assert.Contains("Housing", line);
+    Assert.Contains("3 more", line);
+    Assert.Contains("melt pile", line);
+  }
+
+  [Fact]
+  public void MeltWalkPickup_SpeaksSingularForOneItem()
+  {
+    var line = RunLogVoice.MeltWalkPickup(1, "Housing");
+    Assert.NotNull(line);
+    Assert.Contains("1 more", line);
+    Assert.Contains("item", line);
+    Assert.DoesNotContain("items", line);
+  }
+
+  [Fact]
+  public void MeltWalkPickup_SilentWhenTheCategoryHoldsNothing()
+  {
+    // A walk that finds nothing says nothing - the residual MeltUnreachable
+    // line at run end is the honest report for a pile still out of reach.
+    Assert.Null(RunLogVoice.MeltWalkPickup(0, "Housing"));
   }
 }

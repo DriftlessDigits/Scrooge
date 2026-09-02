@@ -26,10 +26,11 @@ internal static class CofferLogic
   internal const uint VentureCofferItemId = 32161;
 
   /// <summary>
-  /// Conservative free-slot floor before we'll open a coffer. Mirrors
-  /// <c>DesynthOrchestrator.MinFreeInventorySlots</c> (5): the unlocked item lands
-  /// in the bags, and opening against a full inventory risks a lost item or a
-  /// stuck state. Bail before the open rather than gamble on the game's rules.
+  /// THE free-slot floor for bag-filling runs - the coffer open and the desynth
+  /// run both read this one const (3.1 sweep; it used to live twice, agreeing
+  /// only by discipline). The unlocked/yielded item lands in the bags, and
+  /// acting against a full inventory risks a lost item or a stuck state. Bail
+  /// before starting rather than gamble on the game's rules.
   /// </summary>
   internal const int MinFreeInventorySlots = 5;
 

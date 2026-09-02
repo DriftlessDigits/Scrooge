@@ -121,6 +121,8 @@ internal class GilStorageBootstrap
       "V47 migration: decision_receipts gains seat_at_write (the true 1-based seat, crashers count - competitor_position's writer retires, its zero could not say 'not first') and the shadow trio shadow_price/shadow_seat/shadow_defense - the 3.1 queue-doctrine candidate's answer on the same board, banked so the 3.1 ruling opens on paired data"),
     (48, MarketMemorySchema.ApplyV48,
       "V48 migration: back-marks standing recon phantoms with arm_id 'recon' (the Neo-Ishgardian Sword, 08-23: a Look's receipt wore ask grammar on the trail, the state line and the On Market tab) - new recon receipts are born marked, adoption's true-up clears the mark"),
+    (49, CofferPullSchema.ApplyV49,
+      "V49 migration: coffer_pulls gains kept_at - a pull's fate. Two of the book's first four rows (2026-09-01) were minions the player learned, not sold; a kept pull never produces a sale row, so the one outcome the machine cannot see gets a stamp instead of a zero. SOLD and HELD stay derivable; only KEPT is written"),
   ];
 
   /// <summary>

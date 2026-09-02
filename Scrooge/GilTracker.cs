@@ -251,12 +251,11 @@ internal static class GilTracker
   // --- Passive Balance Snapshots (called from GilTrackEventListener) ---
 
   /// <summary>
-  /// Takes a player-only balance snapshot if tracking is enabled and dedup passes.
+  /// Takes a player-only balance snapshot if dedup passes.
   /// Retainer balances are NOT captured (only available at the summoning bell).
   /// </summary>
   public static void TakeBalanceSnapshot(string source)
   {
-    if (!Plugin.Configuration.EnableGilTracking) return;
     if (GameSafe.PlayerGil() is not long playerGil) return;
 
     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();

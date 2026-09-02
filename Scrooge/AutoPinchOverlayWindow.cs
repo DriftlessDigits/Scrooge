@@ -50,7 +50,6 @@ internal sealed class AutoPinchOverlayWindow : Window
     {
       DrawForRetainerList();
       DrawForRetainerSellList();
-      DrawInventoryOverlays();
     }
     catch (Exception ex)
     {
@@ -197,45 +196,10 @@ internal sealed class AutoPinchOverlayWindow : Window
     }
   }
 
-  /// <summary>Draws inventory overlays when the Hawk Window is open.</summary>
-  private unsafe void DrawInventoryOverlays()
-  {
-    if (Plugin.HawkWindow == null || !Plugin.HawkWindow.IsOpen)
-      return;
-
-    // Don't draw overlays while a context menu is open (z-order conflict)
-    unsafe
-    {
-      if (GenericHelpers.TryGetAddonByName<AtkUnitBase>("ContextMenu", out var cm) && GenericHelpers.IsAddonReady(cm))
-        return;
-    }
-
-    // Always Vendor items — orange/yellow veil
-    var vendorIcons = Plugin.HawkWindow.GetAlwaysVendorIconIds();
-    if (vendorIcons.Count > 0)
-      AutoPinchOverlay.DrawIconOverlays(vendorIcons, new System.Numerics.Vector4(1f, 0.7f, 0.2f, 0.35f));
-
-    // Selected items — green veil
-    var selectedIcons = Plugin.HawkWindow.GetSelectedIconIds();
-    if (selectedIcons.Count > 0)
-      AutoPinchOverlay.DrawIconOverlays(selectedIcons, new System.Numerics.Vector4(0.2f, 1f, 0.2f, 0.35f));
-
-    // Banned items — red veil (both NQ and HQ variants)
-    if (Plugin.Configuration.BannedItemIds.Count > 0)
-    {
-      var itemSheet = Svc.Data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
-      var bannedIcons = new HashSet<int>();
-      foreach (var itemId in Plugin.Configuration.BannedItemIds)
-      {
-        var baseIcon = (int)itemSheet.GetRow(itemId).Icon;
-        bannedIcons.Add(baseIcon);           // NQ
-        bannedIcons.Add(baseIcon + 1000000);  // HQ
-      }
-
-      if (bannedIcons.Count > 0)
-        AutoPinchOverlay.DrawIconOverlays(bannedIcons, new System.Numerics.Vector4(1f, 0.2f, 0.2f, 0.35f));
-    }
-  }
+  // DrawInventoryOverlays is GONE with the manual Hawk view (ruled 2026-08-29):
+  // its whole body keyed on HawkWindow.IsOpen, which nothing could set true
+  // since the 08-15 bell-bar trim - the bag veils have been unreachable ever
+  // since, so the deletion matches the reality the player has been living in.
 
   /// <summary>Draws Auto Pinch / Cancel button. Shows Cancel when busy.</summary>
   /// <param name="specificPinchFunction">The pinch function to call (all retainers or single retainer's items).</param>

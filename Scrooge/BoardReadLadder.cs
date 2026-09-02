@@ -12,10 +12,14 @@ namespace Scrooge;
 ///
 /// <para><b>Every door that DECIDES A PRICE off a board read comes through here</b>
 /// (ruled 2026-08-10, folded into unit 3; the last two hand-rolled spellings were
-/// folded in on 2026-08-16). Two callers still do not: the pinch's posted-item re-read
-/// flat-waits, and StandingOrchestrator's reprice leg flat-waits on
-/// <c>MarketBoardKeepOpenMS</c>. Those are a real gap and they are named here rather
-/// than papered over. Until this ladder existed the bell run was the last flat-window
+/// folded in on 2026-08-16; the standing reprice leg - the last flat-wait on a
+/// price-deciding RUN path - folded in on 2026-08-29). One door still does not:
+/// the PostPinch hotkey's posted-item re-read flat-waits, because it is RUNLESS
+/// BY DESIGN (no CurrentRun/CurrentItem - it rides the pipeline's _hotKeyPrice
+/// fallback, and this ladder's waits read CurrentItem, so on that path they would
+/// no-op instantly and REGRESS the flat wait). Moving it here means giving the
+/// hotkey press run semantics or the ladder an item parameter - a design walk,
+/// not a sweep. Named rather than papered over. Until this ladder existed the bell run was the last flat-window
 /// door on the decision path: it fired Compare Prices, waited a single jittered
 /// <c>MarketBoardKeepOpenMS</c>, and priced on whatever had landed - with no completion
 /// check of any kind. That is the censored-read class the x-of-y work fixed for the
@@ -202,7 +206,7 @@ internal sealed class BoardReadLadder
   /// <summary>Per-window wait budget in ms. Window 0 is the initial keep-open; retries escalate 3s/5s/10s.</summary>
   private static int MbWindowMs(int window) => window switch
   {
-    0 => Plugin.Configuration.MarketBoardKeepOpenMS,
+    0 => Configuration.MarketBoardKeepOpenMS,
     1 => 3000,
     2 => 5000,
     _ => 10000,

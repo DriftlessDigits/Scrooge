@@ -56,14 +56,9 @@ public enum PricingResult
   /// produced since clamp-and-climb (07-26) - the cap steps instead of skipping.
   /// Kept for persisted rows that carry it.</summary>
   CapBlocked,
-  /// <summary>
-  /// THE CRASHER-GUARD TRIPPED (ruled 2026-08-21) - a WARNING state, not a skip. The
-  /// final price cuts deeper under the anchor than <c>MaxUndercutPercentage</c>
-  /// allows, so the write did not happen automatically and the row surfaces for a
-  /// press. <see cref="PricingItem.RejectedPrice"/> carries the proposal the confirm
-  /// executes.
-  /// </summary>
-  UndercutTooDeep,
+  // UndercutTooDeep is GONE (3.1 sweep). The deep-cut guard was delisted 08-23
+  // (inert at its 100 default; the lane owns crasher defense) and its warn row,
+  // confirm flow, and this state died with it.
   // UpwardHeld is GONE (cleanup pass). Its own-sales guard was deleted with the
   // lane rewrite on 2026-07-13 and nothing has set the state since; the only way
   // to reach it was rehydrating a legacy persisted flag, and those fold to
@@ -164,7 +159,7 @@ internal class PricingItem
   /// <summary>Outcome of the pricing evaluation. Set by the pipeline, read by orchestrators.</summary>
   public PricingResult Result { get; set; } = PricingResult.Pending;
 
-  /// <summary>Price change percentage (old → new). Populated for CapBlocked and UndercutTooDeep results.</summary>
+  /// <summary>Price change percentage (old → new). Populated for CapBlocked results.</summary>
   public float? PriceChangePercent { get; set; }
 
   /// <summary>The final price that was applied (if Result is Applied or Listed).</summary>
@@ -195,8 +190,8 @@ internal class PricingItem
   ///     is the board read the proposal was built from and can sit far BELOW it;
   ///     rendering it produced "Cap (306 -&gt; 200, 880%)", a raise narrated as a
   ///     cut (07-24).</item>
-  ///   <item>the undercut-too-deep guard - same shape, the other direction.</item>
   /// </list>
+  /// (The undercut-too-deep guard was a third producer until the 3.1 sweep.)
   /// One field because it is one question: what number did the guard compare?
   /// </summary>
   public int? RejectedPrice { get; set; }
@@ -215,20 +210,9 @@ internal class PricingItem
   /// <summary>When true, cap and undercut price guards are skipped. Set by triage reprice. Also skips the lane decision — the human wins.</summary>
   public bool BypassPriceGuards { get; set; }
 
-  /// <summary>
-  /// THE PRICE THE PLAYER CONFIRMED (ruled 2026-08-21). A deep-cut warning banks its
-  /// proposal in <see cref="RejectedPrice"/>; pressing Reprc on that row copies it
-  /// here, and the pipeline WRITES IT rather than re-deriving a number.
-  ///
-  /// <para>Re-running the spine would answer a different question. The player is not
-  /// asking "what is this worth now", he is answering "competition or crasher?" about
-  /// a specific ask he was shown - and a fresh board read could hand him a different
-  /// price than the one he agreed to, which is a confirm dialog that lies.</para>
-  ///
-  /// <para>Single-shot: cleared the moment the pipeline adopts it, so a later pass
-  /// over the same item object falls back to the ordinary chain.</para>
-  /// </summary>
-  public int? ConfirmedPrice { get; set; }
+  // ConfirmedPrice is GONE (3.1 sweep) - the deep-cut confirm flow was its only
+  // producer, and the floor-outranks-the-confirm door (08-23) went with it: no
+  // confirm can exist to outrank.
 
   /// <summary>True when the price came from the run cache — the item was lane-decided when first priced this run, so the lane block skips.</summary>
   public bool FromPriceCache { get; set; }
